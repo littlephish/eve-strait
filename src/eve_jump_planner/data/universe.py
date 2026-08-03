@@ -14,6 +14,9 @@ from ..config import JUMPABLE_SECURITY_MAX, LY_METERS, SDE_CSV_PATH, SDE_CSV_URL
 # geometry we care about for jumps); keep known space only.
 _KSPACE_MAX_REGION = 11_000_000
 
+# Spatial grid cell size (light years) for fast range queries.
+_GRID_CELL = 5.0
+
 
 @dataclass(frozen=True)
 class System:
@@ -45,17 +48,28 @@ class Station:
 class Universe:
     def __init__(self, systems: dict[int, System],
                  regions: list[tuple[str, float, float]] | None = None,
-                 gates: dict[int, set[int]] | None = None):
+                 gates: dict[int, set[int]] | None = None,
+                 region_names: dict[int, str] | None = None):
         self.systems = systems
         self._by_name = {s.name.lower(): s for s in systems.values()}
         # (name, x_ly, z_ly) region label anchors.
         self.regions = regions or []
+        self.region_names = region_names or {}
         # Stargate adjacency: system_id -> set of gate-connected system_ids.
         self.gates = gates or {}
         # Populated lazily by load_stations().
         self.stations: dict[int, Station] = {}
         self.system_stations: dict[int, list[Station]] = {}
         self.station_type_names: dict[int, str] = {}
+        self._grid: dict[tuple[int, int, int], list[System]] = {}
+        self._build_grid()
+
+    def _build_grid(self):
+        grid: dict[tuple[int, int, int], list[System]] = {}
+        for s in self.systems.values():
+            key = (int(s.x // _GRID_CELL), int(s.y // _GRID_CELL), int(s.z // _GRID_CELL))
+            grid.setdefault(key, []).append(s)
+        self._grid = grid
 
     # -- construction -------------------------------------------------------
     @classmethod
@@ -69,9 +83,9 @@ class Universe:
             download_file(config.MAP_JUMPS_URL, config.MAP_JUMPS_PATH,
                           "stargate network", progress)
         systems = _parse_csv(SDE_CSV_PATH)
-        regions = _parse_regions(config.MAP_REGIONS_PATH)
+        regions, region_names = _parse_regions(config.MAP_REGIONS_PATH)
         gates = _parse_gates(config.MAP_JUMPS_PATH)
-        return cls(systems, regions, gates)
+        return cls(systems, regions, gates, region_names)
 
     # -- NPC stations (lazy) ------------------------------------------------
     def load_stations(self, progress=None) -> None:
@@ -120,14 +134,22 @@ class Universe:
         out: list[tuple[System, float]] = []
         ox, oy, oz = origin.x, origin.y, origin.z
         r2 = range_ly * range_ly
-        for s in self.systems.values():
-            if s.id == origin.id:
-                continue
-            if jumpable_only and not s.jumpable:
-                continue
-            d2 = (s.x - ox) ** 2 + (s.y - oy) ** 2 + (s.z - oz) ** 2
-            if d2 <= r2:
-                out.append((s, math.sqrt(d2)))
+        cx = int(ox // _GRID_CELL)
+        cy = int(oy // _GRID_CELL)
+        cz = int(oz // _GRID_CELL)
+        span = int(range_ly // _GRID_CELL) + 1
+        grid = self._grid
+        for ix in range(cx - span, cx + span + 1):
+            for iy in range(cy - span, cy + span + 1):
+                for iz in range(cz - span, cz + span + 1):
+                    for s in grid.get((ix, iy, iz), ()):
+                        if s.id == origin.id:
+                            continue
+                        if jumpable_only and not s.jumpable:
+                            continue
+                        d2 = (s.x - ox) ** 2 + (s.y - oy) ** 2 + (s.z - oz) ** 2
+                        if d2 <= r2:
+                            out.append((s, math.sqrt(d2)))
         out.sort(key=lambda t: t[1])
         return out
 
@@ -166,22 +188,25 @@ def _parse_csv(path) -> dict[int, System]:
     return systems
 
 
-def _parse_regions(path) -> list[tuple[str, float, float]]:
-    out: list[tuple[str, float, float]] = []
+def _parse_regions(path):
+    labels: list[tuple[str, float, float]] = []
+    names: dict[int, str] = {}
     try:
         with open(path, newline="", encoding="utf-8-sig") as fh:
             for row in csv.DictReader(fh):
                 try:
-                    if int(row["regionID"]) >= _KSPACE_MAX_REGION:
+                    rid = int(row["regionID"])
+                    names[rid] = row["regionName"]
+                    if rid >= _KSPACE_MAX_REGION:
                         continue
-                    out.append((row["regionName"],
-                                float(row["x"]) / LY_METERS,
-                                float(row["z"]) / LY_METERS))
+                    labels.append((row["regionName"],
+                                   float(row["x"]) / LY_METERS,
+                                   float(row["z"]) / LY_METERS))
                 except (KeyError, ValueError):
                     continue
     except OSError:
         pass
-    return out
+    return labels, names
 
 
 def _parse_gates(path) -> dict[int, set[int]]:

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -38,8 +39,15 @@ class CharacterPanel(QWidget):
         self.btn_structs.clicked.connect(self.load_structures_requested)
         v.addWidget(self.btn_structs)
 
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)   # indeterminate spinner
+        self.progress.setTextVisible(True)
+        self.progress.hide()
+        v.addWidget(self.progress)
+
         v.addWidget(QLabel("Docked/asset locations (double-click to add):"))
         self.struct_list = QListWidget()
+        self.struct_list.setMaximumHeight(220)   # keep the list compact
         self.struct_list.itemDoubleClicked.connect(self._on_double)
         v.addWidget(self.struct_list)
 
@@ -54,6 +62,14 @@ class CharacterPanel(QWidget):
         else:
             self.lbl_login.setText("Not logged in.")
             self.btn_login.setText("Log in with EVE")
+
+    def set_loading(self, loading: bool, text: str = ""):
+        self.btn_structs.setEnabled(not loading)
+        if loading:
+            self.progress.setFormat(text or "Loading…")
+            self.progress.show()
+        else:
+            self.progress.hide()
 
     def set_dockables(self, dockables: list):
         self._dockables = dockables

@@ -16,6 +16,7 @@ class DockOption:
     can_dock: bool
     safe: bool
     note: str
+    owner_id: int = 0
 
     def key(self) -> tuple:
         return (self.kind, self.type_id, self.name)
@@ -29,9 +30,13 @@ class Waypoint:
 
 
 def docks_for_system(universe: Universe, dockables: list, ship: Ship,
-                     system_id: int) -> list[DockOption]:
+                     system_id: int, standings: dict | None = None,
+                     hostile_threshold: float = 0.0,
+                     exclude_hostile: bool = False) -> list[DockOption]:
     """All docks in a system (NPC stations + known player structures),
-    annotated with whether ``ship`` can use them."""
+    annotated with whether ``ship`` can use them. When ``exclude_hostile`` is
+    set, player structures owned by an entity with standing below
+    ``hostile_threshold`` are marked unsafe."""
     opts: list[DockOption] = []
     for st in universe.system_stations.get(system_id, []):
         chk = docking.check_npc_station(ship, st.type_name, st.max_volume)
@@ -40,8 +45,14 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
     for d in dockables:
         if getattr(d, "solar_system_id", 0) == system_id and d.kind == "structure":
             chk = docking.check_structure(ship, d.type_id, d.name, d.location_id)
+            safe, note = chk.safe, chk.note
+            owner = getattr(d, "owner_id", 0)
+            if (exclude_hostile and standings and owner in standings
+                    and standings[owner] < hostile_threshold):
+                safe = False
+                note = f"hostile owner (standing {standings[owner]:+.1f})"
             opts.append(DockOption(d.name, d.type_id, "structure",
-                                   chk.can_dock, chk.safe, chk.note))
+                                   chk.can_dock, safe, note, owner_id=owner))
     # Usable & safe first, then usable, then the rest.
     opts.sort(key=lambda o: (not o.can_dock, not o.safe, o.name))
     return opts

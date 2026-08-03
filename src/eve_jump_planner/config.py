@@ -49,6 +49,9 @@ SCOPES = [
     "esi-assets.read_assets.v1",
     "esi-universe.read_structures.v1",
     "esi-location.read_location.v1",
+    "esi-ui.write_waypoint.v1",
+    "esi-search.search_structures.v1",
+    "esi-characters.read_contacts.v1",
 ]
 
 # Fuzzwork Static Data Export dumps.

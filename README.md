@@ -26,8 +26,10 @@ character's dockable structure/station list.
 1. Go to <https://developers.eveonline.com> → *Create New Application*.
 2. Set the **Callback URL** to **exactly** (note the `/callback` path, no trailing space):
    `http://localhost:8635/callback`
-3. Add scopes: `esi-assets.read_assets.v1`, `esi-universe.read_structures.v1`,
-   `esi-location.read_location.v1` (and `publicData`).
+3. Add scopes (or paste the JSON array via *File → Set ESI scopes…*):
+   `publicData`, `esi-assets.read_assets.v1`, `esi-universe.read_structures.v1`,
+   `esi-location.read_location.v1`, `esi-ui.write_waypoint.v1`,
+   `esi-search.search_structures.v1`, `esi-characters.read_contacts.v1`.
 4. Copy the **Client ID**. In the app: *File → Set EVE Client ID…* and paste it
    (or set the `EVE_CLIENT_ID` environment variable).
 5. *(optional)* *File → Set ESI scopes…* accepts the **JSON scope array** copied
@@ -72,10 +74,33 @@ The route panel offers: *no docking filter*, *require docking for my hull*, and
 
 ## Using it
 
-- **Search** a system or **click the map** to add waypoints. The first waypoint is your origin.
-- Reorder / remove waypoints; the blue circle shows reach from the selected waypoint.
-- **Auto‑route origin → last** finds a fewest‑jumps (or least‑fuel) path through low/null systems.
-- The table shows per‑leg LY, fuel, cooldown and fatigue; the footer shows totals.
+- **Search** a system (double‑click or right‑click → *Add as waypoint*) or **right‑click the
+  map** → *Add as waypoint*. Left‑click only pans / selects. First waypoint = origin.
+- **Drag** to reorder waypoints; **right‑click** a waypoint (or a map system) for *Show system
+  info*, *Show station info* (render image + owner corp/alliance + standing colour), *Set
+  in‑game destination*, *Remove*, *Clear all*.
+- Adding a system **out of jump range** auto‑inserts bridging hops (runs in the background
+  with a spinner).
+- **Auto‑route origin → last** builds a full jump+gate route in the background.
+- Each waypoint shows its chosen **dock** (station / player structure / "no dock"); change it
+  with the dock picker. **Copy route to clipboard** exports `System - Dock` lines.
+- The table shows per‑leg mode, LY, fuel, reactivation and fatigue; the footer shows totals.
+
+### Route options
+
+- **Travel**: *Only jumps* · *Prefer jumping* (jump low/null, gate the forced high‑sec tail) ·
+  *Prefer gating* (save fuel/fatigue).
+- **Gates**: *Fastest* · *Safer* (prefer high‑sec) · *Less secure* (prefer low/null).
+- **Docking filter**: none · require docking · prefer safe (excludes kickout NPC stations).
+- **Minimize reactivation timer** — waits out fatigue between jumps so each blue timer stays at
+  its floor.
+- **Exclude hostile‑owned structures** — drops player structures owned by negative‑standing
+  entities (from your contacts).
+- **Avoid incursion systems** — routes around systems in an active Incursion.
+
+Ship + skills, the map data, your dockables, and these options are cached between runs.
+Public player structures in a route system are pulled via ESI structure search (like the
+in‑game search), not just the ones you hold assets in.
 
 ## Layout
 

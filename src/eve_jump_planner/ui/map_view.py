@@ -25,8 +25,8 @@ def _sec_color(sec: float) -> QColor:
 
 
 class MapView(QGraphicsView):
-    system_clicked = Signal(int)          # left-click near a system
-    system_remove_requested = Signal(int)  # right-click near a system
+    system_clicked = Signal(int)   # left-click near a system
+    system_context = Signal(int)   # right-click near a system (open menu)
 
     def __init__(self, universe: Universe):
         super().__init__()
@@ -39,14 +39,40 @@ class MapView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
         self._pos: dict[int, QPointF] = {}
         self._overlay: list = []
         self._labels: list = []
         self._panning = False
         self._pan_start = QPointF()
         self._moved = False
+        self._hover_id = None
 
         self._build()
+        self._build_hover()
+
+    def _build_hover(self):
+        self._hover_ring = QGraphicsEllipseItem(-7, -7, 14, 14)
+        pen = QPen(QColor("#cfe3ff"), 1.6)
+        self._hover_ring.setPen(pen)
+        self._hover_ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._hover_ring.setFlag(_IGNORE_XF, True)
+        self._hover_ring.setZValue(7)
+        self._hover_ring.hide()
+        self.scene_obj.addItem(self._hover_ring)
+
+        self._hover_text = QGraphicsSimpleTextItem()
+        self._hover_text.setBrush(QBrush(QColor("#eaf2ff")))
+        f = QFont()
+        f.setPointSize(10)
+        f.setBold(True)
+        self._hover_text.setFont(f)
+        self._hover_text.setFlag(_IGNORE_XF, True)
+        self._hover_text.setZValue(8)
+        self._hover_text.hide()
+        self.scene_obj.addItem(self._hover_text)
 
     # -- build --------------------------------------------------------------
     def _build(self):
@@ -188,7 +214,25 @@ class MapView(QGraphicsView):
                 self.horizontalScrollBar().value() - int(delta.x()))
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - int(delta.y()))
+        else:
+            self._update_hover(event.position())
         super().mouseMoveEvent(event)
+
+    def _update_hover(self, view_pos):
+        sid = self._nearest(view_pos)
+        if sid == self._hover_id:
+            return
+        self._hover_id = sid
+        if sid is None:
+            self._hover_ring.hide()
+            self._hover_text.hide()
+            return
+        p = self._pos[sid]
+        self._hover_ring.setPos(p)
+        self._hover_ring.show()
+        self._hover_text.setText(self.universe.systems[sid].name)
+        self._hover_text.setPos(p.x() + 9, p.y() + 4)
+        self._hover_text.show()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -201,7 +245,7 @@ class MapView(QGraphicsView):
         elif event.button() == Qt.MouseButton.RightButton:
             sid = self._nearest(event.position())
             if sid is not None:
-                self.system_remove_requested.emit(sid)
+                self.system_context.emit(sid)
         super().mouseReleaseEvent(event)
 
     def _nearest(self, view_pos) -> int | None:

@@ -97,12 +97,14 @@ def simulate(
         cooldown_remaining = max(0.0, cooldown_remaining - wait)
 
         res = mechanics.evaluate_jump(ship, skills, dist, fatigue)
-        plan.legs.append(Leg(src, dst, "jump", dist, res.fuel, res.in_range,
+        # A jump is valid only within range, landing in <0.5, and departing <0.5.
+        valid = res.in_range and dst.jumpable and src.security < 0.5
+        plan.legs.append(Leg(src, dst, "jump", dist, res.fuel, valid,
                              res.cooldown_min, res.fatigue_after_min, wait, clock))
         plan.total_fuel += res.fuel
         plan.peak_fatigue_min = max(plan.peak_fatigue_min, res.fatigue_after_min)
         plan.peak_reactivation_min = max(plan.peak_reactivation_min, res.cooldown_min)
-        if not res.in_range:
+        if not valid:
             plan.all_in_range = False
         fatigue = res.fatigue_after_min
         cooldown_remaining = res.cooldown_min
@@ -182,10 +184,20 @@ def find_path(
     return None
 
 
-# Weights for the combined jump+gate search. A jump is scarce (fuel + fatigue),
-# so it is worth avoiding many gate hops; gates are cheap but slow.
-_JUMP_W = 100.0
-_GATE_W = 1.0
+# Weight presets. A single jump covers many gate hops, so to make a jump
+# freighter actually *jump* (rather than gate the whole way) a jump must not
+# cost more than the gates it replaces.
+#   "prefer_jump"  -> jump low, gate slightly higher: jump across low/null,
+#                     gate only the forced high-sec tail. (default)
+#   "prefer_gate"  -> jump expensive: gate wherever possible to save fuel and
+#                     fatigue, jump only to cross gaps that gates can't.
+_WEIGHTS = {
+    "only_jumps": (1.0, 0.0),  # jumps only; gates disabled
+    "jumps": (1.0, 1.3),       # prefer jumping
+    "fuel": (20.0, 1.0),       # prefer gating (save fuel/fatigue)
+}
+# Extra gate cost by security preference (added per gate hop into that system).
+_GATE_SEC_PENALTY = {"fast": 0.0, "safe": 6.0, "insecure": 6.0}
 
 
 def plan_multimodal(
@@ -195,7 +207,9 @@ def plan_multimodal(
     origin: System,
     destination: System,
     minimize: str = "jumps",
+    gate_pref: str = "fast",
     can_land=None,
+    avoid: set | None = None,
     max_expansions: int = 200_000,
 ) -> tuple[list[System], list[str]] | None:
     """Best origin->destination path mixing capital jumps and stargate hops.
@@ -209,14 +223,28 @@ def plan_multimodal(
     is travelled ("jump" or "gate"), or None if unreachable.
     """
     rng = mechanics.max_range_ly(ship, skills)
+    w_jump, w_gate = _WEIGHTS.get(minimize, _WEIGHTS["jumps"])
+    allow_gates = minimize != "only_jumps"
+    sec_penalty = _GATE_SEC_PENALTY.get(gate_pref, 0.0)
+    avoid = avoid or set()
+
+    def blocked(sid: int) -> bool:
+        return sid in avoid and sid != destination.id
+
+    def gate_cost(sec: float) -> float:
+        c = w_gate
+        if gate_pref == "safe" and sec < 0.5:
+            c += sec_penalty        # avoid low/null
+        elif gate_pref == "insecure" and sec >= 0.5:
+            c += sec_penalty        # avoid high-sec
+        return c
 
     def landable(s: System) -> bool:
         return s.id == destination.id or can_land is None or can_land(s)
 
     def jump_fuel_w(dist: float) -> float:
-        # tiny fuel tiebreak so equal-jump routes prefer cheaper fuel
-        extra = mechanics.fuel_for_jump(ship, skills, dist) / 1e6 if minimize == "fuel" else 0.0
-        return _JUMP_W + extra
+        # tiny fuel tiebreak so equal-cost routes prefer shorter jumps
+        return w_jump + mechanics.fuel_for_jump(ship, skills, dist) / 1e7
 
     best: dict[int, float] = {origin.id: 0.0}
     prev: dict[int, tuple[int, str]] = {}
@@ -243,20 +271,21 @@ def plan_multimodal(
         node = universe.systems[nid]
 
         # Gate edges (respect high-sec restriction for capitals).
-        for gid in universe.gates.get(nid, ()):
-            g = universe.systems.get(gid)
-            if g is None or not docking.gate_allowed(ship, g.security):
-                continue
-            nc = c + _GATE_W
-            if nc < best.get(gid, float("inf")):
-                best[gid] = nc
-                prev[gid] = (nid, "gate")
-                heapq.heappush(pq, (nc, gid))
+        if allow_gates:
+            for gid in universe.gates.get(nid, ()):
+                g = universe.systems.get(gid)
+                if g is None or blocked(gid) or not docking.gate_allowed(ship, g.security):
+                    continue
+                nc = c + gate_cost(g.security)
+                if nc < best.get(gid, float("inf")):
+                    best[gid] = nc
+                    prev[gid] = (nid, "gate")
+                    heapq.heappush(pq, (nc, gid))
 
         # Jump edges (only from low/null, only into low/null).
         if rng > 0 and node.security < 0.5:
             for s, dist in universe.within_range(node, rng, jumpable_only=True):
-                if not (s.id == destination.id or landable(s)):
+                if blocked(s.id) or not (s.id == destination.id or landable(s)):
                     continue
                 nc = c + jump_fuel_w(dist)
                 if nc < best.get(s.id, float("inf")):
@@ -264,3 +293,23 @@ def plan_multimodal(
                     prev[s.id] = (nid, "jump")
                     heapq.heappush(pq, (nc, s.id))
     return None
+
+
+def route_through(universe, ship, skills, systems, minimize="jumps",
+                  gate_pref="fast", can_land=None, avoid=None):
+    """Route through an ordered list of REQUIRED waypoints, bridging each
+    consecutive pair with jumps/gates. Every input waypoint is preserved as an
+    anchor. Returns (systems, modes) or None if any leg is unreachable."""
+    if len(systems) < 2:
+        return list(systems), []
+    full = [systems[0]]
+    modes: list[str] = []
+    for a, b in zip(systems, systems[1:]):
+        res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
+                              gate_pref=gate_pref, can_land=can_land, avoid=avoid)
+        if res is None:
+            return None
+        segs, segmodes = res           # segs[0] == a, segs[-1] == b
+        full.extend(segs[1:])
+        modes.extend(segmodes)
+    return full, modes
