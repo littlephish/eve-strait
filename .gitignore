@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Virtual env (uv.lock is committed for reproducible installs)
+.venv/
+
+# App data / secrets (tokens live in %LOCALAPPDATA%, but just in case)
+token.json
+config.json
