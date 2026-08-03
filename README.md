@@ -102,6 +102,16 @@ Ship + skills, the map data, your dockables, and these options are cached betwee
 Public player structures in a route system are pulled via ESI structure search (like the
 in‑game search), not just the ones you hold assets in.
 
+## Build a portable EXE (Nuitka)
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/build_exe.ps1
+```
+
+Produces a single-file `dist/eve-jump-planner.exe` (no Python needed to run it).
+The first build downloads a C compiler and takes several minutes; the first run
+of the EXE downloads the map data into `%LOCALAPPDATA%\eve-jump-planner`.
+
 ## Layout
 
 ```

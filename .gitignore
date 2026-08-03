@@ -16,6 +16,7 @@ dist/
 app.build/
 app.dist/
 *.exe
+*.log
 
 # App data / secrets (tokens live in %LOCALAPPDATA%, but just in case)
 token.json

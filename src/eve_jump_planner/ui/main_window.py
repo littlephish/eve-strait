@@ -334,46 +334,31 @@ class MainWindow(QMainWindow):
         self._do_auto_route()
 
     def _do_auto_route(self):
+        """Fill the gaps BETWEEN the user's waypoints (keeping them all as
+        required stops), off the UI thread with a spinner."""
         ship = self.ship.current_ship()
-        origin = self.route.waypoints[0].system
-        dest = self.route.waypoints[-1].system
-        self.run_route(origin, dest, self._dock_predicate(ship), self._apply_auto_route)
+        skills = self.ship.current_skills()
+        systems = [wp.system for wp in self.route.waypoints]
+        self.route.set_busy(True)
+        w = Worker(router.route_through, self.universe, ship, skills, systems,
+                   minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
+                   can_land=self._dock_predicate(ship), avoid=self.avoid_systems())
+        w.finished_ok.connect(lambda res: (self.route.set_busy(False),
+                                           self._apply_auto_route(res)))
+        w.failed.connect(lambda m: (self.route.set_busy(False),
+                                    QMessageBox.warning(self, "Route", m)))
+        self._run(w)
 
     def _apply_auto_route(self, result):
         if not result:
             QMessageBox.warning(
                 self, "Auto-route",
-                "No route found within range under the current filters. Try a "
-                "longer-range ship, relax the docking/incursion filters, or add "
-                "a closer staging waypoint.")
+                "Couldn't bridge one of your legs within range under the current "
+                "filters (a leg may cross into high-sec for a capital, or need a "
+                "closer staging system). Your waypoints are unchanged.")
             return
         systems, modes = result
         self.route.set_route(systems, modes)
-
-    def run_route(self, origin, dest, can_land, on_done):
-        """Run pathfinding off the UI thread with a spinner."""
-        ship = self.ship.current_ship()
-        skills = self.ship.current_skills()
-        self.route.set_busy(True)
-        w = Worker(router.plan_multimodal, self.universe, ship, skills, origin, dest,
-                   minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
-                   can_land=can_land, avoid=self.avoid_systems())
-        w.finished_ok.connect(lambda res: (self.route.set_busy(False), on_done(res)))
-        w.failed.connect(lambda m: (self.route.set_busy(False),
-                                    QMessageBox.warning(self, "Route", m)))
-        self._run(w)
-
-    def autobridge(self, prev, new_sys):
-        """Background-compute a jump/gate path from prev to a too-far system."""
-        self.run_route(prev, new_sys, None,
-                       lambda res: self._apply_bridge(new_sys, res))
-
-    def _apply_bridge(self, new_sys, result):
-        if result:
-            systems, modes = result   # systems[0] == prev (already a waypoint)
-            self.route.append_path(systems[1:], modes)
-        else:
-            self.route.append_path([new_sys], ["jump"])  # unreachable; flagged
 
     def avoid_systems(self) -> set:
         return self.incursion_systems if self.route.avoid_incursions() else set()

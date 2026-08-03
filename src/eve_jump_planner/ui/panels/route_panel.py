@@ -244,7 +244,7 @@ class RoutePanel(QWidget):
 
     def reverse(self):
         self.waypoints.reverse()
-        self.route_modes = ["jump"] * max(0, len(self.waypoints) - 1)
+        self.route_modes = list(reversed(self.route_modes))  # keep gate/jump per leg
         self._rebuild()
         self._emit_changed()
 
@@ -325,7 +325,10 @@ class RoutePanel(QWidget):
         item = self.wp_list.itemAt(pos)
         if not item:
             return
+        # Read item data BEFORE exec(): the menu runs a nested event loop and a
+        # background refresh can delete the underlying C++ item meanwhile.
         sid = item.data(_ROLE_SYS)
+        uid = item.data(_ROLE_UID)
         menu = QMenu(self)
         act_sysinfo = menu.addAction("Show system info")
         act_info = menu.addAction("Show station info")
@@ -335,7 +338,7 @@ class RoutePanel(QWidget):
         act_clear = menu.addAction("Clear all waypoints")
         chosen = menu.exec(self.wp_list.mapToGlobal(pos))
         if chosen == act_remove:
-            self._remove_by_uid(item.data(_ROLE_UID))
+            self._remove_by_uid(uid)
         elif chosen == act_clear:
             self._clear()
         elif chosen == act_info:
@@ -502,9 +505,10 @@ class RoutePanel(QWidget):
                 vals = ["gate", leg.src.name, leg.dst.name, f"{leg.distance_ly:.1f}",
                         "—", "—", f"{leg.fatigue_after_min:.0f}m", "✓"]
             else:
+                ok = "✓" if leg.in_range else f"✗ {leg.reason}"
                 vals = ["jump", leg.src.name, leg.dst.name, f"{leg.distance_ly:.2f}",
                         f"{leg.fuel:,}", f"{leg.cooldown_min:.1f}m",
-                        f"{leg.fatigue_after_min:.0f}m", "✓" if leg.in_range else "✗"]
+                        f"{leg.fatigue_after_min:.0f}m", ok]
             for c, val in enumerate(vals):
                 it = QTableWidgetItem(val)
                 if leg.mode == "jump" and not leg.in_range:
@@ -512,7 +516,8 @@ class RoutePanel(QWidget):
                 self.table.setItem(i, c, it)
         if plan.legs:
             hrs = plan.total_time_min / 60.0
-            warn = "" if plan.all_in_range else "   ⚠ some jumps exceed range"
+            warn = ("" if plan.all_in_range else
+                    "   ⚠ some legs invalid (range / hi-sec) — use Auto-route to bridge")
             self.totals.setText(
                 f"{plan.jumps} jump(s), {plan.gates} gate(s) · "
                 f"{plan.total_fuel:,} isotopes · time ≈ {plan.total_time_min:.0f} min "

@@ -22,6 +22,7 @@ class Leg:
     fatigue_after_min: float
     wait_before_min: float       # time waited at src before this leg
     t_depart_min: float          # minutes from start when this leg fires
+    reason: str = ""             # why an invalid jump can't happen
 
 
 @dataclass
@@ -97,10 +98,18 @@ def simulate(
         cooldown_remaining = max(0.0, cooldown_remaining - wait)
 
         res = mechanics.evaluate_jump(ship, skills, dist, fatigue)
-        # A jump is valid only within range, landing in <0.5, and departing <0.5.
-        valid = res.in_range and dst.jumpable and src.security < 0.5
+        # You CAN jump out of high-sec; you cannot jump INTO high-sec (no cyno
+        # can be lit there). So only the destination's security matters.
+        if not dst.jumpable:
+            reason = "can't jump into hi-sec"
+        elif not res.in_range:
+            reason = "out of range"
+        else:
+            reason = ""
+        valid = reason == ""
         plan.legs.append(Leg(src, dst, "jump", dist, res.fuel, valid,
-                             res.cooldown_min, res.fatigue_after_min, wait, clock))
+                             res.cooldown_min, res.fatigue_after_min, wait, clock,
+                             reason))
         plan.total_fuel += res.fuel
         plan.peak_fatigue_min = max(plan.peak_fatigue_min, res.fatigue_after_min)
         plan.peak_reactivation_min = max(plan.peak_reactivation_min, res.cooldown_min)
@@ -127,7 +136,7 @@ def find_path(
 
     ``minimize`` = "jumps" (fewest hops) or "fuel" (least total isotopes).
     Only systems with security < 0.5 may be used as intermediate/target
-    landings (the origin may be anywhere).  ``can_land`` is an optional
+    landings (jumps may depart high-sec, but never land there). ``can_land`` is an optional
     predicate ``System -> bool`` (e.g. "has a dock my hull can use"); the
     origin and destination are always allowed.
     """
@@ -215,7 +224,8 @@ def plan_multimodal(
     """Best origin->destination path mixing capital jumps and stargate hops.
 
     Enforces EVE rules:
-      * a jump can only *originate from* and *land in* security < 0.5;
+      * a jump may originate anywhere (including high-sec) but can only
+        *land in* security < 0.5 (no cyno can be lit in high-sec);
       * capitals/supers cannot use high-sec gates at all (only jump freighters
         and other subcap hulls may gate through high-sec).
 
@@ -282,8 +292,9 @@ def plan_multimodal(
                     prev[gid] = (nid, "gate")
                     heapq.heappush(pq, (nc, gid))
 
-        # Jump edges (only from low/null, only into low/null).
-        if rng > 0 and node.security < 0.5:
+        # Jump edges. You may jump OUT of high-sec, but never INTO high-sec
+        # (a cyno can't be lit there) -- hence jumpable_only on the target.
+        if rng > 0:
             for s, dist in universe.within_range(node, rng, jumpable_only=True):
                 if blocked(s.id) or not (s.id == destination.id or landable(s)):
                     continue
