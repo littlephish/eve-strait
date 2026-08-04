@@ -57,6 +57,8 @@ class Universe:
         self.region_names = region_names or {}
         # Stargate adjacency: system_id -> set of gate-connected system_ids.
         self.gates = gates or {}
+        # Ansiblex jump-gate adjacency (player-built, user-configured).
+        self.bridges: dict[int, set[int]] = {}
         # Populated lazily by load_stations().
         self.stations: dict[int, Station] = {}
         self.system_stations: dict[int, list[Station]] = {}
@@ -87,6 +89,52 @@ class Universe:
         gates = _parse_gates(config.MAP_JUMPS_PATH)
         return cls(systems, regions, gates, region_names)
 
+    # -- Ansiblex jump gates ------------------------------------------------
+    def set_bridges(self, pairs) -> list[list[str]]:
+        """Install Ansiblex links from [nameA, nameB] pairs.
+
+        Returns the pairs that resolved, so callers can report bad names.
+        """
+        bridges: dict[int, set[int]] = {}
+        resolved: list[list[str]] = []
+        for pair in pairs or ():
+            if len(pair) != 2:
+                continue
+            a, b = self.match_system(pair[0]), self.match_system(pair[1])
+            if a is None or b is None or a.id == b.id:
+                continue
+            bridges.setdefault(a.id, set()).add(b.id)
+            bridges.setdefault(b.id, set()).add(a.id)
+            resolved.append([a.name, b.name])
+        self.bridges = bridges
+        return resolved
+
+    def long_gates(self, min_ly: float):
+        """Stargate links spanning at least ``min_ly`` light years.
+
+        These are the 'regional gates' worth knowing about: a single gate hop
+        that covers more ground than a jump drive can reach.
+        """
+        out = []
+        seen: set[tuple[int, int]] = set()
+        for a_id, neighbours in self.gates.items():
+            a = self.systems.get(a_id)
+            if a is None:
+                continue
+            for b_id in neighbours:
+                pair = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                b = self.systems.get(b_id)
+                if b is None:
+                    continue
+                d = self.distance_ly(a, b)
+                if d >= min_ly:
+                    out.append((a, b, d))
+        out.sort(key=lambda t: -t[2])
+        return out
+
     # -- NPC stations (lazy) ------------------------------------------------
     def load_stations(self, progress=None) -> None:
         if self.stations:
@@ -107,6 +155,23 @@ class Universe:
         self.system_stations = by_sys
 
     # -- lookup -------------------------------------------------------------
+    def match_system(self, text: str) -> "System | None":
+        """Resolve a name that may carry trailing junk (e.g. an Ansiblex
+        endpoint). Tries the whole string, then the longest leading run of
+        words that names a real system -- so "Old Man Star" still matches."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        exact = self.by_name(text)
+        if exact:
+            return exact
+        parts = text.split()
+        for n in range(len(parts), 0, -1):
+            found = self.by_name(" ".join(parts[:n]))
+            if found:
+                return found
+        return None
+
     def by_name(self, name: str) -> System | None:
         return self._by_name.get(name.strip().lower())
 

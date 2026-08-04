@@ -42,6 +42,10 @@ class RoutePlan:
     def gates(self) -> int:
         return sum(1 for leg in self.legs if leg.mode == "gate")
 
+    @property
+    def bridges(self) -> int:
+        return sum(1 for leg in self.legs if leg.mode == "bridge")
+
 
 def simulate(
     ship: Ship,
@@ -54,8 +58,8 @@ def simulate(
     """Simulate travelling an ordered list of systems (jumps and/or gates).
 
     ``strategy``:
-      * ``"min_time"``          — wait only the jump reactivation timer.
-      * ``"min_reactivation"``  — before each jump also wait for fatigue to
+      * ``"min_time"``          - wait only the jump reactivation timer.
+      * ``"min_reactivation"``  - before each jump also wait for fatigue to
         decay to the point where that jump's reactivation timer is at its
         floor (1 + ly). Longer total time, but each blue timer stays minimal.
 
@@ -84,6 +88,23 @@ def simulate(
             plan.legs.append(Leg(src, dst, "gate", dist, 0, True, 0.0,
                                  fatigue, wait, clock))
             clock += travel
+            continue
+
+        if mode == "bridge":
+            # Ansiblex: the structure burns the fuel, not your ship, but the
+            # pilot still takes jump fatigue and a reactivation timer.
+            wait = cooldown_remaining
+            if strategy == "min_reactivation":
+                wait = max(wait, fatigue - mechanics.fatigue_floor_threshold(dist))
+            wait = max(0.0, wait)
+            clock += wait
+            fatigue = max(0.0, fatigue - wait)
+            cd, new_fatigue = mechanics.apply_jump(dist, fatigue, skills)
+            plan.legs.append(Leg(src, dst, "bridge", dist, 0, True, cd,
+                                 new_fatigue, wait, clock))
+            plan.peak_fatigue_min = max(plan.peak_fatigue_min, new_fatigue)
+            plan.peak_reactivation_min = max(plan.peak_reactivation_min, cd)
+            fatigue, cooldown_remaining = new_fatigue, cd
             continue
 
         # jump: wait out the blue timer, plus (optionally) let fatigue decay so
@@ -217,8 +238,11 @@ def plan_multimodal(
     destination: System,
     minimize: str = "jumps",
     gate_pref: str = "fast",
+    jump_cost: float | None = None,
+    use_ansiblex: bool = True,
     can_land=None,
     avoid: set | None = None,
+    avoid_edges: set | None = None,
     max_expansions: int = 200_000,
 ) -> tuple[list[System], list[str]] | None:
     """Best origin->destination path mixing capital jumps and stargate hops.
@@ -233,13 +257,23 @@ def plan_multimodal(
     is travelled ("jump" or "gate"), or None if unreachable.
     """
     rng = mechanics.max_range_ly(ship, skills)
-    w_jump, w_gate = _WEIGHTS.get(minimize, _WEIGHTS["jumps"])
+    if jump_cost is not None:
+        # "A jump is worth this many gate hops." Higher = take more gates to
+        # avoid a jump (saving fuel and fatigue); 1 = gates and jumps equal.
+        w_jump, w_gate = max(0.0, jump_cost), 1.0
+    else:
+        w_jump, w_gate = _WEIGHTS.get(minimize, _WEIGHTS["jumps"])
     allow_gates = minimize != "only_jumps"
     sec_penalty = _GATE_SEC_PENALTY.get(gate_pref, 0.0)
     avoid = avoid or set()
 
+    banned_edges = avoid_edges or set()
+
     def blocked(sid: int) -> bool:
         return sid in avoid and sid != destination.id
+
+    def edge_banned(a_id: int, b_id: int) -> bool:
+        return (a_id, b_id) in banned_edges or (b_id, a_id) in banned_edges
 
     def gate_cost(sec: float) -> float:
         c = w_gate
@@ -284,13 +318,28 @@ def plan_multimodal(
         if allow_gates:
             for gid in universe.gates.get(nid, ()):
                 g = universe.systems.get(gid)
-                if g is None or blocked(gid) or not docking.gate_allowed(ship, g.security):
+                if (g is None or blocked(gid) or edge_banned(nid, gid)
+                        or not docking.gate_allowed(ship, g.security)):
                     continue
                 nc = c + gate_cost(g.security)
                 if nc < best.get(gid, float("inf")):
                     best[gid] = nc
                     prev[gid] = (nid, "gate")
                     heapq.heappush(pq, (nc, gid))
+
+        # Ansiblex jump-gate edges: one activation covers any distance, and
+        # capitals can use them. Not blocked by "only jumps" -- an Ansiblex is
+        # a jump, not a stargate.
+        for bid in (universe.bridges.get(nid, ()) if use_ansiblex else ()):
+            b = universe.systems.get(bid)
+            if (b is None or blocked(bid) or edge_banned(nid, bid)
+                    or not docking.gate_allowed(ship, b.security)):
+                continue
+            nc = c + w_gate
+            if nc < best.get(bid, float("inf")):
+                best[bid] = nc
+                prev[bid] = (nid, "bridge")
+                heapq.heappush(pq, (nc, bid))
 
         # Jump edges. You may jump OUT of high-sec, but never INTO high-sec
         # (a cyno can't be lit there) -- hence jumpable_only on the target.
@@ -306,8 +355,106 @@ def plan_multimodal(
     return None
 
 
+def _plan_stats(ship, skills, systems, modes, strategy="min_time"):
+    plan = simulate(ship, skills, systems, modes, strategy=strategy)
+    return {
+        "jumps": plan.jumps,
+        "gates": plan.gates,
+        "fuel": plan.total_fuel,
+        "time_min": plan.total_time_min,
+        "peak_fatigue": plan.peak_fatigue_min,
+        "peak_reactivation": plan.peak_reactivation_min,
+        "ok": plan.all_in_range,
+        "systems": systems,
+        "modes": modes,
+    }
+
+
+def gate_runs(systems, modes):
+    """Contiguous stretches of gate travel.
+
+    Returns (from, to, hops, edges) where ``edges`` are the (id, id) pairs the
+    run actually traverses -- needed to ask "could I avoid this gate?".
+    """
+    runs, start, count = [], None, 0
+
+    def close(start, count):
+        edges = [(systems[i].id, systems[i + 1].id)
+                 for i in range(start, start + count)]
+        return (systems[start], systems[start + count], count, edges)
+
+    for i, mode in enumerate(modes):
+        if mode == "gate":
+            if start is None:
+                start = i
+            count += 1
+        elif start is not None:
+            runs.append(close(start, count))
+            start, count = None, 0
+    if start is not None:
+        runs.append(close(start, count))
+    return runs
+
+
+def analyze_gate_assist(universe, ship, skills, origin, destination,
+                        gate_pref="fast", jump_cost=None, use_ansiblex=True,
+                        can_land=None, avoid=None, strategy="min_time"):
+    """Quantify what stargates buy you on this route.
+
+    Compares a pure jump route against the best jump+gate route, so you can
+    see when a short gate run replaces several jumps (or makes an otherwise
+    impossible high-sec origin/destination reachable at all).
+    """
+    def build(minimize, cost=None):
+        res = plan_multimodal(universe, ship, skills, origin, destination,
+                              minimize=minimize, gate_pref=gate_pref,
+                              jump_cost=cost, use_ansiblex=use_ansiblex,
+                              can_land=can_land, avoid=avoid)
+        if res is None:
+            return None
+        return _plan_stats(ship, skills, res[0], res[1], strategy)
+
+    jump_only = build("only_jumps")
+    mixed = build("jumps", jump_cost)
+    gating = build("fuel")
+
+    runs = gate_runs(mixed["systems"], mixed["modes"]) if mixed else []
+
+    # Which gate runs are unavoidable? Re-plan with the run's exit system
+    # banned: if nothing gets through, that system is a hard chokepoint you
+    # must gate through (the classic "I can jump most of the way, but this
+    # one gate is the only link" case).
+    annotated = []
+    for a, b, hops, edges in runs:
+        probe = plan_multimodal(universe, ship, skills, origin, destination,
+                                minimize="jumps", gate_pref=gate_pref,
+                                jump_cost=jump_cost, use_ansiblex=use_ansiblex,
+                                can_land=can_land, avoid=avoid,
+                                avoid_edges=set(edges))
+        annotated.append({
+            "from": a, "to": b, "hops": hops,
+            "span_ly": Universe.distance_ly(a, b),
+            "mandatory": probe is None,
+        })
+
+    result = {"jump_only": jump_only, "mixed": mixed, "gating": gating,
+              "runs": annotated}
+
+    if mixed and jump_only:
+        result["saved"] = {
+            "jumps": jump_only["jumps"] - mixed["jumps"],
+            "fuel": jump_only["fuel"] - mixed["fuel"],
+            "time_min": jump_only["time_min"] - mixed["time_min"],
+            "fatigue": jump_only["peak_fatigue"] - mixed["peak_fatigue"],
+        }
+    elif mixed and not jump_only:
+        result["saved"] = None      # gates are the only way through
+    return result
+
+
 def route_through(universe, ship, skills, systems, minimize="jumps",
-                  gate_pref="fast", can_land=None, avoid=None):
+                  gate_pref="fast", jump_cost=None, use_ansiblex=True,
+                  can_land=None, avoid=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
     consecutive pair with jumps/gates. Every input waypoint is preserved as an
     anchor. Returns (systems, modes) or None if any leg is unreachable."""
@@ -317,7 +464,9 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
     modes: list[str] = []
     for a, b in zip(systems, systems[1:]):
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
-                              gate_pref=gate_pref, can_land=can_land, avoid=avoid)
+                              gate_pref=gate_pref, jump_cost=jump_cost,
+                              use_ansiblex=use_ansiblex, can_land=can_land,
+                              avoid=avoid)
         if res is None:
             return None
         segs, segmodes = res           # segs[0] == a, segs[-1] == b

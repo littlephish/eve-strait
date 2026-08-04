@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -34,6 +35,7 @@ _STATUS_ICON = {True: "✓", False: "✗"}
 class RoutePanel(QWidget):
     changed = Signal()
     autoroute_requested = Signal()
+    gate_assist_requested = Signal()
 
     def __init__(self, ctx):
         super().__init__()
@@ -108,15 +110,47 @@ class RoutePanel(QWidget):
         opt.addWidget(self.cmb_policy, 1)
         v.addLayout(opt)
 
+        self.chk_gates = QCheckBox("Allow gates to reduce the number of jumps")
+        self.chk_gates.setChecked(True)
+        self.chk_gates.setToolTip(
+            "Use stargates wherever they save jumps - regional gates that span "
+            "further than you can jump, and gating out of hi-sec to a jumpable "
+            "system. Unchecked = jump drive only.")
+        self.chk_gates.toggled.connect(self._on_gates_toggled)
+        v.addWidget(self.chk_gates)
+
         opt2 = QHBoxLayout()
-        self.cmb_min = QComboBox()
-        self.cmb_min.addItems(
-            ["Only jumps", "Prefer jumping", "Prefer gating (save fuel/fatigue)"])
-        self.cmb_min.setCurrentIndex(1)
-        self.cmb_min.currentIndexChanged.connect(self._emit_changed)
-        opt2.addWidget(QLabel("Travel:"))
-        opt2.addWidget(self.cmb_min, 1)
+        opt2.addWidget(QLabel("     Balance:"))
+        self.cmb_balance = QComboBox()
+        # Label -> cost of one jump measured in gate hops. Below 1 means a
+        # jump is cheaper than a single gate hop, i.e. "gate only when it
+        # genuinely buys something" -- which is the usual capital preference.
+        for label, cost in (
+            ("Jump whenever possible", 0.3),
+            ("Prefer jumps - gate only when it saves several", 0.6),
+            ("Balanced", 1.5),
+            ("Prefer gates - save fuel & fatigue", 6.0),
+            ("Gate whenever possible", 30.0),
+        ):
+            self.cmb_balance.addItem(label, cost)
+        self.cmb_balance.setCurrentIndex(1)
+        self.cmb_balance.setToolTip(
+            "How eagerly gates are used instead of jumps.\n"
+            "Jump-heavy settings are fast and keep you off gates; gate-heavy\n"
+            "settings save fuel and fatigue but mean long gate chains.\n"
+            "A regional gate that spans further than you can jump is taken at\n"
+            "any setting, because no number of jumps replaces it.")
+        self.cmb_balance.currentIndexChanged.connect(self._emit_changed)
+        opt2.addWidget(self.cmb_balance, 1)
         v.addLayout(opt2)
+
+        self.chk_ansiblex = QCheckBox("Use Ansiblex network")
+        self.chk_ansiblex.setChecked(True)
+        self.chk_ansiblex.setToolTip(
+            "Route through your configured Ansiblex jump gates "
+            "(File → Ansiblex jump gates…).")
+        self.chk_ansiblex.toggled.connect(self._emit_changed)
+        v.addWidget(self.chk_ansiblex)
 
         opt3 = QHBoxLayout()
         self.cmb_gate = QComboBox()
@@ -151,6 +185,11 @@ class RoutePanel(QWidget):
         v.addWidget(self.chk_incursions)
 
         act_row = QHBoxLayout()
+        b_assist = QPushButton("Gate assist…")
+        b_assist.setToolTip("Compare a pure jump route against jump+gate, and show "
+                            "where a short gate run replaces several jumps.")
+        b_assist.clicked.connect(self.gate_assist_requested)
+        act_row.addWidget(b_assist)
         b_rev = QPushButton("Reverse route")
         b_rev.clicked.connect(self.reverse)
         b_copy = QPushButton("Copy route to clipboard")
@@ -182,8 +221,19 @@ class RoutePanel(QWidget):
     def strategy(self) -> str:
         return "min_reactivation" if self.chk_reactivation.isChecked() else "min_time"
 
+    def _on_gates_toggled(self, on: bool):
+        self.cmb_balance.setEnabled(on)
+        self._emit_changed()
+
     def minimize(self) -> str:
-        return ("only_jumps", "jumps", "fuel")[self.cmb_min.currentIndex()]
+        return "jumps" if self.chk_gates.isChecked() else "only_jumps"
+
+    def jump_cost(self) -> float:
+        """Cost of one jump measured in gate hops (<1 = jumps are cheaper)."""
+        return float(self.cmb_balance.currentData() or 0.6)
+
+    def use_ansiblex(self) -> bool:
+        return self.chk_ansiblex.isChecked()
 
     def gate_pref(self) -> str:
         return ("fast", "safe", "insecure")[self.cmb_gate.currentIndex()]
@@ -212,7 +262,9 @@ class RoutePanel(QWidget):
             self.ctx.universe, self.ctx.dockables, self.ctx.current_ship(), system_id,
             standings=getattr(self.ctx, "standings", None),
             hostile_threshold=self.ctx.hostile_threshold(),
-            exclude_hostile=self.chk_hostile.isChecked())
+            exclude_hostile=self.chk_hostile.isChecked(),
+            relation=self.ctx.owner_relation_cached,
+            has_rights=self.ctx.has_docking_rights)
 
     def select_system(self, system_id: int):
         """Select an existing waypoint by system (no-op if not a waypoint)."""
@@ -333,11 +385,23 @@ class RoutePanel(QWidget):
         act_sysinfo = menu.addAction("Show system info")
         act_info = menu.addAction("Show station info")
         act_wp = menu.addAction("Set in-game destination")
+        act_avoid = menu.addAction(
+            "Stop avoiding this system" if self.ctx.is_avoided(sid)
+            else "Avoid this system")
+        menu.addSeparator()
+        act_pin = menu.addAction("Save current dock as default for this system")
+        act_unpin = None
+        if self._pinned(sid):
+            act_unpin = menu.addAction("Clear saved default dock")
         menu.addSeparator()
         act_remove = menu.addAction("Remove waypoint")
         act_clear = menu.addAction("Clear all waypoints")
         chosen = menu.exec(self.wp_list.mapToGlobal(pos))
-        if chosen == act_remove:
+        if chosen == act_pin:
+            self._pin_dock(uid, sid)
+        elif act_unpin is not None and chosen == act_unpin:
+            self._pin_dock(uid, sid, clear=True)
+        elif chosen == act_remove:
             self._remove_by_uid(uid)
         elif chosen == act_clear:
             self._clear()
@@ -347,6 +411,26 @@ class RoutePanel(QWidget):
             self.show_system_info(sid)
         elif chosen == act_wp:
             self.ctx.set_ingame_waypoint(sid)
+        elif chosen == act_avoid:
+            self.ctx.toggle_avoid(sid)
+
+    def _pin_dock(self, uid, system_id, clear: bool = False):
+        """Remember (or forget) the default dock for this system."""
+        from ... import config
+        from PySide6.QtWidgets import QMessageBox
+        if clear:
+            config.set_default_dock(system_id, None)
+            self._rebuild()
+            return
+        wp = self._uid_map.get(uid)
+        eff = self._effective(wp) if wp else None
+        if not eff:
+            QMessageBox.information(self, "Default dock",
+                                    "No dock selected for this system yet.")
+            return
+        config.set_default_dock(system_id, eff.name)
+        self._rebuild()
+        self.totals.setText(f"Default dock for this system saved: {eff.name}")
 
     def _remove_by_uid(self, uid):
         wp = self._uid_map.get(uid)
@@ -383,7 +467,7 @@ class RoutePanel(QWidget):
             uid = next(self._uid)
             self._uid_map[uid] = wp
             eff = self._effective(wp)
-            suffix = f"  —  {eff.name}" if eff else self._empty_suffix(wp)
+            suffix = f"  -  {eff.name}" if eff else self._empty_suffix(wp)
             it = QListWidgetItem(f"{i}: {wp.system.name}  ({wp.system.security:.1f}){suffix}")
             it.setData(_ROLE_SYS, wp.system.id)
             it.setData(_ROLE_UID, uid)
@@ -396,19 +480,23 @@ class RoutePanel(QWidget):
         self.wp_list.blockSignals(False)
         self._update_pick()
 
+    def _pinned(self, system_id) -> str | None:
+        from ... import config
+        return config.get_default_docks().get(str(system_id))
+
     def _effective(self, wp: Waypoint):
         if self.ctx.universe is None:
             return None
-        return effective_dock(wp, self._docks(wp.system.id))
+        return effective_dock(wp, self._docks(wp.system.id), self._pinned(wp.system.id))
 
     def _empty_suffix(self, wp: Waypoint) -> str:
         uni = self.ctx.universe
         if uni is None:
             return ""
         if self._docks(wp.system.id):
-            return "  —  (no usable docking)"
+            return "  -  (no usable docking)"
         if uni.stations:  # stations loaded and there is genuinely nothing here
-            return "  —  (no station/structure)"
+            return "  -  (no station/structure)"
         return ""
 
     def show_station_info(self, system_id):
@@ -419,7 +507,9 @@ class RoutePanel(QWidget):
             return
         opts = self._docks(system_id)
         wp = next((w for w in self.waypoints if w.system.id == system_id), None)
-        eff = effective_dock(wp, opts) if wp else best_dock(opts)
+        pinned = self._pinned(system_id)
+        eff = (effective_dock(wp, opts, pinned) if wp
+               else best_dock(opts, system_id, pinned))
         sysname = uni.systems[system_id].name
         if not eff:
             from PySide6.QtWidgets import QMessageBox
@@ -430,7 +520,7 @@ class RoutePanel(QWidget):
         dlg = StationInfoDialog(self, sysname, eff, standing)
         self.ctx.request_station_image(eff.type_id, dlg.set_image)
         if eff.owner_id:
-            self.ctx.request_entity_name(eff.owner_id, dlg.set_owner_name)
+            self.ctx.request_owner_details(eff.owner_id, dlg.set_owner_details)
         dlg.exec()
 
     def show_system_info(self, system_id):
@@ -442,10 +532,20 @@ class RoutePanel(QWidget):
         region = uni.region_names.get(s.region_id, str(s.region_id))
         kind = ("high-sec" if s.security >= 0.5 else
                 "low-sec" if s.security > 0.0 else "null-sec")
+        sov = ""
+        info = self.ctx.sov_of(s.id)
+        if info:
+            from ..dialogs import standing_html
+            owner, otype, standing, label = info
+            sov = (f"Sovereignty: <b>{owner}</b> ({otype})<br>"
+                   f"Standing: {standing_html(standing, label)}<br>")
+        elif s.security <= 0.0:
+            sov = "Sovereignty: <i>unclaimed</i><br>"
         QMessageBox.information(
             self, f"System: {s.name}",
             f"<b>{s.name}</b>  ({s.security:.2f}, {kind})<br>"
             f"Region: {region}<br>"
+            f"{sov}"
             f"Jump target: {'yes' if s.jumpable else 'no (high-sec)'}<br>"
             f'<a href="https://evemaps.dotlan.net/system/{s.name.replace(" ", "_")}">'
             "Open in Dotlan</a>")
@@ -501,9 +601,14 @@ class RoutePanel(QWidget):
     def display_plan(self, plan):
         self.table.setRowCount(len(plan.legs))
         for i, leg in enumerate(plan.legs):
-            if leg.mode == "gate":
+            if leg.mode == "bridge":
+                vals = ["ansiblex", leg.src.name, leg.dst.name,
+                        f"{leg.distance_ly:.2f}", "-",
+                        f"{leg.cooldown_min:.1f}m",
+                        f"{leg.fatigue_after_min:.0f}m", "✓"]
+            elif leg.mode == "gate":
                 vals = ["gate", leg.src.name, leg.dst.name, f"{leg.distance_ly:.1f}",
-                        "—", "—", f"{leg.fatigue_after_min:.0f}m", "✓"]
+                        "-", "-", f"{leg.fatigue_after_min:.0f}m", "✓"]
             else:
                 ok = "✓" if leg.in_range else f"✗ {leg.reason}"
                 vals = ["jump", leg.src.name, leg.dst.name, f"{leg.distance_ly:.2f}",
@@ -517,9 +622,10 @@ class RoutePanel(QWidget):
         if plan.legs:
             hrs = plan.total_time_min / 60.0
             warn = ("" if plan.all_in_range else
-                    "   ⚠ some legs invalid (range / hi-sec) — use Auto-route to bridge")
+                    "   ⚠ some legs invalid (range / hi-sec) - use Auto-route to bridge")
+            bridges = f", {plan.bridges} ansiblex" if plan.bridges else ""
             self.totals.setText(
-                f"{plan.jumps} jump(s), {plan.gates} gate(s) · "
+                f"{plan.jumps} jump(s), {plan.gates} gate(s){bridges} · "
                 f"{plan.total_fuel:,} isotopes · time ≈ {plan.total_time_min:.0f} min "
                 f"({hrs:.1f} h) · peak fatigue {plan.peak_fatigue_min:.0f}m · "
                 f"peak reactivation {plan.peak_reactivation_min:.1f}m{warn}")
@@ -544,7 +650,7 @@ class RoutePanel(QWidget):
             mode = ""
             if i > 0 and i - 1 < len(self.route_modes):
                 mode = f"[{self.route_modes[i - 1]}] "
-            eff = effective_dock(wp, self._docks(wp.system.id))
+            eff = self._effective(wp)
             dock = f" - {eff.name}" if eff else ""
             lines.append(f"{mode}{wp.system.name}{dock}")
         QGuiApplication.clipboard().setText("\n".join(lines))
@@ -557,7 +663,9 @@ class RoutePanel(QWidget):
     def state(self) -> dict:
         return {
             "policy": self.cmb_policy.currentIndex(),
-            "minimize": self.cmb_min.currentIndex(),
+            "allow_gates": self.chk_gates.isChecked(),
+            "balance": self.cmb_balance.currentIndex(),
+            "use_ansiblex": self.chk_ansiblex.isChecked(),
             "gate": self.cmb_gate.currentIndex(),
             "min_reactivation": self.chk_reactivation.isChecked(),
             "exclude_hostile": self.chk_hostile.isChecked(),
@@ -565,12 +673,20 @@ class RoutePanel(QWidget):
         }
 
     def restore(self, s: dict):
-        widgets = (self.cmb_policy, self.cmb_min, self.cmb_gate,
-                   self.chk_reactivation, self.chk_hostile, self.chk_incursions)
+        widgets = (self.cmb_policy, self.chk_gates, self.cmb_balance, self.chk_ansiblex,
+                   self.cmb_gate, self.chk_reactivation, self.chk_hostile,
+                   self.chk_incursions)
         for w in widgets:
             w.blockSignals(True)
         self.cmb_policy.setCurrentIndex(int(s.get("policy", 0)))
-        self.cmb_min.setCurrentIndex(int(s.get("minimize", 1)))
+        # "minimize" is the pre-0.2 three-way combo (0 = only jumps).
+        allow = s.get("allow_gates", s.get("minimize", 1) != 0)
+        self.chk_gates.setChecked(bool(allow))
+        # Default to "Prefer jumps" (index 1); pre-0.3 configs stored a
+        # gate-hop count instead of a preset index.
+        self.cmb_balance.setCurrentIndex(int(s.get("balance", 1)))
+        self.cmb_balance.setEnabled(bool(allow))
+        self.chk_ansiblex.setChecked(bool(s.get("use_ansiblex", True)))
         self.cmb_gate.setCurrentIndex(int(s.get("gate", 0)))
         self.chk_reactivation.setChecked(bool(s.get("min_reactivation", False)))
         self.chk_hostile.setChecked(bool(s.get("exclude_hostile", False)))

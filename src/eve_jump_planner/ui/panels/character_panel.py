@@ -99,7 +99,7 @@ class CharacterPanel(QWidget):
             if self._filter == 2 and not (chk.can_dock and chk.safe):
                 continue
             icon = _STATUS_ICON[chk.status]
-            it = QListWidgetItem(f"{icon}  {d.name}  [{d.kind}] — {chk.note}")
+            it = QListWidgetItem(f"{icon}  {d.name}  [{d.kind}] - {chk.note}")
             it.setData(_ROLE_SYS, d.solar_system_id)
             self.struct_list.addItem(it)
             shown += 1

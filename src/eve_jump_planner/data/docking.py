@@ -133,16 +133,16 @@ def check_structure(ship: Ship, type_id: int, name: str = "",
                 or any(h in lname for h in FREEPORT_NAME_HINTS))
     if allowed is None:
         # Unknown structure type: allow but warn.
-        note = "unknown structure type — verify docking"
+        note = "unknown structure type - verify docking"
         if freeport:
-            note = "freeport (public) — risk: access can be revoked"
+            note = "freeport (public) - risk: access can be revoked"
         return DockCheck(True, not freeport, note)
     can = cat <= allowed
     if not can:
         return DockCheck(False, False,
                          f"{_CAT_NAME[cat]} cannot dock (max {_CAT_NAME[allowed]})")
     if freeport:
-        return DockCheck(True, False, "freeport (public) — risk: access can be revoked")
+        return DockCheck(True, False, "freeport (public) - risk: access can be revoked")
     return DockCheck(True, True, "docking ok")
 
 
@@ -155,5 +155,5 @@ def check_npc_station(ship: Ship, type_name: str = "",
         return DockCheck(False, False, "station too small for capitals")
     kickout = type_name.strip().lower() in KICKOUT_STATION_TYPE_NAMES
     if kickout:
-        return DockCheck(True, False, "kickout station — unsafe undock (no docking ring)")
-    return DockCheck(True, True, "docking ring — safe")
+        return DockCheck(True, False, "kickout station - unsafe undock (no docking ring)")
+    return DockCheck(True, True, "docking ring - safe")

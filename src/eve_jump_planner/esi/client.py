@@ -21,6 +21,61 @@ class Dockable:
     owner_id: int = 0   # owning corp/alliance (structures only)
 
 
+# Ansiblex Jump Bridge (verified against the SDE invTypes dump).
+ANSIBLEX_TYPE_ID = 35841
+
+
+def parse_ansiblex_name(name: str):
+    """Ansiblex gates are auto-named "<origin> » <destination>".
+
+    Returns (origin, destination) raw name strings, or None. The caller
+    resolves them against the universe, which tolerates trailing junk.
+    """
+    for sep in ("»", "&raquo;", ">>", "->"):
+        if sep in name:
+            a, _, b = name.partition(sep)
+            a, b = a.strip(" -"), b.strip(" -")
+            if a and b:
+                return a, b
+    return None
+
+
+def sovereignty(progress=None) -> dict:
+    """Who holds sovereignty in each null-sec system. Public, no auth.
+
+    Returns {"owners": {system_id: (owner_id, kind)}, "names": {id: name}}.
+    Owner names are resolved up front (a couple of batched calls) so lookups
+    during rendering are instant.
+    """
+    if progress:
+        progress("Loading sovereignty map...")
+    try:
+        resp = requests.get(f"{config.ESI_BASE}/sovereignty/map/", timeout=45)
+        resp.raise_for_status()
+        rows = resp.json()
+    except (requests.RequestException, ValueError):
+        return {"owners": {}, "names": {}}
+
+    owners: dict[int, tuple[int, str]] = {}
+    for row in rows:
+        sid = row.get("system_id")
+        for key, kind in (("alliance_id", "alliance"),
+                          ("corporation_id", "corporation"),
+                          ("faction_id", "faction")):
+            oid = row.get(key)
+            if sid and oid:
+                owners[sid] = (oid, kind)
+                break
+
+    ids = sorted({oid for oid, _ in owners.values()})
+    names: dict[int, str] = {}
+    for i in range(0, len(ids), 1000):          # /universe/names/ caps at 1000
+        if progress:
+            progress(f"Resolving sovereignty holders ({i + 1}/{len(ids)})...")
+        names.update(resolve_names(ids[i:i + 1000]))
+    return {"owners": owners, "names": names}
+
+
 def incursions() -> set[int]:
     """Set of solar system IDs currently affected by an Incursion. Public."""
     try:
@@ -32,6 +87,29 @@ def incursions() -> set[int]:
         return out
     except (requests.RequestException, ValueError):
         return set()
+
+
+def resolve_ids(names: list[str]) -> dict:
+    """Resolve corporation / alliance names to IDs. Public, no auth.
+
+    Returns {"ids": {name_lower: (id, kind)}, "unknown": [names]}.
+    """
+    names = [n.strip() for n in names if n and n.strip()]
+    if not names:
+        return {"ids": {}, "unknown": []}
+    out: dict[str, tuple[int, str]] = {}
+    try:
+        resp = requests.post(f"{config.ESI_BASE}/universe/ids/",
+                             json=names, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return {"ids": {}, "unknown": names}
+    for key, kind in (("alliances", "alliance"), ("corporations", "corporation")):
+        for row in data.get(key) or ():
+            out[row["name"].strip().lower()] = (row["id"], kind)
+    unknown = [n for n in names if n.strip().lower() not in out]
+    return {"ids": out, "unknown": unknown}
 
 
 def resolve_names(ids: list[int]) -> dict[int, str]:
@@ -161,19 +239,153 @@ class EsiClient:
                                     owner_id=data.get("owner_id", 0)))
         return out
 
-    def contacts(self) -> dict[int, float]:
-        """Map of contact_id -> standing from your personal contacts."""
-        cid = self.token.character_id
+    def _paged_contacts(self, path: str) -> dict[int, float]:
         out: dict[int, float] = {}
         page = 1
         while True:
-            r = self._get(f"/characters/{cid}/contacts/", page=page)
+            r = self._get(path, page=page)
             for c in r.json():
                 out[c["contact_id"]] = float(c.get("standing", 0.0))
             if page >= int(r.headers.get("X-Pages", "1")):
                 break
             page += 1
         return out
+
+    def character_info(self) -> dict:
+        return self._get(f"/characters/{self.token.character_id}/").json()
+
+    def corporation_info(self, corp_id: int) -> dict:
+        try:
+            return self._get(f"/corporations/{corp_id}/").json()
+        except requests.HTTPError:
+            return {}
+
+    def ansiblex_links(self, progress=None) -> dict:
+        """Discover Ansiblex jump bridges via ESI.
+
+        Two sources, merged:
+          * your corporation's own structures (needs
+            esi-corporations.read_structures.v1 and the Station Manager role);
+          * any Ansiblex you have access to that ESI search turns up.
+
+        The gate's *name* carries both endpoints ("A » B"), so one structure
+        lookup yields a whole link.
+        """
+        links: list[list[str]] = []
+        errors: list[str] = []
+        seen: set[int] = set()
+
+        def add(structure_id: int, name: str):
+            parsed = parse_ansiblex_name(name or "")
+            if parsed:
+                links.append([parsed[0], parsed[1]])
+
+        try:
+            info = self.character_info()
+            corp_id = info.get("corporation_id")
+        except requests.HTTPError as exc:
+            corp_id, _ = None, errors.append(f"character info: {exc}")
+
+        if corp_id:
+            try:
+                page = 1
+                while True:
+                    if progress:
+                        progress(f"Reading corp structures (page {page})...")
+                    r = self._get(f"/corporations/{corp_id}/structures/", page=page)
+                    for row in r.json():
+                        if row.get("type_id") != ANSIBLEX_TYPE_ID:
+                            continue
+                        sid = row.get("structure_id")
+                        if sid in seen:
+                            continue
+                        seen.add(sid)
+                        name = row.get("name") or ""
+                        if not name:
+                            data = self.structure(sid) or {}
+                            name = data.get("name", "")
+                        add(sid, name)
+                    if page >= int(r.headers.get("X-Pages", "1")):
+                        break
+                    page += 1
+            except requests.HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                if status == 403:
+                    errors.append(
+                        "Corp structure list denied (403): your character needs "
+                        "the in-game Station Manager role, and the app needs the "
+                        "esi-corporations.read_structures.v1 scope. Use "
+                        "'Find gates in system' below instead.")
+                else:
+                    errors.append(f"corp structures: {exc}")
+
+        return {"links": links, "errors": errors}
+
+    def ansiblex_in_system(self, system_name: str, system_id: int,
+                           limit: int = 40) -> list[list[str]]:
+        """Ansiblex gates in one system, found via structure search."""
+        out: list[list[str]] = []
+        for sid in self.search_structures(system_name)[:limit]:
+            data = self.structure(sid)
+            if not data or data.get("type_id") != ANSIBLEX_TYPE_ID:
+                continue
+            if data.get("solar_system_id") != system_id:
+                continue
+            parsed = parse_ansiblex_name(data.get("name", ""))
+            if parsed:
+                out.append([parsed[0], parsed[1]])
+        return out
+
+    def contacts(self, progress=None) -> dict:
+        """Standings from character + corp + alliance contact lists.
+
+        Returns {"standings": {id: standing}, "errors": [str]}. Structure owners
+        are corporations, so corp/alliance lists matter as much as personal
+        ones; more specific lists win (character > corp > alliance).
+        """
+        standings: dict[int, float] = {}
+        errors: list[str] = []
+        char_id = self.token.character_id
+
+        try:
+            info = self.character_info()
+        except requests.HTTPError as exc:
+            info, _ = {}, errors.append(f"character info: {exc}")
+        corp_id = info.get("corporation_id")
+        alliance_id = info.get("alliance_id")
+
+        # Least specific first so more specific lists overwrite.
+        if alliance_id:
+            try:
+                standings.update(self._paged_contacts(f"/alliances/{alliance_id}/contacts/"))
+            except requests.HTTPError as exc:
+                errors.append(f"alliance contacts: {exc}")
+        if corp_id:
+            try:
+                standings.update(self._paged_contacts(f"/corporations/{corp_id}/contacts/"))
+            except requests.HTTPError as exc:
+                errors.append(f"corp contacts: {exc}")
+        try:
+            standings.update(self._paged_contacts(f"/characters/{char_id}/contacts/"))
+        except requests.HTTPError as exc:
+            errors.append(f"character contacts: {exc}")
+
+        return {"standings": standings, "errors": errors,
+                "corp_id": corp_id, "alliance_id": alliance_id}
+
+    def owner_details(self, owner_id: int) -> dict:
+        """Resolve a structure owner (a corporation) to its name and alliance."""
+        info = self.corporation_info(owner_id)
+        alliance_id = info.get("alliance_id")
+        name = info.get("name") or ""
+        alliance_name = ""
+        if not name or alliance_id:
+            names = resolve_names([i for i in (owner_id, alliance_id) if i])
+            name = name or names.get(owner_id, str(owner_id))
+            if alliance_id:
+                alliance_name = names.get(alliance_id, "")
+        return {"owner_id": owner_id, "name": name,
+                "alliance_id": alliance_id, "alliance_name": alliance_name}
 
     def station(self, station_id: int) -> dict | None:
         try:

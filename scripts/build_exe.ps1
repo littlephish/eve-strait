@@ -9,7 +9,10 @@
 
 $ErrorActionPreference = "Stop"
 $proj = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$build = Join-Path $env:TEMP "ejp_build"
+# Unique per run: two builds sharing one directory will delete each other's
+# venv mid-compile, which shows up as "cannot detect used DLLs" / missing
+# site-packages files.
+$build = Join-Path $env:TEMP "ejp_build_$PID"
 
 if (Test-Path $build) { Remove-Item -Recurse -Force $build }
 New-Item -ItemType Directory -Force $build | Out-Null
@@ -24,9 +27,19 @@ $out = Join-Path $build "out"
 
 Push-Location $build
 try {
-    uv sync
-    uv run --with nuitka --with zstandard --with ordered-set `
-      python -m nuitka `
+    # uv's venvs point at a minor-version junction (cpython-3.13-... ->
+    # cpython-3.13.14-...). Nuitka's path resolver asserts on that junction, so
+    # build the venv against the REAL versioned python.exe instead.
+    $realPy = uv run python -c "import os,sys;print(os.path.join(os.path.realpath(sys.base_prefix),'python.exe'))"
+    Remove-Item -Recurse -Force (Join-Path $build ".venv") -ErrorAction SilentlyContinue
+    & $realPy -m venv .venv
+    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet --upgrade pip
+    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet `
+        PySide6 requests nuitka zstandard ordered-set
+    # Install the project itself so Nuitka can locate the package to include.
+    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet .
+    $env:VIRTUAL_ENV = Join-Path $build ".venv"
+    & (Join-Path $build ".venv\Scripts\python.exe") -m nuitka `
         --onefile `
         --enable-plugin=pyside6 `
         --include-package=eve_jump_planner `
@@ -43,6 +56,15 @@ try {
 }
 
 $exe = Join-Path $out "eve-jump-planner.exe"
+if (-not (Test-Path $exe)) {
+    Write-Host "`nBUILD FAILED: Nuitka produced no executable." -ForegroundColor Red
+    Write-Host "The existing dist\eve-jump-planner.exe (if any) was left untouched."
+    exit 1
+}
 New-Item -ItemType Directory -Force (Join-Path $proj "dist") | Out-Null
+# A previously-launched copy would lock the destination file.
+Get-Process eve-jump-planner -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
 Copy-Item $exe (Join-Path $proj "dist") -Force
+Remove-Item -Recurse -Force $build -ErrorAction SilentlyContinue
 Write-Host "`nBuilt: dist\eve-jump-planner.exe" -ForegroundColor Green

@@ -2,19 +2,350 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
+from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 
-def standing_html(standing) -> str:
+def _link_label(html: str) -> QLabel:
+    """A rich-text label whose hyperlinks open in the system browser."""
+    lbl = QLabel(html)
+    lbl.setTextFormat(Qt.TextFormat.RichText)
+    lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+    lbl.setOpenExternalLinks(True)
+    lbl.setWordWrap(True)
+    return lbl
+
+
+class _CopyRow(QHBoxLayout):
+    """Read-only value with a Copy button."""
+
+    def __init__(self, value: str):
+        super().__init__()
+        field = QLineEdit(value)
+        field.setReadOnly(True)
+        btn = QPushButton("Copy")
+        btn.clicked.connect(lambda: QGuiApplication.clipboard().setText(value))
+        self.addWidget(field, 1)
+        self.addWidget(btn)
+
+
+class EsiSetupDialog(QDialog):
+    """Guided EVE application setup: callback URL, scopes and Client ID."""
+
+    def __init__(self, parent, client_id: str, callback_url: str, scopes: list[str]):
+        super().__init__(parent)
+        self.setWindowTitle("EVE ESI setup")
+        self.setMinimumWidth(620)
+        v = QVBoxLayout(self)
+
+        v.addWidget(_link_label(
+            'Create an application at '
+            '<a href="https://developers.eveonline.com">developers.eveonline.com</a> '
+            '(<a href="https://developers.eveonline.com/applications/create">create one '
+            'directly</a>), then paste its <b>Client ID</b> below.<br><br>'
+            'Set <b>Connection Type</b> to <b>Authentication &amp; API Access</b> - '
+            '"Authentication Only" makes every scope fail with '
+            '<code>invalid_scope</code>.'))
+
+        v.addWidget(QLabel("<b>Callback URL</b> - must match exactly:"))
+        v.addLayout(_CopyRow(callback_url))
+
+        v.addWidget(_link_label(
+            f"<b>Scopes</b> - tick all {len(scopes)} when creating the application. "
+            "Adding them later means logging in again. "
+            '<a href="https://developers.eveonline.com/applications">Manage applications</a>'))
+        box = QPlainTextEdit("\n".join(scopes))
+        box.setReadOnly(True)
+        box.setFixedHeight(150)
+        v.addWidget(box)
+
+        copy_row = QHBoxLayout()
+        copy_row.addStretch(1)
+        b_list = QPushButton("Copy scope list")
+        b_list.clicked.connect(
+            lambda: QGuiApplication.clipboard().setText("\n".join(scopes)))
+        b_json = QPushButton("Copy as JSON")
+        b_json.clicked.connect(lambda: QGuiApplication.clipboard().setText(
+            "[" + ",".join(f'"{s}"' for s in scopes) + "]"))
+        copy_row.addWidget(b_list)
+        copy_row.addWidget(b_json)
+        v.addLayout(copy_row)
+
+        v.addWidget(QLabel("<b>Client ID</b>"))
+        self.field = QLineEdit(client_id)
+        self.field.setPlaceholderText("paste your application's Client ID here")
+        v.addWidget(self.field)
+
+        v.addWidget(_link_label(
+            "<i>No secret key is needed - this app uses OAuth2 PKCE, so only the "
+            "Client ID is stored.</i>"))
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def client_id(self) -> str:
+        return self.field.text().strip()
+
+
+def standing_html(standing, label: str = "") -> str:
     """Colored standing text: + dark blue, - dark red (EVE contact colors)."""
+    suffix = f" <span style='color:#888'>({label})</span>" if label else ""
     if standing is None:
-        return "<span style='color:#888'>no contact</span>"
+        return ("<span style='color:#888'>not in your character, corp or "
+                "alliance contacts</span>")
     if standing > 0:
-        return f"<b style='color:#1f3fb0'>+{standing:.1f}</b>"
+        return f"<b style='color:#1f3fb0'>+{standing:.1f}</b>{suffix}"
     if standing < 0:
-        return f"<b style='color:#b01f1f'>{standing:.1f}</b>"
-    return "<span style='color:#888'>0.0 (neutral)</span>"
+        return f"<b style='color:#b01f1f'>{standing:.1f}</b>{suffix}"
+    return f"<span style='color:#888'>0.0 (neutral)</span>{suffix}"
+
+
+def _fmt_time(minutes: float) -> str:
+    if minutes >= 60:
+        return f"{minutes / 60:.1f} h"
+    return f"{minutes:.0f} min"
+
+
+class GateAssistDialog(QDialog):
+    """Shows what stargate hops buy you versus jumping the whole way."""
+
+    def __init__(self, parent, origin_name: str, dest_name: str, analysis: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Gate assist")
+        self.setMinimumWidth(600)
+        v = QVBoxLayout(self)
+        v.addWidget(_link_label(
+            f"<b>{origin_name} → {dest_name}</b>"))
+
+        jump_only = analysis.get("jump_only")
+        mixed = analysis.get("mixed")
+        gating = analysis.get("gating")
+
+        rows = []
+        for title, plan in (("Jumps only", jump_only),
+                            ("Prefer jumping (gates allowed)", mixed),
+                            ("Prefer gating", gating)):
+            if not plan:
+                rows.append(f"<tr><td>{title}</td><td colspan=5>"
+                            "<i>not possible</i></td></tr>")
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{title}</td>"
+                f"<td align=right>{plan['jumps']}</td>"
+                f"<td align=right>{plan['gates']}</td>"
+                f"<td align=right>{plan['fuel']:,}</td>"
+                f"<td align=right>{_fmt_time(plan['time_min'])}</td>"
+                f"<td align=right>{plan['peak_fatigue']:.0f} min</td>"
+                "</tr>")
+
+        table = QLabel(
+            "<table cellpadding=5 width=100%>"
+            "<tr><th align=left>Route</th><th align=right>Jumps</th>"
+            "<th align=right>Gates</th><th align=right>Fuel</th>"
+            "<th align=right>Time</th><th align=right>Peak fatigue</th></tr>"
+            + "".join(rows) + "</table>")
+        table.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(table)
+
+        v.addWidget(QLabel(self._verdict(analysis)))
+
+        runs = analysis.get("runs") or []
+        if runs:
+            items = []
+            for r in runs:
+                span = (f" spanning <b>{r['span_ly']:.1f} ly</b>"
+                        if r["span_ly"] >= 1.0 else "")
+                flag = ("  <b style='color:#b01f1f'>- mandatory: no jump route "
+                        "avoids this</b>" if r["mandatory"] else "")
+                items.append(
+                    f"<li><b>{r['from'].name} → {r['to'].name}</b> - "
+                    f"{r['hops']} gate hop{'s' if r['hops'] > 1 else ''}"
+                    f"{span}{flag}</li>")
+            gl = QLabel("<b>Gate sections of the best route</b><ul>"
+                        + "".join(items) + "</ul>")
+            gl.setTextFormat(Qt.TextFormat.RichText)
+            gl.setWordWrap(True)
+            v.addWidget(gl)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        v.addWidget(buttons)
+
+    @staticmethod
+    def _verdict(analysis: dict) -> str:
+        mixed = analysis.get("mixed")
+        if not mixed:
+            return "No route found under the current filters."
+        saved = analysis.get("saved")
+        if saved is None:
+            return ("⚑ Gates are the only way through - a pure jump route is "
+                    "impossible (high-sec origin or destination).")
+        if saved["jumps"] > 0:
+            return (f"⚑ Gating saves {saved['jumps']} jump(s), "
+                    f"{saved['fuel']:,} isotopes and "
+                    f"{saved['fatigue']:.0f} min of peak fatigue "
+                    f"for {mixed['gates']} gate hop(s).")
+        return "Jumping the whole way is already optimal here."
+
+
+class AnsiblexDialog(QDialog):
+    """Manage Ansiblex jump-gate links (one pair per line)."""
+
+    def __init__(self, parent, pairs: list[list[str]]):
+        super().__init__(parent)
+        self.setWindowTitle("Ansiblex jump gates")
+        self.setMinimumWidth(520)
+        v = QVBoxLayout(self)
+        v.addWidget(_link_label(
+            "One link per line, as <code>SystemA &lt;-&gt; SystemB</code> "
+            "(or <code>A » B</code>, the in-game gate name format).<br>"
+            "Example: <code>HB-5L3 &lt;-&gt; SF-XJS</code><br><br>"
+            "Links are treated as usable in both directions, cost one "
+            "activation regardless of distance, burn no ship fuel - but still "
+            "apply jump fatigue and a reactivation timer.<br><br>"
+            "<b>Load from ESI</b> pulls your corporation's gates and adopts any "
+            "owned by <b>your corp or alliance</b> that turn up while browsing "
+            "systems. Gates owned by anyone else are ignored, since only the "
+            "owning alliance can use them. Lines you type here are always kept."))
+        self.box = QPlainTextEdit("\n".join(f"{a} <-> {b}" for a, b in pairs))
+        self.box.setPlaceholderText("HB-5L3 <-> SF-XJS")
+        self.box.setFixedHeight(180)
+        v.addWidget(self.box)
+
+        find_row = QHBoxLayout()
+        find_row.addWidget(QLabel("Find gates in system:"))
+        self.search_field = QLineEdit()
+        self.search_field.setPlaceholderText("1DQ1-A")
+        find_row.addWidget(self.search_field, 1)
+        self.btn_search = QPushButton("Search")
+        self.btn_search.setToolTip(
+            "Look up Ansiblex gates in one system using ESI structure search. "
+            "Works with only the esi-search scope - no corp role needed.")
+        find_row.addWidget(self.btn_search)
+        v.addLayout(find_row)
+
+        load_row = QHBoxLayout()
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        load_row.addWidget(self.status, 1)
+        self.btn_esi = QPushButton("Load from ESI")
+        self.btn_esi.setToolTip(
+            "Discover your corporation's Ansiblex gates via ESI. Each gate is "
+            "named \"A » B\", so its name gives the whole link.")
+        load_row.addWidget(self.btn_esi)
+        v.addLayout(load_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def merge_links(self, links: list[list[str]], errors: list[str] | None = None):
+        """Add ESI-discovered links, keeping what the user already typed."""
+        existing = {tuple(sorted(p)) for p in self.pairs()}
+        added = 0
+        for a, b in links:
+            if tuple(sorted((a, b))) in existing:
+                continue
+            existing.add(tuple(sorted((a, b))))
+            self.box.appendPlainText(f"{a} <-> {b}")
+            added += 1
+        msg = f"Added {added} link(s) from ESI."
+        if errors:
+            msg += "  " + errors[0]
+        self.status.setText(msg)
+
+    def pairs(self) -> list[list[str]]:
+        out = []
+        for line in self.box.toPlainText().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            for sep in ("<->", "»", "<>", "->", "|", ","):
+                if sep in line:
+                    a, _, b = line.partition(sep)
+                    if a.strip() and b.strip():
+                        out.append([a.strip(), b.strip()])
+                    break
+        return out
+
+
+class DockingRightsDialog(QDialog):
+    """Corps / alliances whose structures you may dock at, whatever the standing."""
+
+    def __init__(self, parent, names: list[str]):
+        super().__init__(parent)
+        self.setWindowTitle("Docking rights")
+        self.setMinimumWidth(480)
+        v = QVBoxLayout(self)
+        v.addWidget(_link_label(
+            "One <b>corporation or alliance name</b> per line. Their structures "
+            "are treated as usable for docking even when the entity is neutral "
+            "or red, which is the normal case for rentals, NAPs and access "
+            "deals.<br><br>"
+            "These rank <b>above</b> merely positive standings when picking a "
+            "dock, and are never dropped by <i>Exclude hostile-owned "
+            "structures</i>. Names are resolved through ESI, so spell them as "
+            "they appear in game."))
+        self.box = QPlainTextEdit("\n".join(names))
+        self.box.setPlaceholderText("Some Rental Alliance\nFriendly Holding Corp")
+        self.box.setFixedHeight(180)
+        v.addWidget(self.box)
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def names(self) -> list[str]:
+        return [n.strip() for n in self.box.toPlainText().splitlines() if n.strip()]
+
+
+class AvoidDialog(QDialog):
+    """Systems the router must never pass through (one name per line)."""
+
+    def __init__(self, parent, names: list[str]):
+        super().__init__(parent)
+        self.setWindowTitle("Avoided systems")
+        self.setMinimumWidth(420)
+        v = QVBoxLayout(self)
+        v.addWidget(_link_label(
+            "One system name per line. Routes will never pass through these "
+            "systems - jumps, gates and Ansiblex alike.<br>"
+            "<i>Tip: you can also right-click a system on the map and choose "
+            "<b>Avoid this system</b>.</i>"))
+        self.box = QPlainTextEdit("\n".join(names))
+        self.box.setPlaceholderText("Rancer\nTama")
+        self.box.setFixedHeight(200)
+        v.addWidget(self.box)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def names(self) -> list[str]:
+        return [n.strip() for n in self.box.toPlainText().splitlines() if n.strip()]
 
 
 class StationInfoDialog(QDialog):
@@ -32,25 +363,34 @@ class StationInfoDialog(QDialog):
         status = "OK" if dock.can_dock else "no docking"
         if dock.can_dock and not dock.safe:
             status = "RISKY"
-        v.addWidget(QLabel(f"Docking: {status} — {dock.note}"))
+        v.addWidget(QLabel(f"Docking: {status} - {dock.note}"))
 
         if dock.kind == "structure":
-            self.owner = QLabel(f"Owner: {dock.owner_id or '—'}")
+            self.owner = QLabel("Owner: resolving…" if dock.owner_id else "Owner: -")
             v.addWidget(self.owner)
-            st = QLabel(f"Standing: {standing_html(standing)}")
-            st.setTextFormat(Qt.TextFormat.RichText)
-            v.addWidget(st)
+            self.alliance = QLabel("Alliance: resolving…" if dock.owner_id else "Alliance: -")
+            v.addWidget(self.alliance)
+            self.standing = QLabel(f"Standing: {standing_html(standing)}")
+            self.standing.setTextFormat(Qt.TextFormat.RichText)
+            v.addWidget(self.standing)
         else:
-            self.owner = None
+            self.owner = self.alliance = self.standing = None
 
         self.img = QLabel("loading image…")
         self.img.setFixedSize(256, 256)
         self.img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.img)
 
-    def set_owner_name(self, name: str | None):
-        if self.owner is not None and name:
-            self.owner.setText(f"Owner: {name}")
+    def set_owner_details(self, details: dict, standing, label: str = ""):
+        """Fill in owner corp, alliance and standing once ESI resolves them."""
+        if self.owner is None:
+            return
+        details = details or {}
+        self.owner.setText(f"Owner: {details.get('name') or '-'}")
+        alliance = details.get("alliance_name") or (
+            str(details["alliance_id"]) if details.get("alliance_id") else "")
+        self.alliance.setText(f"Alliance: {alliance or '- (not in an alliance)'}")
+        self.standing.setText(f"Standing: {standing_html(standing, label)}")
 
     def set_image(self, data: bytes | None):
         if not data:

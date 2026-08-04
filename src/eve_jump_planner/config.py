@@ -52,6 +52,9 @@ SCOPES = [
     "esi-ui.write_waypoint.v1",
     "esi-search.search_structures.v1",
     "esi-characters.read_contacts.v1",
+    "esi-corporations.read_contacts.v1",
+    "esi-alliances.read_contacts.v1",
+    "esi-corporations.read_structures.v1",
 ]
 
 # Fuzzwork Static Data Export dumps.
@@ -89,6 +92,56 @@ def save_config(cfg: dict) -> None:
 
 def get_client_id() -> str | None:
     return os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id")
+
+
+def get_default_docks() -> dict:
+    """system_id (str) -> dock name the user pinned for that system."""
+    return load_config().get("default_docks", {})
+
+
+def set_default_dock(system_id: int, dock_name: str | None) -> None:
+    cfg = load_config()
+    docks = cfg.get("default_docks", {})
+    if dock_name:
+        docks[str(system_id)] = dock_name
+    else:
+        docks.pop(str(system_id), None)
+    cfg["default_docks"] = docks
+    save_config(cfg)
+
+
+def get_bridges() -> list[list[str]]:
+    """Ansiblex jump-gate links as [systemA, systemB] name pairs."""
+    return load_config().get("bridges", [])
+
+
+def set_bridges(pairs: list[list[str]]) -> None:
+    cfg = load_config()
+    cfg["bridges"] = pairs
+    save_config(cfg)
+
+
+def get_docking_rights() -> list[str]:
+    """Corporation / alliance names whose structures you may dock at,
+    regardless of standing (rentals, NAPs, blue-in-practice deals)."""
+    return load_config().get("docking_rights", [])
+
+
+def set_docking_rights(names: list[str]) -> None:
+    cfg = load_config()
+    cfg["docking_rights"] = names
+    save_config(cfg)
+
+
+def get_avoided() -> list[str]:
+    """System names the router must never route through."""
+    return load_config().get("avoid", [])
+
+
+def set_avoided(names: list[str]) -> None:
+    cfg = load_config()
+    cfg["avoid"] = sorted(set(names))
+    save_config(cfg)
 
 
 def get_settings() -> dict:

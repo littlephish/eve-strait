@@ -101,7 +101,7 @@ class ShipSkillsPanel(QWidget):
         self.lbl_fuel.setText(f"{mechanics.fuel_per_ly(ship, skills):,.0f} iso")
         self.lbl_iso.setText(ship.isotope)
         self.lbl_bridge.setText(
-            f"{ship.bridge_range_ly:.1f} ly" if ship.bridge_range_ly else "—")
+            f"{ship.bridge_range_ly:.1f} ly" if ship.bridge_range_ly else "-")
         self.chk_bridge.setEnabled(bool(ship.bridge_range_ly))
 
     # -- persistence --------------------------------------------------------
