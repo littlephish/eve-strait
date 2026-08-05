@@ -1,11 +1,13 @@
 name: Release
 
-# Tag a commit and push it to publish a release with the artifacts attached:
+# Push a tag to build the Windows artifacts and open a draft release:
+#
 #   git tag v0.1.0
 #   git push origin v0.1.0
-# Tags only. Nothing here runs on a normal push or PR: a Nuitka compile plus an
-# installer build is minutes of CI, and "Read version from the tag" would pick
-# up a branch name on any other trigger.
+#
+# Tags only, deliberately. A Nuitka compile plus an installer build is minutes
+# of CI, and "Read version from the tag" would pick up a branch name on any
+# other trigger.
 on:
   push:
     tags: ["v*"]
@@ -89,13 +91,26 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) {
             choco install innosetup -y --no-progress
+            # Do not assume where choco put it.
+            $iscc = (Get-ChildItem "${env:ProgramFiles(x86)}", $env:ProgramFiles `
+                       -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
+                     Select-Object -First 1).FullName
           }
+          if (-not $iscc) { throw "Inno Setup compiler (ISCC.exe) not found" }
           & $iscc /DAppVersion=${{ steps.ver.outputs.version }} `
             dist_assets\win\eve-strait.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
 
+      - name: Show what will be released
+        shell: pwsh
+        run: Get-ChildItem dist -File | Select-Object Name, Length | Format-Table
+
+      # Published, not a draft. A draft is invisible to anyone not logged in as
+      # a maintainer, and the in-app updater reads /releases/latest, which
+      # skips drafts and prereleases entirely.
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
           generate_release_notes: true
           files: |
             dist/Eve-Strait-*-win64.zip
