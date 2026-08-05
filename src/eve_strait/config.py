@@ -194,6 +194,34 @@ def set_intel_history_days(days: int) -> None:
     save_config(cfg)
 
 
+def get_saved_routes() -> dict:
+    """name -> {"systems": [system names], "ship": <ship key or None>}.
+
+    System *names* rather than IDs, so a saved route stays readable in
+    config.json and survives an SDE refresh.
+    """
+    routes = load_config().get("saved_routes", {})
+    return routes if isinstance(routes, dict) else {}
+
+
+def save_route(name: str, systems: list[str], ship: str | None = None) -> None:
+    cfg = load_config()
+    routes = cfg.get("saved_routes", {})
+    if not isinstance(routes, dict):
+        routes = {}
+    routes[name] = {"systems": list(systems), "ship": ship}
+    cfg["saved_routes"] = routes
+    save_config(cfg)
+
+
+def delete_route(name: str) -> None:
+    cfg = load_config()
+    routes = cfg.get("saved_routes", {})
+    if isinstance(routes, dict) and routes.pop(name, None) is not None:
+        cfg["saved_routes"] = routes
+        save_config(cfg)
+
+
 def get_avoided() -> list[str]:
     """System names the router must never route through."""
     return load_config().get("avoid", [])

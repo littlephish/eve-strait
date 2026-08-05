@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -213,6 +215,12 @@ class RoutePanel(QWidget):
         act_row.addWidget(b_rev)
         act_row.addWidget(b_copy)
         v.addLayout(act_row)
+
+        self.b_saved = QPushButton("Saved routes")
+        self.b_saved.setToolTip(
+            "Store the current waypoints under a name and load them back later.")
+        self.b_saved.clicked.connect(self._saved_menu)
+        v.addWidget(self.b_saved)
 
         # -- results --------------------------------------------------------
         self.table = QTableWidget(0, 8)
@@ -574,6 +582,108 @@ class RoutePanel(QWidget):
         if eff.owner_id:
             self.ctx.request_owner_details(eff.owner_id, dlg.set_owner_details)
         dlg.exec()
+
+    # ---- saved routes -----------------------------------------------------
+    def _saved_menu(self):
+        """Save / load / delete named routes.
+
+        Waypoints are stored, not the planned path: the plan is recomputed on
+        load so a saved route picks up current sov, kills and Ansiblex links
+        rather than replaying a stale one.
+        """
+        from ... import config
+        routes = config.get_saved_routes()
+        menu = QMenu(self)
+        act_save = menu.addAction("Save current route as...")
+        act_save.setEnabled(len(self.waypoints) >= 2)
+        if not routes:
+            menu.addSeparator()
+            none = menu.addAction("(no saved routes)")
+            none.setEnabled(False)
+        load_acts, del_acts = {}, {}
+        if routes:
+            menu.addSeparator()
+            for name in sorted(routes):
+                stops = routes[name].get("systems", [])
+                a = menu.addAction(f"{name}  ({len(stops)} stops)")
+                a.setToolTip(" → ".join(stops))
+                load_acts[a] = name
+            sub = menu.addMenu("Delete")
+            for name in sorted(routes):
+                del_acts[sub.addAction(name)] = name
+        chosen = menu.exec(self.b_saved.mapToGlobal(
+            self.b_saved.rect().bottomLeft()))
+        if chosen is None:
+            return
+        if chosen == act_save:
+            self._save_route()
+        elif chosen in load_acts:
+            self._load_route(load_acts[chosen], routes[load_acts[chosen]])
+        elif chosen in del_acts:
+            name = del_acts[chosen]
+            if QMessageBox.question(self, "Delete route",
+                                    f"Delete the saved route '{name}'?") \
+                    == QMessageBox.StandardButton.Yes:
+                config.delete_route(name)
+
+    def _save_route(self):
+        from ... import config
+        names = [wp.system.name for wp in self.waypoints]
+        default = f"{names[0]} to {names[-1]}"
+        name, ok = QInputDialog.getText(self, "Save route", "Name:", text=default)
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in config.get_saved_routes() and QMessageBox.question(
+                self, "Overwrite",
+                f"'{name}' already exists. Replace it?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        ship = None
+        try:
+            ship = self.ctx.ship.state().get("ship")
+        except AttributeError:
+            pass
+        config.save_route(name, names, ship)
+        self.ctx.statusBar().showMessage(
+            f"Saved '{name}': {len(names)} waypoints.", 6000)
+
+    def _load_route(self, name: str, data: dict):
+        uni = self.ctx.universe
+        if uni is None:
+            return
+        wanted = data.get("systems") or []
+        found, missing = [], []
+        for n in wanted:
+            s = uni.by_name(n)
+            (found if s else missing).append(s or n)
+        if not found:
+            QMessageBox.warning(self, "Load route",
+                                f"None of the systems in '{name}' exist in the "
+                                "current map data.")
+            return
+
+        self._clear()
+        for s in found:
+            self._add_system(s.id)
+
+        # The ship is stored too, since a jump-freighter route and a dread
+        # route through the same systems are not the same route.
+        note = ""
+        ship = data.get("ship")
+        if ship:
+            try:
+                cur = self.ctx.ship.state()
+                if cur.get("ship") != ship:
+                    self.ctx.ship.restore(dict(cur, ship=ship))
+                    note = f" Ship set to the one saved with it."
+            except AttributeError:
+                pass
+        if missing:
+            note += f" Skipped unknown: {', '.join(missing)}."
+        self.ctx.statusBar().showMessage(
+            f"Loaded '{name}': {len(found)} waypoints.{note}", 8000)
+        self._emit_changed()
 
     def show_system_info(self, system_id):
         from ..dialogs import SystemInfoDialog
