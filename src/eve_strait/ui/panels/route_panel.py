@@ -576,31 +576,18 @@ class RoutePanel(QWidget):
         dlg.exec()
 
     def show_system_info(self, system_id):
-        from PySide6.QtWidgets import QMessageBox
+        from ..dialogs import SystemInfoDialog
         uni = self.ctx.universe
         if uni is None or system_id not in uni.systems:
             return
         s = uni.systems[system_id]
-        region = uni.region_names.get(s.region_id, str(s.region_id))
-        kind = ("high-sec" if s.security >= 0.5 else
-                "low-sec" if s.security > 0.0 else "null-sec")
-        sov = ""
-        info = self.ctx.sov_of(s.id)
-        if info:
-            from ..dialogs import standing_html
-            owner, otype, standing, label = info
-            sov = (f"Sovereignty: <b>{owner}</b> ({otype})<br>"
-                   f"Standing: {standing_html(standing, label)}<br>")
-        elif s.security <= 0.0:
-            sov = "Sovereignty: <i>unclaimed</i><br>"
-        QMessageBox.information(
-            self, f"System: {s.name}",
-            f"<b>{s.name}</b>  ({s.security:.2f}, {kind})<br>"
-            f"Region: {region}<br>"
-            f"{sov}"
-            f"Jump target: {'yes' if s.jumpable else 'no (high-sec)'}<br>"
-            f'<a href="https://evemaps.dotlan.net/system/{s.name.replace(" ", "_")}">'
-            "Open in Dotlan</a>")
+        SystemInfoDialog(
+            self, s,
+            f"Region: {uni.region_names.get(s.region_id, str(s.region_id))}",
+            self.ctx.sov_of(s.id),
+            self.ctx.system_intel(s.id),
+            cyno_cb=self.ctx.check_cyno_activity,
+        ).exec()
 
     def refresh(self):
         self._rebuild()

@@ -6,6 +6,7 @@ from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -116,6 +117,165 @@ def _fmt_time(minutes: float) -> str:
     if minutes >= 60:
         return f"{minutes / 60:.1f} h"
     return f"{minutes:.0f} min"
+
+
+def _adm_note(adm) -> str:
+    """Plain reading of an ADM number.
+
+    ADM rises with sustained ratting, mining and industry and decays without
+    them, so it is the closest honest answer to "does anyone actually live
+    here". It is not a player count; nothing in ESI is.
+    """
+    if adm is None:
+        return ""
+    if adm >= 5.5:
+        return "heavily used, expect people on most of the day"
+    if adm >= 4.0:
+        return "regularly used"
+    if adm >= 2.5:
+        return "some activity"
+    if adm > 1.0:
+        return "barely used"
+    return "dead, nothing is being done here"
+
+
+class SystemInfoDialog(QDialog):
+    """Everything known about one system, with the caveats attached.
+
+    Split into what is measured (gate traffic, kills, ratting, ADM, indices)
+    and what is inferred. ESI publishes no per-system player count, so the
+    dialog never claims one: gate traffic and ADM are labelled as the proxies
+    they are.
+    """
+
+    def __init__(self, parent, system, region: str, sov, intel: dict,
+                 cyno_cb=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"System: {system.name}")
+        self.setMinimumWidth(430)
+        self._cyno_cb = cyno_cb
+        self._system = system
+
+        lay = QVBoxLayout(self)
+        kind = ("high-sec" if system.security >= 0.5 else
+                "low-sec" if system.security > 0.0 else "null-sec")
+        sec_col = ("#2c9e4b" if system.security >= 0.5 else
+                   "#d08b23" if system.security > 0.0 else "#b01f1f")
+        lay.addWidget(_link_label(
+            f"<div style='font-size:15px'><b>{system.name}</b> "
+            f"<span style='color:{sec_col}'>({system.security:.2f}, {kind})</span>"
+            f"</div>{region}"))
+
+        # -- sovereignty ---------------------------------------------------
+        rows = []
+        if sov:
+            owner, otype, standing, label = sov
+            rows.append(("Sovereignty", f"<b>{owner}</b> ({otype})"))
+            rows.append(("Standing", standing_html(standing, label)))
+        elif system.security <= 0.0:
+            rows.append(("Sovereignty", "<i>unclaimed</i>"))
+        adm = intel.get("adm")
+        if adm is not None:
+            note = _adm_note(adm)
+            rows.append(("Defense (ADM)",
+                         f"<b>{adm:.2f}</b> of 6.00"
+                         f" <span style='color:#888'>({note})</span>"))
+            window = " to ".join(x[11:16] for x in
+                                 (intel.get("vuln_start"), intel.get("vuln_end"))
+                                 if x and len(x) >= 16)
+            if window:
+                rows.append(("Vulnerable", f"{window} EVE time"))
+        rows.append(("Jump target",
+                     "yes" if system.jumpable else "no (high-sec)"))
+        lay.addLayout(self._grid(rows))
+
+        # -- activity ------------------------------------------------------
+        hours = intel.get("history_hours", 0)
+        k24 = intel.get("kills_24h") or {}
+        span = f"{hours}h" if hours < 24 else "24h"
+        act = [
+            ("Gate traffic", self._pair(intel.get("jumps_1h", 0),
+                                        intel.get("jumps_24h", 0), span)),
+            ("Ratting (NPC kills)", f"{intel.get('npc_kills_1h', 0):,} last hour"),
+            ("Ship kills", self._pair(intel.get("ship_kills_1h", 0),
+                                      k24.get("ship", 0), span)),
+            ("Pod kills", self._pair(intel.get("pod_kills_1h", 0),
+                                     k24.get("pod", 0), span)),
+        ]
+        ind = intel.get("industry") or {}
+        if ind.get("manufacturing") is not None:
+            act.append(("Industry index",
+                        f"{ind['manufacturing'] * 100:.2f}% manufacturing"))
+        lay.addWidget(_section("Activity"))
+        lay.addLayout(self._grid(act))
+        note = ("ESI reports kills and traffic for the last full hour only. "
+                "The 24h column is accumulated while Eve-Strait is running, so "
+                "it is partial until it has been open a day.")
+        if hours < 24:
+            note += f" Currently {hours}h of history."
+        lay.addWidget(_muted(note))
+
+        # -- cyno ----------------------------------------------------------
+        lay.addWidget(_section("Cyno activity"))
+        self.lbl_cyno = _link_label(
+            "<i>Not checked.</i> Nothing in ESI reports cynos, so this is "
+            "built from killmails: ships that died with a cyno fitted.")
+        lay.addWidget(self.lbl_cyno)
+        self.btn_cyno = QPushButton("Check killmails for cyno losses")
+        self.btn_cyno.clicked.connect(self._check_cyno)
+        self.btn_cyno.setEnabled(cyno_cb is not None)
+        lay.addWidget(self.btn_cyno)
+
+        dotlan = system.name.replace(" ", "_")
+        lay.addWidget(_link_label(
+            f'<a href="https://evemaps.dotlan.net/system/{dotlan}">Dotlan</a> '
+            f'&nbsp;|&nbsp; '
+            f'<a href="https://zkillboard.com/system/{system.id}/">zKillboard</a>'))
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    @staticmethod
+    def _pair(now, day, span: str) -> str:
+        # With only one hour of history the accumulated column just repeats
+        # the live one, so leave it out rather than show the same number twice.
+        if span == "1h":
+            return f"<b>{now:,}</b> last hour"
+        return f"<b>{now:,}</b> last hour &nbsp;/&nbsp; {day:,} in {span}"
+
+    @staticmethod
+    def _grid(rows):
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
+        for r, (name, value) in enumerate(rows):
+            lbl = QLabel(f"{name}:")
+            lbl.setStyleSheet("color:#888")
+            grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignTop)
+            grid.addWidget(_link_label(value), r, 1)
+        return grid
+
+    def _check_cyno(self):
+        self.btn_cyno.setEnabled(False)
+        self.lbl_cyno.setText("Querying zKillboard...")
+        self._cyno_cb(self._system.id, self._on_cyno)
+
+    def _on_cyno(self, text: str):
+        self.lbl_cyno.setText(text)
+        self.btn_cyno.setEnabled(True)
+
+
+def _section(title: str) -> QLabel:
+    lbl = QLabel(title)
+    lbl.setStyleSheet("font-weight:bold; margin-top:8px;")
+    return lbl
+
+
+def _muted(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color:#888; font-size:11px;")
+    lbl.setWordWrap(True)
+    return lbl
 
 
 class GateAssistDialog(QDialog):

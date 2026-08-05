@@ -890,6 +890,23 @@ class MainWindow(QMainWindow):
                     "intel refresh (File -> Intel refresh & history).", 8000)
         self.map_view.set_heat(values, label)
 
+    def check_cyno_activity(self, system_id: int, done):
+        """Look one system up on zKillboard, off the UI thread.
+
+        Calls ``done(text)`` with a line that already carries the caveat, so
+        no caller can accidentally present this as a cyno count.
+        """
+        from ..esi import zkill
+
+        def run(progress=None):
+            return zkill.describe(zkill.cyno_losses(system_id, progress=progress))
+
+        w = Worker(run)
+        w.progress.connect(lambda m: self.statusBar().showMessage(m, 4000))
+        w.finished_ok.connect(done)
+        w.failed.connect(lambda m: done(f"zKillboard lookup failed: {m}"))
+        self._run(w)
+
     # -- cyno sweep ---------------------------------------------------------
     def _scan_cynos(self):
         """Sweep killmails region by region for cyno-fitted losses.
