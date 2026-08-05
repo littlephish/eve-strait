@@ -62,6 +62,11 @@ class MainWindow(QMainWindow):
         self.activity_totals: dict = {"jumps": {}, "kills": {}, "hours": 0}
         self.sov_defense: dict[int, dict] = {}
         self.industry_index: dict[int, dict] = {}
+        from ..esi import zkill
+        self._cyno_sweep = zkill.load_sweep()
+        self.cyno_activity = zkill.sweep_systems(self._cyno_sweep)
+        self._cyno_worker = None
+        self._cyno_stop = False
         self._workers: list[Worker] = []
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
@@ -778,6 +783,14 @@ class MainWindow(QMainWindow):
                 heat.addSeparator()
         self._heat_key = "none"
 
+        view.addSeparator()
+        self.act_scan_cyno = QAction("Scan for cyno activity...", self)
+        self.act_scan_cyno.setToolTip(
+            "Walk killmails region by region looking for ships that died with "
+            "a cyno fitted. The only cyno signal that exists outside the game.")
+        self.act_scan_cyno.triggered.connect(self._scan_cynos)
+        view.addAction(self.act_scan_cyno)
+
     # Map layers: (settings key, menu text, on by default, tooltip).
     MAP_LAYERS = (
         ("gates", "Stargate links", True, "The gate mesh between systems."),
@@ -810,6 +823,11 @@ class MainWindow(QMainWindow):
          "industry in the system, so a high ADM means a used system."),
         ("industry", "Industry cost index",
          "Manufacturing cost index. Rises with local production."),
+        ("cyno", "Cyno activity (killmails)",
+         "Ships destroyed with a cynosural field generator fitted. ESI "
+         "publishes nothing about cynos, so this is built from killmails: a "
+         "floor on cyno traffic, never a count. Run View -> Scan for cyno "
+         "activity to populate it."),
     )
 
     def _toggle_layer(self, key: str, visible: bool):
@@ -854,14 +872,90 @@ class MainWindow(QMainWindow):
         elif key == "industry":
             values = {sid: (d.get("manufacturing") or 0) * 100
                       for sid, d in (self.industry_index or {}).items()}
+        elif key == "cyno":
+            values = dict(self.cyno_activity or {})
+            hours = self._cyno_sweep.get("hours", 24)
+            label = f"Cyno-fitted losses, {hours}h"
         else:
             values = {}
 
         if not values:
-            self._status.setText(
-                f"No {label.lower()} data yet. It arrives with the next intel "
-                "refresh (File → Intel refresh & history).")
+            if key == "cyno":
+                self.statusBar().showMessage(
+                    "No cyno sweep data yet. Use View -> Scan for cyno "
+                    "activity to build it.", 8000)
+            else:
+                self.statusBar().showMessage(
+                    f"No {label.lower()} data yet. It arrives with the next "
+                    "intel refresh (File -> Intel refresh & history).", 8000)
         self.map_view.set_heat(values, label)
+
+    # -- cyno sweep ---------------------------------------------------------
+    def _scan_cynos(self):
+        """Sweep killmails region by region for cyno-fitted losses.
+
+        ESI has no cyno data of any kind, so the only observable trace of a
+        cyno being lit is the ship that was carrying it turning up on a
+        killmail. This walks zKillboard's regional feeds, which embed the
+        victim's fitting, and counts those. It is a floor, not a count.
+        """
+        if self._cyno_worker is not None:
+            self._cyno_stop = True
+            self.statusBar().showMessage("Stopping cyno scan...", 4000)
+            return
+        if not self.universe:
+            return
+
+        regions = sorted((rid, name) for rid, name
+                         in self.universe.region_names.items())
+        if not regions:
+            return
+        hours, ok = QInputDialog.getInt(
+            self, "Scan for cyno activity",
+            f"Killmail history to scan, in hours.\n\n"
+            f"{len(regions)} regions, roughly {len(regions) * 3 // 60 + 1} "
+            "minutes. Runs in the background; pick the menu item again to "
+            "stop.\n\nCounts ships that died with a cyno fitted, which is a "
+            "floor on cyno traffic, not a census of it.",
+            24, 1, 168)
+        if not ok:
+            return
+
+        from ..esi import zkill
+        self._cyno_stop = False
+        ids = [rid for rid, _ in regions]
+
+        def run(progress=None):
+            return zkill.sweep_regions(ids, hours=hours, progress=progress,
+                                       should_stop=lambda: self._cyno_stop)
+
+        w = Worker(run)
+        w.progress.connect(lambda m: self.statusBar().showMessage(m))
+        w.finished_ok.connect(self._on_cyno_sweep)
+        w.failed.connect(lambda m: (
+            setattr(self, "_cyno_worker", None),
+            self.statusBar().showMessage(f"Cyno scan failed: {m}", 10000)))
+        self._cyno_worker = w
+        self.act_scan_cyno.setText("Stop cyno scan")
+        self._run(w)
+
+    def _on_cyno_sweep(self, result):
+        from ..esi import zkill
+        self._cyno_worker = None
+        self.act_scan_cyno.setText("Scan for cyno activity...")
+        result = result or {}
+        zkill.save_sweep(result)
+        self._cyno_sweep = result
+        self.cyno_activity = {int(k): int(v)
+                              for k, v in (result.get("systems") or {}).items()}
+        n, kills = len(self.cyno_activity), result.get("kills", 0)
+        part = " (stopped early)" if result.get("partial") else ""
+        self.statusBar().showMessage(
+            f"Cyno scan: {n} systems with cyno-fitted losses out of "
+            f"{kills:,} killmails in {result.get('regions', 0)} regions{part}. "
+            "Most cynos are never killed, so this is a floor.", 15000)
+        if self._heat_key == "cyno":
+            self._set_heat_layer("cyno")
 
     def _build_docks(self):
         self.ship = ShipSkillsPanel()

@@ -94,7 +94,9 @@ class MapView(QGraphicsView):
         self._overlay_on = {"gates": True, "bridges": True, "regions": True,
                             "kills": False, "avoid": True, "location": True,
                             "heat": True}
-        self._heat_items: list = []
+        self._dots: dict[int, QGraphicsEllipseItem] = {}
+        self._sec_brushes: dict[int, QBrush] = {}
+        self._heat_brushes: dict[int, QBrush] = {}
         self._heat_label = ""
         self._heat_max = 0.0
 
@@ -316,67 +318,61 @@ class MapView(QGraphicsView):
     _HEAT_RAMP = ("#2b4a8f", "#1f7a8c", "#3fa34d", "#c9b62a",
                   "#e07a1f", "#d63b2a")
 
-    def set_heat(self, values: dict | None, label: str = ""):
-        """Shade systems by one metric, as a halo behind the system dot.
+    # Systems with no reading, so the ones that do have data stand out.
+    _HEAT_COLD = QColor(52, 58, 74)
 
-        Scaled logarithmically: kills and gate traffic are so skewed that a
-        linear ramp paints Jita red and leaves everything else identically
-        blue. Pass None or an empty dict to clear the layer.
+    def set_heat(self, values: dict | None, label: str = ""):
+        """Shade the system dots by one metric.
+
+        Deliberately recolours the existing dots rather than adding a halo
+        layer. 5000 extra filled ellipses cost about 285 ms of rasterising
+        per frame, and this view repaints in full on every mouse move, so a
+        separate layer made the map feel frozen. Recolouring is free at paint
+        time: the dots are drawn either way.
+
+        Scaled logarithmically, because kills and gate traffic are so skewed
+        that a linear ramp paints Jita red and leaves everything else in an
+        identical blue. Pass None or an empty dict to clear the layer.
         """
         import math
 
-        from PySide6.QtGui import QPainterPath
-        from PySide6.QtWidgets import QGraphicsPathItem
-
-        for item in self._heat_items:
-            self.scene_obj.removeItem(item)
-        self._heat_items = []
+        self._heat_brushes = {}
         self._heat_label = label
         self._heat_max = 0.0
 
         clean = {sid: float(v) for sid, v in (values or {}).items()
-                 if v and float(v) > 0 and sid in self._pos}
-        if not clean:
-            self.viewport().update()
-            return
+                 if v and float(v) > 0 and sid in self._dots}
+        if clean:
+            top = max(clean.values())
+            self._heat_max = top
+            span = math.log10(1.0 + top) or 1.0
+            n = len(self._HEAT_RAMP)
+            # One brush per band, shared by every system in it.
+            band_brushes = [QBrush(QColor(c)) for c in self._HEAT_RAMP]
+            for sid, v in clean.items():
+                band = min(n - 1, int(math.log10(1.0 + v) / span * n))
+                self._heat_brushes[sid] = band_brushes[band]
+        self._apply_heat()
 
-        top = max(clean.values())
-        self._heat_max = top
-        span = math.log10(1.0 + top) or 1.0
-        n = len(self._HEAT_RAMP)
-
-        paths = {i: QPainterPath() for i in range(n)}
-        for sid, v in clean.items():
-            frac = math.log10(1.0 + v) / span
-            band = min(n - 1, int(frac * n))
-            p = self._pos[sid]
-            # Bigger halo for hotter systems, so the layer reads at a glance
-            # even before the colour registers.
-            r = 3.5 + 3.5 * (band / (n - 1))
-            paths[band].addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
-
-        visible = self._overlay_on.get("heat", True)
-        for i, colour in enumerate(self._HEAT_RAMP):
-            if paths[i].isEmpty():
-                continue
-            item = QGraphicsPathItem(paths[i])
-            c = QColor(colour)
-            c.setAlpha(190)
-            item.setBrush(QBrush(c))
-            item.setPen(QPen(Qt.PenStyle.NoPen))
-            item.setZValue(0.5)          # under the system dots
-            item.setVisible(visible)
-            self.scene_obj.addItem(item)
-            self._heat_items.append(item)
-        self.viewport().update()         # repaint the legend
+    def _apply_heat(self):
+        """Repaint the dots as either the heat ramp or security colours."""
+        on = bool(self._heat_brushes) and self._overlay_on.get("heat", True)
+        cold = QBrush(self._HEAT_COLD)
+        for sid, dot in self._dots.items():
+            if on:
+                dot.setBrush(self._heat_brushes.get(sid, cold))
+            else:
+                dot.setBrush(self._sec_brushes[sid])
+        self.viewport().update()
 
     def set_overlay_visible(self, name: str, visible: bool):
         """Show or hide one map layer by name."""
         self._overlay_on[name] = bool(visible)
+        if name == "heat":
+            self._apply_heat()
+            return
         for item in self._items_for(name):
             item.setVisible(bool(visible))
-        if name == "heat":
-            self.viewport().update()
 
     def overlay_visible(self, name: str) -> bool:
         return self._overlay_on.get(name, True)
@@ -389,7 +385,6 @@ class MapView(QGraphicsView):
             "kills": getattr(self, "_kill_items", ()),
             "avoid": getattr(self, "_avoid_items", ()),
             "location": getattr(self, "_here_items", ()),
-            "heat": self._heat_items,
         }.get(name, ())
 
     def _apply_visibility(self, name: str):
@@ -422,12 +417,15 @@ class MapView(QGraphicsView):
             self._pos[s.id] = QPointF(x, y)
             dot = QGraphicsEllipseItem(-2.0, -2.0, 4.0, 4.0)
             dot.setPos(x, y)
-            dot.setBrush(QBrush(_sec_color(s.security)))
+            brush = QBrush(_sec_color(s.security))
+            dot.setBrush(brush)
             dot.setPen(QPen(Qt.PenStyle.NoPen))
             dot.setFlag(_IGNORE_XF, True)
             dot.setToolTip(f"{s.name}  ({s.security:.1f})")
             dot.setZValue(1)
             self.scene_obj.addItem(dot)
+            self._dots[s.id] = dot
+            self._sec_brushes[s.id] = brush
         rect = self.scene_obj.itemsBoundingRect()
         self.scene_obj.setSceneRect(rect.adjusted(-20, -20, 20, 20))
         self.resetTransform()
@@ -642,9 +640,12 @@ class MapView(QGraphicsView):
         label = f"{ly:g} ly"
         painter.drawText(QPointF(x0 + width + 8, y0 + 4), label)
 
-        self._draw_sec_legend(painter, x0, y0 - 26)
-        if self._heat_items and self._overlay_on.get("heat", True):
-            self._draw_heat_legend(painter, x0, y0 - 52)
+        # The dots carry the heat ramp while a heat layer is on, so showing
+        # the security key at the same time would be a lie.
+        if self._heat_brushes and self._overlay_on.get("heat", True):
+            self._draw_heat_legend(painter, x0, y0 - 26)
+        else:
+            self._draw_sec_legend(painter, x0, y0 - 26)
         painter.restore()
 
     def _draw_heat_legend(self, painter, x0: float, y_bottom: float):

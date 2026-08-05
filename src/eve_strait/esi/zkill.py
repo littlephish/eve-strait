@@ -105,6 +105,101 @@ def cyno_losses(system_id: int, hours: int = 24, max_kills: int = 40,
     return result
 
 
+def _kill_pages(scope: str, ident: int, seconds: int, max_pages: int = 6):
+    """Yield pages of full killmails for a zKill scope (regionID/solarSystemID).
+
+    The region feed embeds the whole killmail, victim fittings included, so a
+    region costs one request per 200 kills rather than one per killmail. That
+    is the difference between a map-wide sweep taking minutes and taking days.
+    """
+    base = f"{_ZKILL}/kills/{scope}/{int(ident)}/pastSeconds/{seconds}"
+    for page in range(1, max_pages + 1):
+        url = f"{base}/page/{page}/" if page > 1 else f"{base}/"
+        kills = _throttled_get(url, timeout=90)
+        if not isinstance(kills, list) or not kills:
+            return
+        yield kills
+        if len(kills) < 200:          # zKill's page size; short page = last page
+            return
+
+
+def sweep_regions(region_ids, hours: int = 24, progress=None,
+                  should_stop=None) -> dict:
+    """Count cyno-fitted losses per system across whole regions.
+
+    Returns {"systems": {system_id: losses}, "kills": int, "regions": int,
+             "hours": int, "partial": bool, "error": str}.
+
+    Same caveat as everywhere else in this module: this counts cyno ships that
+    *died*. It is a floor on cyno traffic, not a census of it.
+    """
+    region_ids = list(region_ids)
+    seconds = max(60, min(int(hours * 3600), 7 * 24 * 3600))
+    out = {"systems": {}, "kills": 0, "regions": 0, "hours": hours,
+           "partial": False, "error": ""}
+
+    for i, rid in enumerate(region_ids, 1):
+        if should_stop and should_stop():
+            out["partial"] = True
+            break
+        if progress:
+            progress(f"Scanning region {i}/{len(region_ids)} for cyno losses "
+                     f"({out['kills']:,} kills checked)...")
+        try:
+            for kills in _kill_pages("regionID", rid, seconds):
+                out["kills"] += len(kills)
+                for kill in kills:
+                    sid = kill.get("solar_system_id")
+                    items = (kill.get("victim") or {}).get("items") or []
+                    if sid and any(it.get("item_type_id") in CYNO_MODULE_TYPE_IDS
+                                   for it in items):
+                        out["systems"][sid] = out["systems"].get(sid, 0) + 1
+                if should_stop and should_stop():
+                    out["partial"] = True
+                    break
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            # One bad region should not throw away everything already scanned.
+            out["error"] = f"zKillboard: {exc}"
+            out["partial"] = True
+            continue
+        out["regions"] += 1
+    return out
+
+
+# -- persisted sweep results ------------------------------------------------
+_STORE = config.CACHE_DIR / "cyno_activity.json"
+
+
+def load_sweep() -> dict:
+    """Last sweep result, so the layer survives a restart."""
+    try:
+        return json.loads(_STORE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sweep(result: dict) -> None:
+    data = dict(result)
+    data["t"] = time.time()
+    # JSON keys are strings; keep the caller's int keys usable on reload.
+    data["systems"] = {str(k): v for k, v in (result.get("systems") or {}).items()}
+    try:
+        _STORE.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def sweep_systems(data: dict) -> dict:
+    """{system_id: losses} from a stored sweep, with int keys restored."""
+    out = {}
+    for k, v in (data.get("systems") or {}).items():
+        try:
+            out[int(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def describe(result: dict) -> str:
     """One honest line for the UI."""
     if result.get("error"):
