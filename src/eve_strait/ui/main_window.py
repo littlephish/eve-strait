@@ -23,10 +23,31 @@ from .panels.ship_panel import ShipSkillsPanel
 from .workers import Worker
 
 
+def _scrollable(panel):
+    """Wrap a panel so its dock can be narrowed.
+
+    A dock cannot shrink below its content's minimum size hint, and these
+    panels (tables, combo boxes, wrapped labels) ask for a lot. Inside a
+    scroll area they can be squeezed and simply scroll instead, which is what
+    lets the map keep the width.
+    """
+    from PySide6.QtWidgets import QFrame, QScrollArea
+
+    area = QScrollArea()
+    area.setWidget(panel)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setMinimumWidth(0)
+    # Cap the side panels so they cannot crowd the map out; anything taller or
+    # wider than this scrolls.
+    area.setMaximumWidth(480)
+    return area
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EVE Jump Planner")
+        self.setWindowTitle("Eve-Strait")
         self.resize(1500, 950)
 
         self.universe: Universe | None = None
@@ -47,13 +68,13 @@ class MainWindow(QMainWindow):
         self.avoided_ids: set[int] = set()
         self._ansiblex_pending: list = []
         self.docking_rights_ids: set[int] = set()
+        self.starbase_systems: dict[int, int] = {}
         self.sov_owners: dict[int, tuple] = {}
         self.sov_names: dict[int, str] = {}
         self._built = False
 
         self._status = QLabel("Loading New Eden map data...")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(self._status)
 
         self._build_menu()
         self._build_docks()
@@ -65,9 +86,13 @@ class MainWindow(QMainWindow):
         self._load_cached_dockables()
         if self.token:
             self._fetch_contacts()
+            self._fetch_starbases()
         self._fetch_incursions()
         self._fetch_sovereignty()
         self._resolve_docking_rights()
+        from .. import update as _upd
+        if _upd.auto_check_enabled() and _upd.is_frozen():
+            self._check_updates()
         self._load_universe()
 
     def sov_of(self, system_id: int):
@@ -108,6 +133,55 @@ class MainWindow(QMainWindow):
         info = self.sov_of(system_id)
         return info[0] if info else None
 
+    # -- updates ------------------------------------------------------------
+    def _check_updates(self, explicit: bool = False):
+        from .. import __version__, update
+        w = Worker(update.check, current=__version__)
+
+        def done(info):
+            if not info:
+                if explicit:
+                    QMessageBox.information(
+                        self, "Up to date",
+                        f"Eve-Strait {__version__} is the latest release.")
+                return
+            self._offer_update(info)
+
+        w.finished_ok.connect(done)
+        w.failed.connect(lambda m: QMessageBox.warning(self, "Update", m)
+                         if explicit else None)
+        self._run(w)
+
+    def _offer_update(self, info: dict):
+        from .. import __version__, update
+        from .dialogs import UpdateDialog
+        can_install = (update.is_frozen() and bool(info.get("zip_url"))
+                       and update.can_write_install_dir())
+        dlg = UpdateDialog(self, info, __version__, can_install)
+        if not can_install and update.is_frozen():
+            dlg.status.setText(
+                "This install folder is not writable, so it cannot update "
+                "itself. Download the new version from the release page.")
+
+        def start():
+            dlg.set_busy("Downloading...")
+            dw = Worker(update.download, info["zip_url"],
+                        dest_dir=update.staging_dir())
+            dw.progress.connect(dlg.set_busy)
+
+            def ready(zip_path):
+                try:
+                    update.apply_and_restart(zip_path, dlg.set_busy)
+                except Exception as exc:      # noqa: BLE001 - show, don't die
+                    dlg.status.setText(f"Update failed: {exc}")
+
+            dw.finished_ok.connect(ready)
+            dw.failed.connect(lambda m: dlg.status.setText(f"Download failed: {m}"))
+            self._run(dw)
+
+        dlg.btn_install.clicked.connect(start)
+        dlg.exec()
+
     def _fetch_incursions(self):
         from ..esi import client
         w = Worker(client.incursions)
@@ -131,6 +205,31 @@ class MainWindow(QMainWindow):
 
     def current_skills(self):
         return self.ship.current_skills()
+
+    def starbases_in(self, system_id: int) -> int:
+        return self.starbase_systems.get(system_id, 0)
+
+    def _fetch_starbases(self):
+        """Corp POS towers (needs the Director role); silent if unavailable."""
+        if not self.token:
+            return
+        if not self.esi:
+            self.esi = EsiClient(self.token, config.get_client_id())
+        w = Worker(self.esi.starbases)
+
+        def done(result):
+            result = result or {}
+            self.starbase_systems = result.get("systems", {})
+            if self.starbase_systems:
+                self.statusBar().showMessage(
+                    f"Found corp POS in {len(self.starbase_systems)} system(s).", 5000)
+                self.route.refresh()
+            elif result.get("errors"):
+                self.statusBar().showMessage(result["errors"][0], 8000)
+
+        w.finished_ok.connect(done)
+        w.failed.connect(lambda m: None)
+        self._run(w)
 
     def has_docking_rights(self, owner_id: int) -> bool:
         """True if the owning corp, or its alliance, is on your rights list."""
@@ -356,7 +455,23 @@ class MainWindow(QMainWindow):
             a.triggered.connect(slot)
             m.addAction(a)
 
+        help_menu = self.menuBar().addMenu("&Help")
+        act_upd = QAction("Check for updates...", self)
+        act_upd.triggered.connect(lambda: self._check_updates(explicit=True))
+        help_menu.addAction(act_upd)
+        from .. import update as _update
+        self.act_auto_update = QAction("Check for updates at startup", self,
+                                       checkable=True)
+        self.act_auto_update.setChecked(_update.auto_check_enabled())
+        self.act_auto_update.toggled.connect(_update.set_auto_check)
+        help_menu.addAction(self.act_auto_update)
+
         view = self.menuBar().addMenu("&View")
+        act_reset = QAction("Reset all panels", self)
+        act_reset.setToolTip("Re-dock every panel and restore the default sizes.")
+        act_reset.triggered.connect(self.reset_panels)
+        view.addAction(act_reset)
+        view.addSeparator()
         self.act_gate_links = QAction("Show stargate links", self, checkable=True)
         self.act_gate_links.setChecked(True)
         self.act_gate_links.toggled.connect(self._toggle_gate_links)
@@ -373,16 +488,107 @@ class MainWindow(QMainWindow):
         self.character = CharacterPanel()
 
         d_char = QDockWidget("Character & Structures", self)
-        d_char.setWidget(self.character)
+        d_char.setWidget(_scrollable(self.character))
         d_ship = QDockWidget("Ship & Skills", self)
-        d_ship.setWidget(self.ship)
+        d_ship.setWidget(_scrollable(self.ship))
         d_route = QDockWidget("Route", self)
-        d_route.setWidget(self.route)
+        d_route.setWidget(_scrollable(self.route))
 
         # Left column: character (top) with ship config below it (bottom-left).
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d_char)
         self.splitDockWidget(d_char, d_ship, Qt.Orientation.Vertical)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, d_route)
+
+        # The map is a dock too, so it can be torn onto a second monitor. With
+        # no central widget, whatever stays docked fills the window, which is
+        # what makes the map expand when the side panels are floated.
+        self.map_dock = QDockWidget("Map", self)
+        self.map_dock.setObjectName("dock_map")
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.map_dock)
+        self.splitDockWidget(self.map_dock, d_route, Qt.Orientation.Horizontal)
+
+        # Panels must never impose a floor on the window: with a minimum width
+        # the map cannot reclaim the space when a panel is torn off.
+        self._dock_char, self._dock_ship, self._dock_route = d_char, d_ship, d_route
+        self._docks = [d_char, d_ship, d_route, self.map_dock]
+        for d in self._docks:
+            if d.widget():
+                d.widget().setMinimumWidth(0)
+            d.setMinimumWidth(0)
+            d.topLevelChanged.connect(self._on_dock_moved)
+            d.visibilityChanged.connect(lambda _=False: self._on_dock_moved())
+        self._rebalancing = False
+
+    def reset_panels(self):
+        """Put every panel back where it started, floating or hidden alike."""
+        self._rebalancing = True
+        try:
+            for d in self._docks:
+                d.setFloating(False)
+                d.show()
+            # Left column: character above ship. Map centre, route right.
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock_char)
+            self.splitDockWidget(self._dock_char, self._dock_ship,
+                                 Qt.Orientation.Vertical)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.map_dock)
+            self.splitDockWidget(self.map_dock, self._dock_route,
+                                 Qt.Orientation.Horizontal)
+        finally:
+            self._rebalancing = False
+        self._apply_default_layout()
+        self.statusBar().showMessage("Panel layout reset.", 4000)
+
+    def _apply_default_layout(self):
+        """Give the map the lion's share of the width.
+
+        Dock widgets divide space by size hint, and the panels ask for far
+        more than a QGraphicsView does, so without this the map opens as a
+        sliver. Has to run after the map widget is installed, and again on the
+        next event-loop turn once real geometry exists.
+        """
+        from PySide6.QtCore import QTimer
+
+        def apply():
+            docks = [d for d in self._docks if not d.isFloating() and d.isVisible()]
+            if self.map_dock not in docks:
+                return
+            widths = [820 if d is self.map_dock else 360 for d in docks]
+            self.resizeDocks(docks, widths, Qt.Orientation.Horizontal)
+
+        apply()
+        QTimer.singleShot(0, apply)
+
+    def _on_dock_moved(self, *_):
+        """Keep the window from becoming an empty frame.
+
+        Every panel including the map can float, but if the last docked one
+        leaves there is nothing left to drag or drop onto, so the most
+        recently detached panel is put straight back.
+        """
+        if self._rebalancing:
+            return
+        attached = [d for d in self._docks if not d.isFloating() and d.isVisible()]
+        if not attached:
+            # The map is the one you actually want on a second monitor, so
+            # keep a side panel behind instead of yanking the map back.
+            keep = next((d for d in self._docks
+                         if d is not self.map_dock and d.isVisible()),
+                        self.map_dock)
+            self._rebalancing = True
+            try:
+                keep.setFloating(False)
+                keep.show()
+            finally:
+                self._rebalancing = False
+            self.statusBar().showMessage(
+                f"{keep.windowTitle()} stays in the main window; "
+                "at least one panel has to be docked.", 5000)
+            return
+        # Re-assert sane widths so a re-attached panel is usable rather than
+        # collapsed to a sliver. The map takes whatever is left.
+        side = [d for d in attached if d is not self.map_dock]
+        if side:
+            self.resizeDocks(side, [380] * len(side), Qt.Orientation.Horizontal)
 
     def _wire(self):
         self.ship.changed.connect(self._on_ship_changed)
@@ -437,7 +643,9 @@ class MainWindow(QMainWindow):
         self.map_view.set_avoided(self.avoided_ids)
         if self.sov_owners:
             self.map_view.set_sov_lookup(self.sov_label)
-        self.setCentralWidget(self.map_view)
+        self.map_dock.setWidget(self.map_view)
+        self.map_view.setMinimumWidth(0)
+        self._apply_default_layout()
         self._recalc()
         # Load station data in the background so dock names/photos work.
         self.statusBar().showMessage("Loading station data...")
@@ -455,7 +663,8 @@ class MainWindow(QMainWindow):
         for p in (config.SDE_CSV_PATH, config.MAP_REGIONS_PATH, config.MAP_JUMPS_PATH):
             p.unlink(missing_ok=True)
         self._status = QLabel("Reloading map data...")
-        self.setCentralWidget(self._status)
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.map_dock.setWidget(self._status)
         self._load_universe()
 
     # -- recalc coordinator -------------------------------------------------
@@ -493,7 +702,8 @@ class MainWindow(QMainWindow):
             return
         self.character.set_filter(self.route.policy())
         self.character.render(self.ship.current_ship(),
-                              self.universe.station_type_names.get)
+                              self.universe.station_type_names.get,
+                              self.has_docking_rights)
 
     def _on_map_click(self, sid: int):
         # Left-click only *selects* an existing waypoint (drives the range
@@ -582,6 +792,7 @@ class MainWindow(QMainWindow):
                    minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   haven=self._haven_predicate(ship),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems())
         w.finished_ok.connect(lambda res: (self.route.set_busy(False),
                                            self._apply_auto_route(res)))
@@ -651,6 +862,26 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Avoided systems", msg)
         self._recalc()
 
+    def _haven_predicate(self, ship):
+        """Systems where this hull has somewhere safe to sit out the
+        reactivation timer: a usable dock, any tetherable structure, or a corp
+        POS shield. Used as a soft preference, not a hard filter."""
+        from ..data import docking
+        cat = docking.ship_category(ship)
+        havens: set[int] = set(self.starbase_systems)
+        for d in self.dockables:
+            if d.kind == "structure" and docking.can_tether_at(d.type_id):
+                havens.add(d.solar_system_id)
+        if cat != docking.SUPERCAP:
+            # Supers cannot use NPC stations at all; everyone else can.
+            for sid, stations in self.universe.system_stations.items():
+                for st in stations:
+                    if docking.check_npc_station(ship, st.type_name,
+                                                 st.max_volume).can_dock:
+                        havens.add(sid)
+                        break
+        return lambda system_id: system_id in havens
+
     def _dock_predicate(self, ship):
         policy = self.route.policy()
         if policy == 0:
@@ -667,8 +898,17 @@ class MainWindow(QMainWindow):
         for d in self.dockables:
             if d.kind == "structure":
                 chk = docking.check_structure(ship, d.type_id, d.name, d.location_id)
-                if chk.can_dock and (chk.safe or not safe_only):
+                # Configured docking rights count as safe regardless of the
+                # owner's standing.
+                safe = chk.safe or self.has_docking_rights(getattr(d, "owner_id", 0))
+                if chk.can_dock and (safe or not safe_only):
                     allowed.add(d.solar_system_id)
+                elif docking.can_tether_at(d.type_id):
+                    # A capital that cannot dock can still tether here, which
+                    # beats landing in a system with nothing at all.
+                    allowed.add(d.solar_system_id)
+        # Corp POS shields are a valid place to park a capital too.
+        allowed.update(self.starbase_systems)
         return lambda s: s.id in allowed
 
     # -- ESI ----------------------------------------------------------------
@@ -832,6 +1072,7 @@ class MainWindow(QMainWindow):
                    origin, dest, gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   haven=self._haven_predicate(ship),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems(),
                    strategy=self.route.strategy())
         w.finished_ok.connect(lambda res: (self.route.set_busy(False),

@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-APP_NAME = "eve-jump-planner"
+APP_NAME = "eve-strait"
 
 # ---------------------------------------------------------------------------
 # Filesystem locations
@@ -18,7 +18,30 @@ def _data_home() -> Path:
     return Path.home() / ".local" / "share" / APP_NAME
 
 
+def _migrate_legacy_dir(new_dir: Path) -> None:
+    """Carry settings over from the pre-rename data directory.
+
+    The app used to be called "eve-jump-planner"; without this the rename
+    would silently orphan the saved Client ID, token, pinned docks and cache.
+    Copies rather than renames: a directory rename fails on Windows if any
+    file inside is open, and copying leaves the old data intact as a backup.
+    """
+    legacy = new_dir.parent / "eve-jump-planner"
+    if not legacy.is_dir():
+        return
+    # Only real settings count as "already migrated". An empty cache/ folder
+    # auto-created by a previous import must not block the copy.
+    if (new_dir / "config.json").exists() or (new_dir / "token.json").exists():
+        return
+    try:
+        import shutil
+        shutil.copytree(legacy, new_dir, dirs_exist_ok=True)
+    except OSError:
+        pass
+
+
 DATA_DIR = _data_home()
+_migrate_legacy_dir(DATA_DIR)
 CACHE_DIR = DATA_DIR / "cache"
 CONFIG_PATH = DATA_DIR / "config.json"
 TOKEN_PATH = DATA_DIR / "token.json"
@@ -55,6 +78,7 @@ SCOPES = [
     "esi-corporations.read_contacts.v1",
     "esi-alliances.read_contacts.v1",
     "esi-corporations.read_structures.v1",
+    "esi-corporations.read_starbases.v1",
 ]
 
 # Fuzzwork Static Data Export dumps.

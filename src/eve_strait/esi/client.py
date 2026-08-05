@@ -336,6 +336,44 @@ class EsiClient:
                 out.append([parsed[0], parsed[1]])
         return out
 
+    def starbases(self, progress=None) -> dict:
+        """Your corporation's POS control towers, by solar system.
+
+        Needs esi-corporations.read_starbases.v1 and the in-game Director
+        role. A POS shield is a real staging option for a capital that cannot
+        dock anywhere in the system.
+        """
+        out: dict[int, int] = {}
+        errors: list[str] = []
+        try:
+            corp_id = self.character_info().get("corporation_id")
+        except requests.HTTPError as exc:
+            return {"systems": {}, "errors": [f"character info: {exc}"]}
+        if not corp_id:
+            return {"systems": {}, "errors": ["no corporation"]}
+        try:
+            page = 1
+            while True:
+                if progress:
+                    progress(f"Reading corp starbases (page {page})...")
+                r = self._get(f"/corporations/{corp_id}/starbases/", page=page)
+                for row in r.json():
+                    sid = row.get("system_id")
+                    if sid:
+                        out[sid] = out.get(sid, 0) + 1
+                if page >= int(r.headers.get("X-Pages", "1")):
+                    break
+                page += 1
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status == 403:
+                errors.append(
+                    "Starbase list denied (403): needs the in-game Director "
+                    "role plus esi-corporations.read_starbases.v1.")
+            else:
+                errors.append(f"starbases: {exc}")
+        return {"systems": out, "errors": errors}
+
     def contacts(self, progress=None) -> dict:
         """Standings from character + corp + alliance contact lists.
 

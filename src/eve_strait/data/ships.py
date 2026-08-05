@@ -42,6 +42,10 @@ class Ship:
 # NOTE: base_fuel_per_ly for non-freighter capitals is approximate; the four
 # jump freighters use their per-hull consumption values.  Everything is editable.
 SHIPS: list[Ship] = [
+    # --- Generic sub-capital: gate-only route planning ---------------------
+    # No jump drive, so range 0. Docks anywhere and may use hi-sec gates,
+    # which makes it the right pick for planning a plain stargate route.
+    Ship("Subcapital (gates only)", "Subcapital", "ORE", 0.0, 0.0),
     # --- Jump Freighters ---------------------------------------------------
     Ship("Ark",    "Jump Freighter", "Amarr",    5.0, 8800.0, is_freighter=True),
     Ship("Rhea",   "Jump Freighter", "Caldari",  5.0, 10000.0, is_freighter=True),

@@ -1,0 +1,102 @@
+name: Release
+
+# Tag a commit and push it to publish a release with the artifacts attached:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+# Tags only. Nothing here runs on a normal push or PR: a Nuitka compile plus an
+# installer build is minutes of CI, and "Read version from the tag" would pick
+# up a branch name on any other trigger.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    name: Build and publish Windows artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6 requests nuitka zstandard ordered-set
+          python -m pip install .
+
+      - name: Cache Nuitka compilation cache
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/Nuitka/Nuitka/Cache
+          key: nuitka-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: nuitka-${{ runner.os }}-
+
+      - name: Read version from the tag
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v',''
+          if (-not $v) { $v = "0.0.0" }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # --standalone, never --onefile: a self-extracting single exe unpacks to
+      # %TEMP% and runs itself, which Defender and CrowdStrike flag as dropper
+      # behaviour. A plain program folder does not, and it is also what makes
+      # the in-app updater possible.
+      - name: Build (Nuitka standalone)
+        run: >
+          python -m nuitka
+          --standalone
+          --enable-plugin=pyside6
+          --include-package=eve_strait
+          --windows-console-mode=disable
+          --assume-yes-for-downloads
+          --company-name=Eve-Strait
+          --product-name=Eve-Strait
+          --file-version=${{ steps.ver.outputs.version }}
+          --product-version=${{ steps.ver.outputs.version }}
+          --file-description="EVE Online capital jump route planner"
+          --copyright=Eve-Strait
+          --output-dir=out
+          --output-filename=eve-strait.exe
+          app.py
+
+      - name: Stage the program folder
+        shell: pwsh
+        run: |
+          $dist = Get-ChildItem out -Directory -Filter *.dist | Select-Object -First 1
+          if (-not $dist) { throw "Nuitka produced no program folder" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $dist.FullName dist\Eve-Strait -Recurse
+
+      # The updater looks for a *-win*.zip asset, so keep "win" in the name.
+      - name: Zip the portable build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\Eve-Strait `
+            -DestinationPath dist\Eve-Strait-${{ steps.ver.outputs.version }}-win64.zip
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc /DAppVersion=${{ steps.ver.outputs.version }} `
+            dist_assets\win\eve-strait.iss
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Eve-Strait-*-win64.zip
+            dist/Eve-Strait-*-setup.exe

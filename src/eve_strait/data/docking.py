@@ -40,6 +40,7 @@ _HULL_CATEGORY = {
     "Dreadnought": CAPITAL,
     "Force Auxiliary": CAPITAL,
     "Capital Industrial": CAPITAL,  # Rorqual
+    "Subcapital": SUBCAP,           # generic gate-only hull
     "Jump Freighter": SUBCAP,       # freighters dock as subcaps -> anywhere
     "Black Ops": SUBCAP,
 }
@@ -63,7 +64,14 @@ STRUCTURE_DOCK_CATEGORY = {
     40340: SUPERCAP, # Upwell Palatine Keepstar
 }
 # Structures with no docking at all (jump gates, cyno beacons/jammers, drills).
-STRUCTURE_NO_DOCK = {35840, 35841, 35836 - 1, 37534, 81826}  # best-effort; editable
+# Upwell structures with no docking bay. They DO still provide a tether, which
+# matters for capitals (see can_tether_at). Verified against the SDE invTypes.
+STRUCTURE_NO_DOCK = {
+    35840,  # Pharolux Cyno Beacon
+    35841,  # Ansiblex Jump Bridge
+    37534,  # Tenebrex Cyno Jammer
+    81826,  # Metenox Moon Drill
+}
 
 # NPC station *type models* that are kickout (unsafe undock). Matched by the
 # station type name (from invTypes) since typeIDs vary. Source: Jambe's guide.
@@ -146,8 +154,29 @@ def check_structure(ship: Ship, type_id: int, name: str = "",
     return DockCheck(True, True, "docking ok")
 
 
-def check_npc_station(ship: Ship, type_name: str = "",
+def can_tether_at(type_id: int) -> bool:
+    """Upwell structures provide tethering even when the hull is too big to
+    dock, which is why a carrier still wants an Astrahus in system. Ansiblex
+    gates and cyno beacons/jammers tether too."""
+    return type_id in STRUCTURE_DOCK_CATEGORY or type_id in STRUCTURE_NO_DOCK
+
+
+def check_structure_tether(ship: Ship, type_id: int, name: str = "",
+                           structure_id: int = 0) -> DockCheck:
+    """Can this hull at least tether here, if it cannot dock?"""
+    dock = check_structure(ship, type_id, name, structure_id)
+    if dock.can_dock:
+        return dock
+    if can_tether_at(type_id) or type_id == 0:
+        return DockCheck(False, dock.safe, "tether only (too big to dock)")
+    return dock
+
+
+def check_npc_station(ship: Ship, type_name: str | None = "",
                       max_volume: float = 0.0) -> DockCheck:
+    # Callers pass dict.get(type_id), which is None for an unknown station
+    # type; treat that as "name unknown" rather than crashing.
+    type_name = type_name or ""
     cat = ship_category(ship)
     if cat == SUPERCAP:
         return DockCheck(False, False, "supercapitals cannot dock at NPC stations")

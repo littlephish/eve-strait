@@ -79,7 +79,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(
             b"<html><body style='font-family:sans-serif;background:#111;color:#ddd'>"
-            b"<h2>EVE Jump Planner</h2><p>Authentication complete. "
+            b"<h2>Eve-Strait</h2><p>Authentication complete. "
             b"You can close this tab and return to the app.</p></body></html>"
         )
 

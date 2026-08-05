@@ -264,7 +264,8 @@ class RoutePanel(QWidget):
             hostile_threshold=self.ctx.hostile_threshold(),
             exclude_hostile=self.chk_hostile.isChecked(),
             relation=self.ctx.owner_relation_cached,
-            has_rights=self.ctx.has_docking_rights)
+            has_rights=self.ctx.has_docking_rights,
+            starbases=self.ctx.starbases_in(system_id))
 
     def select_system(self, system_id: int):
         """Select an existing waypoint by system (no-op if not a waypoint)."""
@@ -493,7 +494,12 @@ class RoutePanel(QWidget):
         uni = self.ctx.universe
         if uni is None:
             return ""
-        if self._docks(wp.system.id):
+        opts = self._docks(wp.system.id)
+        tether = next((o for o in opts if o.can_tether), None)
+        if tether is not None:
+            # No dock, but a capital can still tether / sit in a POS shield.
+            return f"  -  tether: {tether.name}"
+        if opts:
             return "  -  (no usable docking)"
         if uni.stations:  # stations loaded and there is genuinely nothing here
             return "  -  (no station/structure)"

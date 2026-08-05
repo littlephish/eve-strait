@@ -20,6 +20,7 @@ class DockOption:
     standing: float | None = None   # toward the owner (structures only)
     relation: str = ""              # "your corporation" / "your alliance" / ...
     has_rights: bool = False        # configured docking rights with the owner
+    can_tether: bool = False        # too big to dock, but can tether here
 
     @property
     def is_own(self) -> bool:
@@ -27,6 +28,13 @@ class DockOption:
 
     def key(self) -> tuple:
         return (self.kind, self.type_id, self.name)
+
+    @property
+    def sort_key(self) -> tuple:
+        """Rank, then prefer non-negative owners, then name. Keeps a red-but-
+        permitted structure below a neutral one of the same rank."""
+        hostile = 1 if (self.standing is not None and self.standing < 0) else 0
+        return (self.rank, hostile, self.name)
 
     @property
     def rank(self) -> int:
@@ -39,7 +47,9 @@ class DockOption:
         permission, and plenty of neutral (or worse) entities grant it.
         """
         if not self.can_dock:
-            return 9
+            # A capital that cannot dock can still tether, which beats sitting
+            # in open space; better than nothing, worse than any real dock.
+            return 8 if self.can_tether else 9
         if self.kind == "structure":
             if self.relation == "your corporation":
                 return 0
@@ -66,7 +76,8 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
                      system_id: int, standings: dict | None = None,
                      hostile_threshold: float = 0.0,
                      exclude_hostile: bool = False,
-                     relation=None, has_rights=None) -> list[DockOption]:
+                     relation=None, has_rights=None,
+                     starbases: int = 0) -> list[DockOption]:
     """All docks in a system (NPC stations + known player structures),
     annotated with whether ``ship`` can use them. When ``exclude_hostile`` is
     set, player structures owned by an entity with standing below
@@ -78,7 +89,9 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
                                chk.can_dock, chk.safe, chk.note))
     for d in dockables:
         if getattr(d, "solar_system_id", 0) == system_id and d.kind == "structure":
-            chk = docking.check_structure(ship, d.type_id, d.name, d.location_id)
+            chk = docking.check_structure_tether(ship, d.type_id, d.name,
+                                                 d.location_id)
+            tether = not chk.can_dock and docking.can_tether_at(d.type_id)
             safe, note = chk.safe, chk.note
             owner = getattr(d, "owner_id", 0)
             # Resolve how we relate to the owner (own corp/alliance, contact...).
@@ -102,10 +115,16 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
             opts.append(DockOption(d.name, d.type_id, "structure",
                                    chk.can_dock, safe, note, owner_id=owner,
                                    standing=standing, relation=label,
-                                   has_rights=rights))
+                                   has_rights=rights, can_tether=tether))
+    if starbases:
+        # A corp POS shield: not docking, but a capital can sit safely inside.
+        opts.append(DockOption(
+            f"Corp POS ({starbases} tower{'s' if starbases > 1 else ''})",
+            0, "starbase", False, True, "POS shield - safe park, no docking",
+            can_tether=True))
     # Preference: own structures > friendly structures > safe NPC stations >
-    # kickout stations > neutral structures > hostile.
-    opts.sort(key=lambda o: (o.rank, o.name))
+    # kickout stations > neutral structures > hostile > tether-only.
+    opts.sort(key=lambda o: o.sort_key)
     return opts
 
 
@@ -132,7 +151,7 @@ def best_dock(opts: list[DockOption], system_id: int = 0,
             if o.name.lower() == low or low in o.name.lower():
                 return o
     # Otherwise take the best-ranked dock (own > friendly > safe NPC > ...).
-    return min(usable, key=lambda o: (o.rank, o.name)) if usable else None
+    return min(usable, key=lambda o: o.sort_key) if usable else None
 
 
 def effective_dock(wp: Waypoint, opts: list[DockOption],

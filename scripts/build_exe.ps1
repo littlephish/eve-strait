@@ -1,11 +1,26 @@
-# Build a portable single-file Windows EXE with Nuitka.
-#   Usage:  powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
-# Output:  dist\eve-jump-planner.exe  (one file; first run downloads map data)
+# Build Eve-Strait for Windows with Nuitka.
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1 -OneFile
+#
+# DEFAULT (standalone): dist\Eve-Strait\eve-strait.exe plus its DLLs, and a
+# zip beside it. This is the form to ship. A onefile build is a self-extracting
+# stub that unpacks to %TEMP% and runs itself, which Microsoft Defender and
+# CrowdStrike routinely flag as dropper behaviour; a plain program folder does
+# not trip those heuristics.
+#
+# -OneFile rebuilds the old single .exe. Convenient for personal use, expect
+# AV complaints when distributing it.
 #
 # Nuitka cannot resolve real paths under a OneDrive folder, so we build in a
-# plain %TEMP% copy with its own venv and copy the EXE back. The first build
-# downloads a C compiler (MinGW) and takes several minutes. No app data is
-# bundled; the SDE is fetched at runtime into %LOCALAPPDATA%\eve-jump-planner.
+# plain %TEMP% copy with its own venv and copy the result back. The first build
+# downloads a C compiler and takes several minutes. No app data is bundled; the
+# SDE is fetched at runtime into %LOCALAPPDATA%\eve-strait.
+
+param(
+    [switch]$OneFile,
+    [switch]$NoZip
+)
 
 $ErrorActionPreference = "Stop"
 $proj = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -24,6 +39,7 @@ Copy-Item (Join-Path $proj "README.md")      $build
 # Build a plain path string first: PowerShell splits `--opt=(expr)` into two
 # tokens, which Nuitka rejects as extra positional arguments.
 $out = Join-Path $build "out"
+$mode = if ($OneFile) { "--onefile" } else { "--standalone" }
 
 Push-Location $build
 try {
@@ -33,38 +49,68 @@ try {
     $realPy = uv run python -c "import os,sys;print(os.path.join(os.path.realpath(sys.base_prefix),'python.exe'))"
     Remove-Item -Recurse -Force (Join-Path $build ".venv") -ErrorAction SilentlyContinue
     & $realPy -m venv .venv
-    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet --upgrade pip
-    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet `
-        PySide6 requests nuitka zstandard ordered-set
+    $py = Join-Path $build ".venv\Scripts\python.exe"
+    & $py -m pip install --quiet --upgrade pip
+    & $py -m pip install --quiet PySide6 requests nuitka zstandard ordered-set
     # Install the project itself so Nuitka can locate the package to include.
-    & (Join-Path $build ".venv\Scripts\python.exe") -m pip install --quiet .
+    & $py -m pip install --quiet .
     $env:VIRTUAL_ENV = Join-Path $build ".venv"
-    & (Join-Path $build ".venv\Scripts\python.exe") -m nuitka `
-        --onefile `
+    & $py -m nuitka `
+        $mode `
         --enable-plugin=pyside6 `
-        --include-package=eve_jump_planner `
+        --include-package=eve_strait `
         --windows-console-mode=disable `
         --assume-yes-for-downloads `
-        --company-name="eve-jump-planner" `
-        --product-name="EVE Jump Planner" `
+        --company-name="Eve-Strait" `
+        --product-name="Eve-Strait" `
         --file-version=0.1.0 `
+        --product-version=0.1.0 `
+        --file-description="EVE Online capital jump route planner" `
+        --copyright="Eve-Strait" `
         --output-dir=$out `
-        --output-filename=eve-jump-planner.exe `
+        --output-filename=eve-strait.exe `
         app.py
 } finally {
     Pop-Location
 }
 
-$exe = Join-Path $out "eve-jump-planner.exe"
-if (-not (Test-Path $exe)) {
-    Write-Host "`nBUILD FAILED: Nuitka produced no executable." -ForegroundColor Red
-    Write-Host "The existing dist\eve-jump-planner.exe (if any) was left untouched."
+New-Item -ItemType Directory -Force (Join-Path $proj "dist") | Out-Null
+# A previously-launched copy would lock the destination.
+Get-Process eve-strait -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
+
+if ($OneFile) {
+    $exe = Join-Path $out "eve-strait.exe"
+    if (-not (Test-Path $exe)) {
+        Write-Host "`nBUILD FAILED: Nuitka produced no executable." -ForegroundColor Red
+        Write-Host "Anything already in dist\ was left untouched."
+        exit 1
+    }
+    Copy-Item $exe (Join-Path $proj "dist") -Force
+    Remove-Item -Recurse -Force $build -ErrorAction SilentlyContinue
+    Write-Host "`nBuilt: dist\eve-strait.exe (onefile; expect AV false positives)" -ForegroundColor Yellow
+    exit 0
+}
+
+# Standalone: Nuitka writes <script>.dist next to the output dir.
+$distSrc = Get-ChildItem -Path $out -Directory -Filter "*.dist" | Select-Object -First 1
+if (-not $distSrc -or -not (Test-Path (Join-Path $distSrc.FullName "eve-strait.exe"))) {
+    Write-Host "`nBUILD FAILED: Nuitka produced no program folder." -ForegroundColor Red
+    Write-Host "Anything already in dist\ was left untouched."
     exit 1
 }
-New-Item -ItemType Directory -Force (Join-Path $proj "dist") | Out-Null
-# A previously-launched copy would lock the destination file.
-Get-Process eve-jump-planner -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 1
-Copy-Item $exe (Join-Path $proj "dist") -Force
+
+$target = Join-Path $proj "dist\Eve-Strait"
+if (Test-Path $target) { Remove-Item -Recurse -Force $target }
+Copy-Item $distSrc.FullName $target -Recurse
+
+if (-not $NoZip) {
+    $zip = Join-Path $proj "dist\Eve-Strait-0.1.0-win64.zip"
+    if (Test-Path $zip) { Remove-Item -Force $zip }
+    Compress-Archive -Path $target -DestinationPath $zip
+    Write-Host "`nZipped: dist\Eve-Strait-0.1.0-win64.zip" -ForegroundColor Green
+}
+
 Remove-Item -Recurse -Force $build -ErrorAction SilentlyContinue
-Write-Host "`nBuilt: dist\eve-jump-planner.exe" -ForegroundColor Green
+$size = "{0:N0} MB" -f ((Get-ChildItem $target -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+Write-Host "Built: dist\Eve-Strait\eve-strait.exe  ($size)" -ForegroundColor Green

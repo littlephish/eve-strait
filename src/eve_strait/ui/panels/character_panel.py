@@ -82,8 +82,9 @@ class CharacterPanel(QWidget):
         if sid:
             self.add_system.emit(int(sid))
 
-    def render(self, ship: Ship, type_name_of):
-        """type_name_of: callable(type_id)->str for NPC station kickout names."""
+    def render(self, ship: Ship, type_name_of, has_rights=None):
+        """type_name_of: callable(type_id)->str for NPC station kickout names.
+        has_rights: callable(owner_id)->bool for configured docking rights."""
         self.struct_list.clear()
         if not self._dockables:
             self.struct_list.addItem("No stations/structures found in your assets.")
@@ -93,7 +94,11 @@ class CharacterPanel(QWidget):
             if d.kind == "station":
                 chk = docking.check_npc_station(ship, type_name_of(d.type_id), d.max_volume)
             else:
-                chk = docking.check_structure(ship, d.type_id, d.name, d.location_id)
+                chk = docking.check_structure_tether(ship, d.type_id, d.name,
+                                                     d.location_id)
+                if has_rights and has_rights(getattr(d, "owner_id", 0)):
+                    chk = docking.DockCheck(chk.can_dock, True,
+                                            f"{chk.note} · docking rights")
             if self._filter == 1 and not chk.can_dock:
                 continue
             if self._filter == 2 and not (chk.can_dock and chk.safe):

@@ -285,6 +285,51 @@ class AnsiblexDialog(QDialog):
         return out
 
 
+class UpdateDialog(QDialog):
+    """Offers a newer release: install it, or just open the release page."""
+
+    def __init__(self, parent, info: dict, current: str, can_install: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Update available")
+        self.setMinimumWidth(520)
+        v = QVBoxLayout(self)
+
+        size = f" ({info['zip_size'] / 1048576:.0f} MB)" if info.get("zip_size") else ""
+        v.addWidget(_link_label(
+            f"<b>Eve-Strait {info['version']}</b> is available "
+            f"(you have {current}).{size}<br>"
+            f'<a href="{info.get("page", "")}">View the release notes</a>'))
+
+        notes = (info.get("notes") or "").strip()
+        if notes:
+            box = QPlainTextEdit(notes[:4000])
+            box.setReadOnly(True)
+            box.setFixedHeight(160)
+            v.addWidget(box)
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.btn_install = QPushButton("Download and install")
+        self.btn_later = QPushButton("Later")
+        self.btn_later.clicked.connect(self.reject)
+        if not can_install:
+            self.btn_install.setEnabled(False)
+            self.btn_install.setToolTip(
+                "In-place updates are only available in the packaged build. "
+                "Running from source? Use git pull.")
+        row.addWidget(self.btn_install)
+        row.addWidget(self.btn_later)
+        v.addLayout(row)
+
+    def set_busy(self, text: str):
+        self.status.setText(text)
+        self.btn_install.setEnabled(False)
+
+
 class DockingRightsDialog(QDialog):
     """Corps / alliances whose structures you may dock at, whatever the standing."""
 
@@ -363,6 +408,8 @@ class StationInfoDialog(QDialog):
         status = "OK" if dock.can_dock else "no docking"
         if dock.can_dock and not dock.safe:
             status = "RISKY"
+        if getattr(dock, "has_rights", False):
+            status = "OK (docking rights)"
         v.addWidget(QLabel(f"Docking: {status} - {dock.note}"))
 
         if dock.kind == "structure":

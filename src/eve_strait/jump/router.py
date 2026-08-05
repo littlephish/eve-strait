@@ -240,6 +240,8 @@ def plan_multimodal(
     gate_pref: str = "fast",
     jump_cost: float | None = None,
     use_ansiblex: bool = True,
+    haven=None,
+    haven_penalty: float = 0.35,
     can_land=None,
     avoid: set | None = None,
     avoid_edges: set | None = None,
@@ -347,7 +349,11 @@ def plan_multimodal(
             for s, dist in universe.within_range(node, rng, jumpable_only=True):
                 if blocked(s.id) or not (s.id == destination.id or landable(s)):
                     continue
-                nc = c + jump_fuel_w(dist)
+                # After a jump you are pinned by the reactivation timer, so
+                # nudge landings toward systems with a tether or POS shield.
+                exposed = (haven is not None and s.id != destination.id
+                           and not haven(s.id))
+                nc = c + jump_fuel_w(dist) + (haven_penalty if exposed else 0.0)
                 if nc < best.get(s.id, float("inf")):
                     best[s.id] = nc
                     prev[s.id] = (nid, "jump")
@@ -398,7 +404,8 @@ def gate_runs(systems, modes):
 
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                        can_land=None, avoid=None, strategy="min_time"):
+                        haven=None, can_land=None, avoid=None,
+                        strategy="min_time"):
     """Quantify what stargates buy you on this route.
 
     Compares a pure jump route against the best jump+gate route, so you can
@@ -409,7 +416,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         res = plan_multimodal(universe, ship, skills, origin, destination,
                               minimize=minimize, gate_pref=gate_pref,
                               jump_cost=cost, use_ansiblex=use_ansiblex,
-                              can_land=can_land, avoid=avoid)
+                              haven=haven, can_land=can_land, avoid=avoid)
         if res is None:
             return None
         return _plan_stats(ship, skills, res[0], res[1], strategy)
@@ -454,7 +461,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
 
 def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                  can_land=None, avoid=None):
+                  haven=None, can_land=None, avoid=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
     consecutive pair with jumps/gates. Every input waypoint is preserved as an
     anchor. Returns (systems, modes) or None if any leg is unreachable."""
@@ -465,8 +472,8 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
     for a, b in zip(systems, systems[1:]):
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
                               gate_pref=gate_pref, jump_cost=jump_cost,
-                              use_ansiblex=use_ansiblex, can_land=can_land,
-                              avoid=avoid)
+                              use_ansiblex=use_ansiblex, haven=haven,
+                              can_land=can_land, avoid=avoid)
         if res is None:
             return None
         segs, segmodes = res           # segs[0] == a, segs[-1] == b

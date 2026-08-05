@@ -1,4 +1,4 @@
-# EVE Jump Planner
+# Eve-Strait
 
 A PySide6 desktop tool for planning **capital / jump‑freighter** routes in EVE Online,
 in the spirit of the Dotlan jump map. It shows a pannable, zoomable 2D map of New Eden,
@@ -10,10 +10,10 @@ actually dock.
 ## Run
 
 ```bash
-uv run eve-jump-planner
+uv run eve-strait
 ```
 
-(or `uv run python -m eve_jump_planner`)
+(or `uv run python -m eve_strait`)
 
 The first launch downloads small solar‑system + station coordinate dumps (~a few MB) from
 Fuzzwork and caches them locally.
@@ -28,7 +28,7 @@ character's dockable structures, public structure search, contact standings, and
 
 1. Sign in at <https://developers.eveonline.com> → **Manage Applications** →
    **Create New Application**.
-2. **Name / Description**: anything (e.g. `EVE Jump Planner`).
+2. **Name / Description**: anything (e.g. `Eve-Strait`).
 3. **Connection Type**: choose **Authentication & API Access** - *not* "Authentication Only",
    or every scope request fails with `invalid_scope`.
 4. **Permissions / Scopes**: tick **all nine** of these now - the app requests them as one
@@ -68,10 +68,10 @@ Either:
 - set an environment variable before launching:
 
 ```bash
-EVE_CLIENT_ID=your-client-id-here uv run eve-jump-planner
+EVE_CLIENT_ID=your-client-id-here uv run eve-strait
 ```
 
-The Client ID and your tokens are stored in `%LOCALAPPDATA%\eve-jump-planner\`
+The Client ID and your tokens are stored in `%LOCALAPPDATA%\eve-strait\`
 (`config.json` and `token.json`). Delete `token.json`, or use **File → Log out**, to sign out.
 
 ### 4. Scopes
@@ -123,14 +123,14 @@ Titan bridge range (6 ly) and
 Black Ops covert bridge range (8 ly) are shown per hull; tick *Plan reach as bridge* to
 draw the reach circle at bridge range.
 
-Ship base ranges / fuel live in [`ships.py`](src/eve_jump_planner/data/ships.py) and are
+Ship base ranges / fuel live in [`ships.py`](src/eve_strait/data/ships.py) and are
 easy to edit if CCP rebalances. Skills default to **JDC 4 / JDO 5 / JFC 4 / JF 4** and are
 adjustable in the *Ship & Skills* panel.
 
 ## Docking safety
 
 Where a hull can dock is modelled in
-[`docking.py`](src/eve_jump_planner/data/docking.py):
+[`docking.py`](src/eve_strait/data/docking.py):
 
 - **Titans / Supercarriers** → Keepstar (XL) only.
 - **Carriers / Dreads / FAX / Rorqual** → NPC stations, Fortizar/Keepstar, and XL
@@ -221,11 +221,25 @@ Assembly Plant) → otherwise the best‑ranked dock:
 
 1. structures owned by **your corporation**
 2. structures owned by **your alliance**
-3. structures with **positive standing** (character / corp / alliance contacts)
-4. **NPC stations** with a docking ring (safe)
-5. NPC **kickout** stations
-6. neutral / unknown player structures
-7. hostile‑owned structures
+3. structures where you have **configured docking rights** (see below)
+4. structures with **positive standing** (character / corp / alliance contacts)
+5. **NPC stations** with a docking ring (safe)
+6. NPC **kickout** stations
+7. neutral / unknown player structures
+8. hostile‑owned structures
+
+Within a tier, an owner you are red to sorts below a neutral one.
+
+### Docking rights
+
+**File → Docking rights…** lists corporations and alliances whose structures you may dock at
+**regardless of standing**. Rentals, NAPs and access deals are routinely neutral or even red,
+so standing alone is the wrong signal for "can I dock here".
+
+Entries rank above a merely positive standing, and are never dropped by *Exclude hostile‑owned
+structures*. Names are resolved to IDs through ESI (public, no login needed), and an alliance
+entry covers every corporation in it, so you can list the alliance rather than each member
+corp. Docks granted this way are labelled *docking rights* in the dock list and station info.
 
 Standings combine your **character, corporation and alliance** contact lists (more specific
 wins). A corp‑owned structure also inherits its **alliance's** standing, and structures owned by
@@ -237,20 +251,72 @@ Ship + skills, the map data, your dockables, and these options are cached betwee
 Public player structures in a route system are pulled via ESI structure search (like the
 in‑game search), not just the ones you hold assets in.
 
-## Build a portable EXE (Nuitka)
+## Building and releasing
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/build_exe.ps1
 ```
 
-Produces a single-file `dist/eve-jump-planner.exe` (no Python needed to run it).
-The first build downloads a C compiler and takes several minutes; the first run
-of the EXE downloads the map data into `%LOCALAPPDATA%\eve-jump-planner`.
+Produces a **program folder** at `dist/Eve-Strait/` plus `dist/Eve-Strait-0.1.0-win64.zip`.
+No Python needed to run it. The first build downloads a C compiler and takes several minutes;
+the first run downloads map data into `%LOCALAPPDATA%\eve-strait`.
+
+### Why not a single .exe
+
+Nuitka and PyInstaller both build one-file executables by embedding a self-extracting stub
+that unpacks to `%TEMP%` and executes from there. That is exactly what a dropper does, so
+Microsoft Defender and CrowdStrike flag it, and a small user base means there is no reputation
+to offset the heuristic. A plain program folder does not trip it.
+
+This is what [pyfa](https://github.com/pyfa-org/Pyfa) ships too: their Windows build is
+PyInstaller **onedir** (`exclude_binaries=True` + `COLLECT`), released as
+`pyfa-vX-win.exe` (an Inno Setup installer) alongside `pyfa-vX-win.zip` (the portable folder).
+We ship the same two shapes, built with Nuitka.
+
+`-OneFile` still builds the old single exe if you want it for personal use. Expect AV
+complaints if you hand it to anyone.
+
+### Installer
+
+`scripts/build_exe.ps1` also produces `dist/Eve-Strait-0.1.0-setup.exe` when
+[Inno Setup](https://jrsoftware.org/isinfo.php) is installed (`winget install
+JRSoftware.InnoSetup`); the script is [`eve-strait.iss`](dist_assets/win/eve-strait.iss).
+It installs per-user by default, so there is no UAC prompt, and leaves
+`%LOCALAPPDATA%\eve-strait` alone on uninstall so your settings survive a reinstall.
+
+### Releasing
+
+Push a tag and [the workflow](.github/workflows/release.yml) builds both artifacts on
+`windows-latest` and opens a draft release:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+### Updating
+
+**Help - Check for updates** asks the GitHub releases API whether a newer tag exists, and can
+install it in place. Because the app is a folder rather than a locked single exe, the update is
+just a folder swap:
+
+1. the release zip is downloaded into an `update/` subfolder of the install directory;
+2. a PowerShell helper is launched **detached** (with `CREATE_BREAKAWAY_FROM_JOB`, or it would
+   die with the app) and the app exits;
+3. the helper waits for `eve-strait.exe` to become writable again. It polls the **file lock**
+   rather than a PID: the lock releasing is the reliable signal that the app is gone;
+4. it copies the new build over the old one, prunes files left by previous versions (keeping
+   the Inno Setup uninstaller), relaunches, and deletes the staging folder.
+
+Every step is appended to `update-log.txt` next to the executable, so a failed swap is
+diagnosable. If the copy fails, or the app never exits, the helper relaunches the existing
+build rather than leaving you with nothing. Installs under `Program Files` are detected as
+read-only and simply point you at the release page instead.
 
 ## Layout
 
 ```
-src/eve_jump_planner/
+src/eve_strait/
   __main__.py         entry point
   config.py           paths, ESI endpoints, constants
   data/ships.py       jump-capable hull data + skills (editable)
