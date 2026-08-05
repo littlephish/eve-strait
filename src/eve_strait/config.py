@@ -44,7 +44,8 @@ DATA_DIR = _data_home()
 _migrate_legacy_dir(DATA_DIR)
 CACHE_DIR = DATA_DIR / "cache"
 CONFIG_PATH = DATA_DIR / "config.json"
-TOKEN_PATH = DATA_DIR / "token.json"
+TOKEN_PATH = DATA_DIR / "token.json"          # legacy single-character store
+TOKENS_PATH = DATA_DIR / "tokens.json"        # multi-character store
 SDE_CSV_PATH = CACHE_DIR / "mapSolarSystems.csv"
 MAP_REGIONS_PATH = CACHE_DIR / "mapRegions.csv"
 MAP_JUMPS_PATH = CACHE_DIR / "mapSolarSystemJumps.csv"
@@ -154,6 +155,42 @@ def get_docking_rights() -> list[str]:
 def set_docking_rights(names: list[str]) -> None:
     cfg = load_config()
     cfg["docking_rights"] = names
+    save_config(cfg)
+
+
+def get_intel_refresh_minutes() -> int:
+    """How often to re-poll activity, ADM and industry data. 0 = never.
+
+    The underlying ESI snapshots are cached for an hour, so polling faster
+    than that returns the same numbers; 60 is the useful default.
+    """
+    try:
+        return int(load_config().get("intel_refresh_minutes", 60))
+    except (TypeError, ValueError):
+        return 60
+
+
+def set_intel_refresh_minutes(minutes: int) -> None:
+    cfg = load_config()
+    cfg["intel_refresh_minutes"] = max(0, int(minutes))
+    save_config(cfg)
+
+
+def get_intel_history_days() -> int:
+    """How many days of intel samples to keep on disk. 0 = don't store any.
+
+    Off by default: the history database grows by roughly a million rows a
+    week, so it should be an explicit choice.
+    """
+    try:
+        return int(load_config().get("intel_history_days", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_intel_history_days(days: int) -> None:
+    cfg = load_config()
+    cfg["intel_history_days"] = max(0, int(days))
     save_config(cfg)
 
 

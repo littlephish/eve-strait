@@ -154,6 +154,15 @@ def check_structure(ship: Ship, type_id: int, name: str = "",
     return DockCheck(True, True, "docking ok")
 
 
+# A Tenebrex Cyno Jammer stops cynos being lit in its system, which means no
+# ship can JUMP INTO that system at all. Gates still work.
+CYNO_JAMMER_TYPE_ID = 37534
+
+
+def is_cyno_jammer(type_id: int) -> bool:
+    return type_id == CYNO_JAMMER_TYPE_ID
+
+
 def can_tether_at(type_id: int) -> bool:
     """Upwell structures provide tethering even when the hull is too big to
     dock, which is why a carrier still wants an Astrahus in system. Ansiblex

@@ -242,6 +242,9 @@ def plan_multimodal(
     use_ansiblex: bool = True,
     haven=None,
     haven_penalty: float = 0.35,
+    jammed=None,
+    danger=None,
+    danger_penalty: float = 1.5,
     can_land=None,
     avoid: set | None = None,
     avoid_edges: set | None = None,
@@ -324,6 +327,9 @@ def plan_multimodal(
                         or not docking.gate_allowed(ship, g.security)):
                     continue
                 nc = c + gate_cost(g.security)
+                # Gate camps are the risk on gates, so the same bias applies.
+                if danger is not None and gid != destination.id and danger(gid):
+                    nc += danger_penalty
                 if nc < best.get(gid, float("inf")):
                     best[gid] = nc
                     prev[gid] = (nid, "gate")
@@ -349,11 +355,21 @@ def plan_multimodal(
             for s, dist in universe.within_range(node, rng, jumpable_only=True):
                 if blocked(s.id) or not (s.id == destination.id or landable(s)):
                     continue
+                # A cyno jammer stops a cyno being lit, so you cannot jump into
+                # that system at all. Hard constraint, not a preference; gates
+                # into it are still fine.
+                if jammed is not None and s.id in jammed:
+                    continue
                 # After a jump you are pinned by the reactivation timer, so
                 # nudge landings toward systems with a tether or POS shield.
                 exposed = (haven is not None and s.id != destination.id
                            and not haven(s.id))
-                nc = c + jump_fuel_w(dist) + (haven_penalty if exposed else 0.0)
+                cost = jump_fuel_w(dist) + (haven_penalty if exposed else 0.0)
+                # Recent player kills: steer around, but never make a route
+                # impossible over it.
+                if danger is not None and s.id != destination.id and danger(s.id):
+                    cost += danger_penalty
+                nc = c + cost
                 if nc < best.get(s.id, float("inf")):
                     best[s.id] = nc
                     prev[s.id] = (nid, "jump")
@@ -404,8 +420,8 @@ def gate_runs(systems, modes):
 
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                        haven=None, can_land=None, avoid=None,
-                        strategy="min_time"):
+                        haven=None, jammed=None, danger=None,
+                        can_land=None, avoid=None, strategy="min_time"):
     """Quantify what stargates buy you on this route.
 
     Compares a pure jump route against the best jump+gate route, so you can
@@ -416,7 +432,8 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         res = plan_multimodal(universe, ship, skills, origin, destination,
                               minimize=minimize, gate_pref=gate_pref,
                               jump_cost=cost, use_ansiblex=use_ansiblex,
-                              haven=haven, can_land=can_land, avoid=avoid)
+                              haven=haven, jammed=jammed, danger=danger,
+                              can_land=can_land, avoid=avoid)
         if res is None:
             return None
         return _plan_stats(ship, skills, res[0], res[1], strategy)
@@ -461,7 +478,8 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
 
 def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                  haven=None, can_land=None, avoid=None):
+                  haven=None, jammed=None, danger=None,
+                  can_land=None, avoid=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
     consecutive pair with jumps/gates. Every input waypoint is preserved as an
     anchor. Returns (systems, modes) or None if any leg is unreachable."""
@@ -473,6 +491,7 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
                               gate_pref=gate_pref, jump_cost=jump_cost,
                               use_ansiblex=use_ansiblex, haven=haven,
+                              jammed=jammed, danger=danger,
                               can_land=can_land, avoid=avoid)
         if res is None:
             return None

@@ -53,8 +53,15 @@ class MainWindow(QMainWindow):
         self.universe: Universe | None = None
         self.map_view: MapView | None = None
         self.dockables: list = []
+        self.tokens: dict[int, auth.Token] = auth.load_all()
         self.token: auth.Token | None = auth.load_saved()
         self.esi: EsiClient | None = None
+        self.location_system_id: int | None = None
+        self.kill_activity: dict[int, dict] = {}
+        self.jump_activity: dict[int, int] = {}
+        self.activity_totals: dict = {"jumps": {}, "kills": {}, "hours": 0}
+        self.sov_defense: dict[int, dict] = {}
+        self.industry_index: dict[int, dict] = {}
         self._workers: list[Worker] = []
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
@@ -82,12 +89,15 @@ class MainWindow(QMainWindow):
         self._wire()
         self._built = True
 
-        self.character.set_login(self.token.character_name if self.token else None)
+        self._refresh_character_list()
         self._load_cached_dockables()
         if self.token:
             self._fetch_contacts()
             self._fetch_starbases()
+            self._fetch_location()
         self._fetch_incursions()
+        self.refresh_intel()
+        self._start_intel_timer()
         self._fetch_sovereignty()
         self._resolve_docking_rights()
         from .. import update as _upd
@@ -181,6 +191,247 @@ class MainWindow(QMainWindow):
 
         dlg.btn_install.clicked.connect(start)
         dlg.exec()
+
+    # -- characters ---------------------------------------------------------
+    def _refresh_character_list(self):
+        chars = sorted((cid, t.character_name) for cid, t in self.tokens.items())
+        active = self.token.character_id if self.token else None
+        self.character.set_characters(chars, active)
+        self.character.set_login(self.token.character_name if self.token else None)
+
+    def _switch_character(self, character_id: int):
+        """Make another linked character active and reload everything of theirs."""
+        token = self.tokens.get(character_id)
+        if not token or (self.token and token.character_id == self.token.character_id):
+            return
+        auth.set_active(character_id)
+        self.token = token
+        self.esi = EsiClient(token, config.get_client_id())
+        # Everything below is per-character; drop the previous character's data.
+        self.dockables = []
+        self.standings = {}
+        self.starbase_systems = {}
+        self.location_system_id = None
+        self.my_corp_id = self.my_alliance_id = None
+        self._structs_fetched.clear()
+        self.character.set_dockables([])
+        self.character.set_location("")
+        self._refresh_character_list()
+        self._load_cached_dockables()
+        self._fetch_contacts()
+        self._fetch_starbases()
+        self._fetch_location()
+        self._render_character()
+        self.route.refresh()
+        self.statusBar().showMessage(f"Switched to {token.character_name}.", 4000)
+
+    def _unlink_character(self, character_id: int):
+        token = self.tokens.get(character_id)
+        if not token:
+            return
+        if QMessageBox.question(
+                self, "Unlink character",
+                f"Remove {token.character_name} from Eve-Strait?\n"
+                "Their cached asset list is kept; you can re-add them later."
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        auth.remove(character_id)
+        self.tokens.pop(character_id, None)
+        remaining = auth.load_saved()
+        if remaining:
+            self.token = remaining
+            self.esi = EsiClient(remaining, config.get_client_id())
+            self._switch_character(remaining.character_id)
+        else:
+            self.token = None
+            self.esi = None
+            self.dockables = []
+            self.character.set_dockables([])
+        self._refresh_character_list()
+        self._render_character()
+
+    # -- current location ---------------------------------------------------
+    def _fetch_location(self):
+        """Where the active character is (scope already granted at login)."""
+        if not self.token:
+            return
+        if not self.esi:
+            self.esi = EsiClient(self.token, config.get_client_id())
+        w = Worker(self.esi.location)
+        w.finished_ok.connect(self._on_location)
+        w.failed.connect(lambda m: self.character.set_location(""))
+        self._run(w)
+
+    def _on_location(self, data):
+        sid = (data or {}).get("solar_system_id")
+        self.location_system_id = sid
+        if not sid or not self.universe:
+            self.character.set_location("")
+            return
+        system = self.universe.systems.get(sid)
+        if not system:
+            self.character.set_location("")
+            return
+        region = self.universe.region_names.get(system.region_id, "")
+        self.character.set_location(
+            f"Currently in <b>{system.name}</b> ({system.security:.1f})"
+            + (f", {region}" if region else ""))
+        if self.map_view:
+            self.map_view.set_current_location(sid)
+
+    def _use_location_as_origin(self):
+        """Put the character's current system at the head of the route."""
+        if self.location_system_id is None:
+            self.statusBar().showMessage(
+                "Current location unknown. Log in and make sure the character is online.",
+                6000)
+            self._fetch_location()
+            return
+        self.route.set_origin(self.location_system_id)
+
+    # -- system activity (kills, pods, traffic) -----------------------------
+    def _fetch_activity(self):
+        from ..esi import client
+        w = Worker(client.system_activity)
+        w.finished_ok.connect(self._on_activity)
+        w.failed.connect(lambda m: None)
+        self._run(w)
+
+    def refresh_intel(self):
+        """Re-poll every activity source: kills, traffic, ADM, industry."""
+        self._fetch_activity()
+        self._fetch_defense()
+
+    def _start_intel_timer(self):
+        """Re-poll on the configured interval. 0 minutes means never."""
+        from PySide6.QtCore import QTimer
+        if getattr(self, "_intel_timer", None) is None:
+            self._intel_timer = QTimer(self)
+            self._intel_timer.timeout.connect(self.refresh_intel)
+        minutes = config.get_intel_refresh_minutes()
+        if minutes <= 0:
+            self._intel_timer.stop()
+        else:
+            self._intel_timer.start(minutes * 60 * 1000)
+
+    def _edit_intel_settings(self):
+        from ..esi import intel_store
+        from .dialogs import IntelSettingsDialog
+        dlg = IntelSettingsDialog(self, config.get_intel_refresh_minutes())
+        dlg.set_history_days(config.get_intel_history_days())
+        dlg.set_stats(intel_store.stats())
+
+        def purge():
+            if QMessageBox.question(
+                    self, "Delete history",
+                    "Delete all stored intel history? This cannot be undone."
+            ) == QMessageBox.StandardButton.Yes:
+                intel_store.purge()
+                dlg.set_stats(intel_store.stats())
+
+        dlg.btn_purge.clicked.connect(purge)
+        if not dlg.exec():
+            return
+        config.set_intel_refresh_minutes(dlg.minutes())
+        config.set_intel_history_days(dlg.history_days())
+        self._start_intel_timer()
+        if dlg.refresh_now():
+            self.refresh_intel()
+        mins = config.get_intel_refresh_minutes()
+        self.statusBar().showMessage(
+            "Intel refresh disabled." if mins <= 0
+            else f"Intel refreshes every {mins} min.", 5000)
+
+    def _fetch_defense(self):
+        """ADM and industry indices: the 'is anyone actually here' signals."""
+        from ..esi import client
+        w = Worker(client.sovereignty_defense)
+        w.finished_ok.connect(lambda d: setattr(self, "sov_defense", d or {}))
+        w.failed.connect(lambda m: None)
+        self._run(w)
+        w2 = Worker(client.industry_indices)
+        w2.finished_ok.connect(lambda d: setattr(self, "industry_index", d or {}))
+        w2.failed.connect(lambda m: None)
+        self._run(w2)
+
+    def system_intel(self, system_id: int) -> dict:
+        """Everything we know about activity in one system.
+
+        ESI has no per-system player count, so "how busy is this" is assembled
+        from proxies: gate traffic, NPC kills (ratting), ADM (mining, ratting
+        and industry over time) and industry indices.
+        """
+        hist = self.activity_totals
+        k = self.kill_activity.get(system_id, {})
+        defense = self.sov_defense.get(system_id, {})
+        return {
+            "jumps_1h": self.jump_activity.get(system_id, 0),
+            "jumps_24h": hist.get("jumps", {}).get(system_id, 0),
+            "ship_kills_1h": k.get("ship", 0),
+            "pod_kills_1h": k.get("pod", 0),
+            "npc_kills_1h": k.get("npc", 0),
+            "kills_24h": hist.get("kills", {}).get(system_id, {}),
+            "history_hours": hist.get("hours", 0),
+            "adm": defense.get("adm"),
+            "vuln_start": defense.get("vuln_start", ""),
+            "vuln_end": defense.get("vuln_end", ""),
+            "industry": self.industry_index.get(system_id, {}),
+        }
+
+    def _on_activity(self, result):
+        result = result or {}
+        self.kill_activity = result.get("kills", {})
+        self.jump_activity = result.get("jumps", {})
+        # ESI only reports the last hour, so build 24h totals ourselves.
+        # Both writes go to a worker: the rolling window is small, but the
+        # long-term SQLite store can be thousands of rows and must not run on
+        # the UI thread.
+        defense = dict(self.sov_defense)
+
+        def persist():
+            from ..esi import activity_history, intel_store
+            activity_history.record(result)
+            intel_store.record(result, defense)
+            return activity_history.totals()
+
+        w = Worker(persist)
+        w.finished_ok.connect(lambda totals: setattr(self, "activity_totals", totals))
+        w.failed.connect(lambda m: None)
+        self._run(w)
+        if self.kill_activity:
+            busy = sum(1 for v in self.kill_activity.values() if v["ship"])
+            self.statusBar().showMessage(
+                f"Kill activity loaded: {busy} systems with recent ship kills.", 5000)
+            if self.map_view:
+                self.map_view.set_kill_activity(self.kill_activity)
+            self.route.refresh()
+
+    def kills_in(self, system_id: int) -> dict:
+        return self.kill_activity.get(system_id, {"ship": 0, "pod": 0, "npc": 0})
+
+    def jumps_in(self, system_id: int) -> int:
+        return self.jump_activity.get(system_id, 0)
+
+    def danger_predicate(self):
+        """Systems with recent player kills, for the router's danger bias."""
+        kills = self.kill_activity
+        if not kills or not self.route.avoid_kills():
+            return None
+        return lambda sid: bool(kills.get(sid, {}).get("ship"))
+
+    # -- cyno jammers -------------------------------------------------------
+    def jammed_systems(self) -> set:
+        """Systems with a known Tenebrex Cyno Jammer.
+
+        A jammer stops cynos being lit, so nothing can jump *into* the system.
+        Gates still work, which is exactly what the router needs to model.
+        """
+        from ..data import docking
+        out = set()
+        for d in self.dockables:
+            if docking.is_cyno_jammer(getattr(d, "type_id", 0)):
+                out.add(d.solar_system_id)
+        return out
 
     def _fetch_incursions(self):
         from ..esi import client
@@ -447,6 +698,7 @@ class MainWindow(QMainWindow):
             ("Ansiblex jump gates...", self._edit_bridges),
             ("Docking rights...", self._edit_docking_rights),
             ("Avoided systems...", self._edit_avoided),
+            ("Intel refresh & history...", self._edit_intel_settings),
             ("Reload map data", self._reload_map),
             ("Log out", self._logout),
             ("Quit", self.close),
@@ -598,6 +850,9 @@ class MainWindow(QMainWindow):
         self.character.login_requested.connect(self._login)
         self.character.load_structures_requested.connect(self._load_structures)
         self.character.add_system.connect(self.route.add_system)
+        self.character.character_changed.connect(self._switch_character)
+        self.character.unlink_requested.connect(self._unlink_character)
+        self.character.goto_location_requested.connect(self._use_location_as_origin)
 
     # -- settings persistence ----------------------------------------------
     def _load_settings(self):
@@ -643,6 +898,12 @@ class MainWindow(QMainWindow):
         self.map_view.set_avoided(self.avoided_ids)
         if self.sov_owners:
             self.map_view.set_sov_lookup(self.sov_label)
+        self.map_view.set_kill_lookup(self.kills_in)
+        if self.kill_activity:
+            self.map_view.set_kill_activity(self.kill_activity)
+        if self.location_system_id:
+            # Location may have arrived before the map existed.
+            self._on_location({"solar_system_id": self.location_system_id})
         self.map_dock.setWidget(self.map_view)
         self.map_view.setMinimumWidth(0)
         self._apply_default_layout()
@@ -717,7 +978,7 @@ class MainWindow(QMainWindow):
         act_add = menu.addAction("Add as waypoint")
         act_sysinfo = menu.addAction("Show system info")
         act_info = menu.addAction("Show station info")
-        act_wp = menu.addAction("Set in-game destination")
+        act_wp, wp_actions = self._add_waypoint_menu(menu)
         act_avoid = menu.addAction(
             "Stop avoiding this system" if self.is_avoided(sid)
             else "Avoid this system")
@@ -735,21 +996,53 @@ class MainWindow(QMainWindow):
             self.route.show_station_info(sid)
         elif chosen == act_wp:
             self.set_ingame_waypoint(sid)
+        elif chosen in wp_actions:
+            self.set_ingame_waypoint(sid, wp_actions[chosen])
         elif chosen == act_avoid:
             self.toggle_avoid(sid)
         elif act_remove is not None and chosen == act_remove:
             self.route.remove_system(sid)
 
-    def set_ingame_waypoint(self, system_id: int):
-        if not self.token:
+    def add_waypoint_menu(self, menu):
+        """Public alias used by the route panel's context menu."""
+        return self._add_waypoint_menu(menu)
+
+    def _add_waypoint_menu(self, menu):
+        """Add "Set in-game destination" to a menu.
+
+        With one character it is a plain action; with several it becomes a
+        submenu so you choose which client receives the destination.
+        Returns (single_action_or_None, {action: character_id}).
+        """
+        targets = self.waypoint_menu_targets()
+        if len(targets) <= 1:
+            return menu.addAction("Set in-game destination"), {}
+        sub = menu.addMenu("Set in-game destination")
+        actions = {}
+        for cid, name in targets:
+            mark = " (active)" if self.token and cid == self.token.character_id else ""
+            actions[sub.addAction(f"{name}{mark}")] = cid
+        return None, actions
+
+    def waypoint_menu_targets(self):
+        """Characters that can receive an in-game waypoint."""
+        return sorted((cid, t.character_name) for cid, t in self.tokens.items())
+
+    def set_ingame_waypoint(self, system_id: int, character_id: int | None = None):
+        """Send a destination to one character's client (defaults to active)."""
+        token = self.tokens.get(character_id) if character_id else self.token
+        if not token:
             QMessageBox.information(
                 self, "In-game waypoint",
-                "Log in with EVE first (needs the esi-ui.write_waypoint.v1 scope).")
+                "Link a character first (needs the esi-ui.write_waypoint.v1 scope).")
             return
-        if not self.esi:
-            self.esi = EsiClient(self.token, config.get_client_id())
+        client = (self.esi if (self.token and token.character_id == self.token.character_id)
+                  else EsiClient(token, config.get_client_id()))
+        if client is None:
+            client = EsiClient(token, config.get_client_id())
         name = self.universe.systems[system_id].name if self.universe else system_id
-        w = Worker(self.esi.set_waypoint, system_id)
+        name = f"{name} ({token.character_name})"
+        w = Worker(client.set_waypoint, system_id)
         w.finished_ok.connect(
             lambda _: self.statusBar().showMessage(f"Set in-game destination: {name}", 5000))
         w.failed.connect(lambda m: QMessageBox.warning(self, "In-game waypoint", m))
@@ -793,6 +1086,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    haven=self._haven_predicate(ship),
+                   jammed=self.jammed_systems(), danger=self.danger_predicate(),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems())
         w.finished_ok.connect(lambda res: (self.route.set_busy(False),
                                            self._apply_auto_route(res)))
@@ -1073,6 +1367,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    haven=self._haven_predicate(ship),
+                   jammed=self.jammed_systems(), danger=self.danger_predicate(),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems(),
                    strategy=self.route.strategy())
         w.finished_ok.connect(lambda res: (self.route.set_busy(False),
@@ -1100,12 +1395,16 @@ class MainWindow(QMainWindow):
         self._run(w)
 
     def _on_login(self, token: auth.Token):
-        self.token = token
+        """Link a character. Existing characters are kept; this one becomes active."""
         auth.save(token)
+        self.tokens[token.character_id] = token
+        self.token = token
         self.esi = EsiClient(token, config.get_client_id())
         self.character.btn_login.setEnabled(True)
-        self.character.set_login(token.character_name)
+        self._refresh_character_list()
         self._fetch_contacts()
+        self._fetch_starbases()
+        self._fetch_location()
 
     def _on_login_fail(self, msg: str):
         self.character.btn_login.setEnabled(True)
@@ -1123,12 +1422,23 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Login failed", msg + extra)
 
     def _logout(self):
+        """Unlink every character."""
+        if self.tokens and QMessageBox.question(
+                self, "Log out",
+                f"Unlink all {len(self.tokens)} character(s)?"
+        ) != QMessageBox.StandardButton.Yes:
+            return
         auth.logout()
+        self.tokens = {}
         self.token = None
         self.esi = None
         self.dockables = []
+        self.standings = {}
+        self.starbase_systems = {}
+        self.location_system_id = None
         self.character.set_dockables([])
-        self.character.set_login(None)
+        self.character.set_location("")
+        self._refresh_character_list()
         self._render_character()
 
     def _load_structures(self):

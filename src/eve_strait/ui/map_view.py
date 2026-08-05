@@ -170,6 +170,73 @@ class MapView(QGraphicsView):
         self._sov_lookup = fn
         self._hover_id = None      # force the next hover to re-render
 
+    def set_kill_activity(self, kills: dict):
+        """Ring systems with recent player kills, sized by how many.
+
+        Drawn as one batched path per severity band so 2900 systems of data
+        cost a handful of scene items rather than thousands.
+        """
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in getattr(self, "_kill_items", ()):
+            self.scene_obj.removeItem(item)
+        self._kill_items = []
+        if not kills:
+            return
+
+        # (min ship kills, radius, colour)
+        bands = ((20, 7.0, QColor(255, 60, 60, 210)),
+                 (5, 5.5, QColor(255, 140, 40, 190)),
+                 (1, 4.0, QColor(255, 210, 60, 160)))
+        paths = {i: QPainterPath() for i in range(len(bands))}
+        for sid, counts in kills.items():
+            ship = counts.get("ship", 0)
+            if ship < 1:
+                continue
+            p = self._pos.get(sid)
+            if p is None:
+                continue
+            for i, (threshold, radius, _) in enumerate(bands):
+                if ship >= threshold:
+                    paths[i].addEllipse(p.x() - radius, p.y() - radius,
+                                        2 * radius, 2 * radius)
+                    break
+        for i, (_, _, colour) in enumerate(bands):
+            if paths[i].isEmpty():
+                continue
+            item = QGraphicsPathItem(paths[i])
+            pen = QPen(colour, 1.4)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            item.setZValue(2.5)
+            self.scene_obj.addItem(item)
+            self._kill_items.append(item)
+
+    def set_kill_lookup(self, fn):
+        """callable(system_id) -> dict of kill counts, shown on hover."""
+        self._kill_lookup = fn
+        self._hover_id = None
+
+    def set_current_location(self, system_id):
+        """Mark where the active character is with a cyan 'you are here' ring."""
+        for item in getattr(self, "_here_items", ()):
+            self.scene_obj.removeItem(item)
+        self._here_items = []
+        p = self._pos.get(system_id)
+        if p is None:
+            return
+        for radius, width in ((9.0, 2.0), (13.0, 1.0)):
+            ring = QGraphicsEllipseItem(-radius, -radius, 2 * radius, 2 * radius)
+            ring.setPos(p)
+            ring.setPen(QPen(QColor("#00e5ff"), width))
+            ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            ring.setFlag(_IGNORE_XF, True)
+            ring.setZValue(6)
+            self.scene_obj.addItem(ring)
+            self._here_items.append(ring)
+
     def set_avoided(self, system_ids):
         """Mark avoided systems with a red X so they're obvious on the map."""
         for item in getattr(self, "_avoid_items", ()):
@@ -393,6 +460,12 @@ class MapView(QGraphicsView):
             owner = self._sov_lookup(sid)
             if owner:
                 label = f"{label}  -  {owner}"
+        lookup = getattr(self, "_kill_lookup", None)
+        if lookup is not None:
+            k = lookup(sid) or {}
+            if k.get("ship") or k.get("pod"):
+                label = (f"{label}  |  {k.get('ship', 0)} kills, "
+                         f"{k.get('pod', 0)} pods (1h)")
         self._hover_text.setText(label)
         _anchor_px(self._hover_text, p, 11, 4)
         self._hover_text.show()

@@ -181,18 +181,96 @@ def _token_from_response(data: dict, client_id: str) -> Token:
     )
 
 
-def load_saved() -> Token | None:
+# -- multi-character token store -------------------------------------------
+# tokens.json: {"active": <character_id>, "characters": {"<id>": {...token...}}}
+# The old single-character token.json is migrated in on first load.
+
+def _read_store() -> dict:
+    if config.TOKENS_PATH.exists():
+        try:
+            data = json.loads(config.TOKENS_PATH.read_text("utf-8"))
+            if isinstance(data, dict) and "characters" in data:
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return _migrate_legacy_token()
+
+
+def _migrate_legacy_token() -> dict:
+    """Carry a pre-multi-character token.json into the new store."""
+    store = {"active": None, "characters": {}}
     if not config.TOKEN_PATH.exists():
-        return None
+        return store
     try:
-        return Token.from_dict(json.loads(config.TOKEN_PATH.read_text("utf-8")))
+        token = Token.from_dict(json.loads(config.TOKEN_PATH.read_text("utf-8")))
     except (json.JSONDecodeError, OSError, TypeError):
-        return None
+        return store
+    store["characters"][str(token.character_id)] = token.to_dict()
+    store["active"] = token.character_id
+    _write_store(store)      # leave token.json in place as a backup
+    return store
 
 
-def save(token: Token) -> None:
-    config.TOKEN_PATH.write_text(json.dumps(token.to_dict(), indent=2), "utf-8")
+def _write_store(store: dict) -> None:
+    try:
+        config.TOKENS_PATH.write_text(json.dumps(store, indent=2), "utf-8")
+    except OSError:
+        pass
+
+
+def load_all() -> dict[int, Token]:
+    """Every linked character, keyed by character_id."""
+    out: dict[int, Token] = {}
+    for cid, raw in (_read_store().get("characters") or {}).items():
+        try:
+            out[int(cid)] = Token.from_dict(raw)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def active_character_id() -> int | None:
+    store = _read_store()
+    active = store.get("active")
+    if active is not None and str(active) in (store.get("characters") or {}):
+        return int(active)
+    chars = store.get("characters") or {}
+    return int(next(iter(chars))) if chars else None
+
+
+def load_saved() -> Token | None:
+    """The active character's token, or None when nothing is linked."""
+    cid = active_character_id()
+    return load_all().get(cid) if cid is not None else None
+
+
+def save(token: Token, make_active: bool = True) -> None:
+    """Add or replace one character's token."""
+    store = _read_store()
+    store.setdefault("characters", {})[str(token.character_id)] = token.to_dict()
+    if make_active or store.get("active") is None:
+        store["active"] = token.character_id
+    _write_store(store)
+
+
+def set_active(character_id: int) -> None:
+    store = _read_store()
+    if str(character_id) in (store.get("characters") or {}):
+        store["active"] = character_id
+        _write_store(store)
+
+
+def remove(character_id: int) -> None:
+    """Unlink one character."""
+    store = _read_store()
+    store.get("characters", {}).pop(str(character_id), None)
+    if store.get("active") == character_id:
+        chars = store.get("characters") or {}
+        store["active"] = int(next(iter(chars))) if chars else None
+    _write_store(store)
 
 
 def logout() -> None:
+    """Unlink every character."""
     config.TOKEN_PATH.unlink(missing_ok=True)
+    config.TOKENS_PATH.unlink(missing_ok=True)

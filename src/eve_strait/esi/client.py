@@ -76,6 +76,112 @@ def sovereignty(progress=None) -> dict:
     return {"owners": owners, "names": names}
 
 
+def system_activity(progress=None) -> dict:
+    """Recent activity per solar system. Public, no auth.
+
+    /universe/system_kills/ carries ship, pod and NPC kills for the last hour;
+    /universe/system_jumps/ carries gate traffic. Together they show where
+    fighting is happening and whether a pipe is busy or dead.
+
+    Returns {"kills": {system_id: {...}}, "jumps": {system_id: int},
+             "expires": str}. Empty dicts on failure: activity data is a nice
+    to have and must never block routing.
+    """
+    out = {"kills": {}, "jumps": {}, "expires": ""}
+    if progress:
+        progress("Loading recent kill activity...")
+    try:
+        r = requests.get(f"{config.ESI_BASE}/universe/system_kills/", timeout=45)
+        r.raise_for_status()
+        out["expires"] = r.headers.get("expires", "")
+        for row in r.json():
+            sid = row.get("system_id")
+            if sid:
+                out["kills"][sid] = {
+                    "ship": row.get("ship_kills", 0),
+                    "pod": row.get("pod_kills", 0),
+                    "npc": row.get("npc_kills", 0),
+                }
+    except (requests.RequestException, ValueError):
+        return out
+    try:
+        r = requests.get(f"{config.ESI_BASE}/universe/system_jumps/", timeout=45)
+        r.raise_for_status()
+        for row in r.json():
+            sid = row.get("system_id")
+            if sid:
+                out["jumps"][sid] = row.get("ship_jumps", 0)
+    except (requests.RequestException, ValueError):
+        pass
+    return out
+
+
+# Sovereignty Hub. Its vulnerability_occupancy_level is the Activity Defense
+# Multiplier, which players raise by mining, ratting and running industry in
+# the system. That makes ADM the best public proxy for "how much is actually
+# happening here", which is exactly what a hunter wants.
+SOV_HUB_TYPE_ID = 32458
+
+
+def sovereignty_defense(progress=None) -> dict:
+    """Per-system ADM and vulnerability window. Public, no auth.
+
+    There is no per-system player count anywhere in ESI. ADM is the closest
+    honest signal: a high ADM means sustained mining / ratting / industry.
+
+    Returns {system_id: {"adm": float, "alliance_id": int,
+                         "vuln_start": str, "vuln_end": str}}.
+    """
+    if progress:
+        progress("Loading sovereignty defense levels...")
+    out: dict[int, dict] = {}
+    try:
+        r = requests.get(f"{config.ESI_BASE}/sovereignty/structures/", timeout=45)
+        r.raise_for_status()
+        rows = r.json()
+    except (requests.RequestException, ValueError):
+        return out
+    for row in rows:
+        sid = row.get("solar_system_id")
+        adm = row.get("vulnerability_occupancy_level")
+        if not sid or adm is None:
+            continue
+        # Keep the highest ADM in the system (the hub is what matters).
+        if sid not in out or adm > out[sid]["adm"]:
+            out[sid] = {
+                "adm": float(adm),
+                "alliance_id": row.get("alliance_id"),
+                "vuln_start": row.get("vulnerable_start_time", ""),
+                "vuln_end": row.get("vulnerable_end_time", ""),
+                "type_id": row.get("structure_type_id"),
+            }
+    return out
+
+
+def industry_indices(progress=None) -> dict:
+    """Per-system industry cost indices. Public, no auth.
+
+    Cost indices rise with industrial job volume, so they are a second
+    activity signal alongside ADM. Returns {system_id: {activity: index}}.
+    """
+    if progress:
+        progress("Loading industry indices...")
+    out: dict[int, dict] = {}
+    try:
+        r = requests.get(f"{config.ESI_BASE}/industry/systems/", timeout=45)
+        r.raise_for_status()
+        rows = r.json()
+    except (requests.RequestException, ValueError):
+        return out
+    for row in rows:
+        sid = row.get("solar_system_id")
+        if not sid:
+            continue
+        out[sid] = {c.get("activity"): c.get("cost_index", 0.0)
+                    for c in row.get("cost_indices", [])}
+    return out
+
+
 def incursions() -> set[int]:
     """Set of solar system IDs currently affected by an Incursion. Public."""
     try:
@@ -190,6 +296,24 @@ class EsiClient:
         return out
 
     # -- name resolution ----------------------------------------------------
+    def location(self) -> dict:
+        """Where this character is right now.
+
+        Uses esi-location.read_location.v1, which is already in the default
+        scope set, so no re-authentication is needed.
+        Returns {"solar_system_id": int, "station_id"?: int, "structure_id"?: int}.
+        """
+        cid = self.token.character_id
+        return self._get(f"/characters/{cid}/location/").json()
+
+    def online(self) -> dict:
+        """Login state for this character (esi-location.read_online.v1)."""
+        cid = self.token.character_id
+        try:
+            return self._get(f"/characters/{cid}/online/").json()
+        except requests.HTTPError:
+            return {}
+
     def set_waypoint(self, destination_id: int, add_to_beginning=False,
                      clear_other_waypoints=False) -> None:
         """Set an in-game autopilot waypoint (needs esi-ui.write_waypoint.v1)."""

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -23,6 +25,9 @@ class CharacterPanel(QWidget):
     login_requested = Signal()
     load_structures_requested = Signal()
     add_system = Signal(int)
+    character_changed = Signal(int)          # character_id
+    unlink_requested = Signal(int)           # character_id
+    goto_location_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -31,9 +36,32 @@ class CharacterPanel(QWidget):
         self.lbl_login = QLabel("-")
         v.addWidget(self.lbl_login)
 
-        self.btn_login = QPushButton("Log in with EVE")
+        # Character switcher: the active character drives assets, standings,
+        # starbases and location.
+        char_row = QHBoxLayout()
+        char_row.addWidget(QLabel("Character:"))
+        self.cmb_char = QComboBox()
+        self.cmb_char.currentIndexChanged.connect(self._on_char_picked)
+        char_row.addWidget(self.cmb_char, 1)
+        v.addLayout(char_row)
+
+        self.lbl_location = QLabel("")
+        self.lbl_location.setWordWrap(True)
+        v.addWidget(self.lbl_location)
+
+        btn_row = QHBoxLayout()
+        self.btn_login = QPushButton("Add character")
         self.btn_login.clicked.connect(self.login_requested)
-        v.addWidget(self.btn_login)
+        btn_row.addWidget(self.btn_login)
+        self.btn_unlink = QPushButton("Unlink")
+        self.btn_unlink.setToolTip("Remove the selected character from this app.")
+        self.btn_unlink.clicked.connect(self._on_unlink)
+        btn_row.addWidget(self.btn_unlink)
+        v.addLayout(btn_row)
+
+        self.btn_here = QPushButton("Use current location as origin")
+        self.btn_here.clicked.connect(self.goto_location_requested)
+        v.addWidget(self.btn_here)
 
         self.btn_structs = QPushButton("Load my dockable structures")
         self.btn_structs.clicked.connect(self.load_structures_requested)
@@ -57,11 +85,41 @@ class CharacterPanel(QWidget):
     # -- state --------------------------------------------------------------
     def set_login(self, name: str | None):
         if name:
-            self.lbl_login.setText(f"Logged in: <b>{name}</b>")
-            self.btn_login.setText("Re-authenticate")
+            self.lbl_login.setText(f"Active: <b>{name}</b>")
         else:
-            self.lbl_login.setText("Not logged in.")
-            self.btn_login.setText("Log in with EVE")
+            self.lbl_login.setText("No characters linked.")
+            self.lbl_location.setText("")
+        self.btn_unlink.setEnabled(bool(name))
+        self.btn_here.setEnabled(bool(name))
+
+    def set_characters(self, characters: list[tuple[int, str]], active_id: int | None):
+        """characters: [(character_id, name)] with the active one selected."""
+        self.cmb_char.blockSignals(True)
+        self.cmb_char.clear()
+        for cid, name in characters:
+            self.cmb_char.addItem(name, cid)
+        if active_id is not None:
+            idx = self.cmb_char.findData(active_id)
+            if idx >= 0:
+                self.cmb_char.setCurrentIndex(idx)
+        self.cmb_char.setEnabled(len(characters) > 1)
+        self.cmb_char.blockSignals(False)
+
+    def current_character_id(self):
+        return self.cmb_char.currentData()
+
+    def set_location(self, text: str):
+        self.lbl_location.setText(text)
+
+    def _on_char_picked(self, _idx):
+        cid = self.cmb_char.currentData()
+        if cid is not None:
+            self.character_changed.emit(int(cid))
+
+    def _on_unlink(self):
+        cid = self.cmb_char.currentData()
+        if cid is not None:
+            self.unlink_requested.emit(int(cid))
 
     def set_loading(self, loading: bool, text: str = ""):
         self.btn_structs.setEnabled(not loading)

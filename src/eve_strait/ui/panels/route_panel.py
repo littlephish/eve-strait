@@ -110,6 +110,14 @@ class RoutePanel(QWidget):
         opt.addWidget(self.cmb_policy, 1)
         v.addLayout(opt)
 
+        self.chk_nodocks = QCheckBox("Just passing through (don't pick docks)")
+        self.chk_nodocks.setToolTip(
+            "For subcaps and freighters warping gate to gate. Waypoints stop "
+            "naming a station, and the dock picker is disabled. The docking "
+            "filter above still applies to routing.")
+        self.chk_nodocks.toggled.connect(self._on_nodocks_toggled)
+        v.addWidget(self.chk_nodocks)
+
         self.chk_gates = QCheckBox("Allow gates to reduce the number of jumps")
         self.chk_gates.setChecked(True)
         self.chk_gates.setToolTip(
@@ -184,6 +192,14 @@ class RoutePanel(QWidget):
         self.chk_incursions.toggled.connect(self._emit_changed)
         v.addWidget(self.chk_incursions)
 
+        self.chk_kills = QCheckBox("Steer around recent kills")
+        self.chk_kills.setToolTip(
+            "Bias the route away from systems with player kills in the last "
+            "hour. A preference, not a hard block: a route is never made "
+            "impossible by it.")
+        self.chk_kills.toggled.connect(self._emit_changed)
+        v.addWidget(self.chk_kills)
+
         act_row = QHBoxLayout()
         b_assist = QPushButton("Gate assist…")
         b_assist.setToolTip("Compare a pure jump route against jump+gate, and show "
@@ -241,6 +257,17 @@ class RoutePanel(QWidget):
     def avoid_incursions(self) -> bool:
         return self.chk_incursions.isChecked()
 
+    def avoid_kills(self) -> bool:
+        return self.chk_kills.isChecked()
+
+    def pick_docks(self) -> bool:
+        """False when the user is just passing through and wants no docks."""
+        return not self.chk_nodocks.isChecked()
+
+    def _on_nodocks_toggled(self, _on):
+        self._rebuild()
+        self._emit_changed()
+
     def policy(self) -> int:
         return self.cmb_policy.currentIndex()
 
@@ -266,6 +293,20 @@ class RoutePanel(QWidget):
             relation=self.ctx.owner_relation_cached,
             has_rights=self.ctx.has_docking_rights,
             starbases=self.ctx.starbases_in(system_id))
+
+    def set_origin(self, system_id: int):
+        """Make a system the first waypoint, keeping the rest of the route."""
+        uni = self.ctx.universe
+        if not uni or system_id not in uni.systems:
+            return
+        if self.waypoints and self.waypoints[0].system.id == system_id:
+            return
+        # Drop a stale origin only if it was never travelled from.
+        self.waypoints.insert(0, Waypoint(uni.systems[int(system_id)]))
+        self.route_modes = ["jump"] * max(0, len(self.waypoints) - 1)
+        self._rebuild()
+        self.wp_list.setCurrentRow(0)
+        self._emit_changed()
 
     def select_system(self, system_id: int):
         """Select an existing waypoint by system (no-op if not a waypoint)."""
@@ -385,7 +426,7 @@ class RoutePanel(QWidget):
         menu = QMenu(self)
         act_sysinfo = menu.addAction("Show system info")
         act_info = menu.addAction("Show station info")
-        act_wp = menu.addAction("Set in-game destination")
+        act_wp, wp_actions = self.ctx.add_waypoint_menu(menu)
         act_avoid = menu.addAction(
             "Stop avoiding this system" if self.ctx.is_avoided(sid)
             else "Avoid this system")
@@ -412,6 +453,8 @@ class RoutePanel(QWidget):
             self.show_system_info(sid)
         elif chosen == act_wp:
             self.ctx.set_ingame_waypoint(sid)
+        elif chosen in wp_actions:
+            self.ctx.set_ingame_waypoint(sid, wp_actions[chosen])
         elif chosen == act_avoid:
             self.ctx.toggle_avoid(sid)
 
@@ -467,8 +510,11 @@ class RoutePanel(QWidget):
         for i, wp in enumerate(self.waypoints):
             uid = next(self._uid)
             self._uid_map[uid] = wp
-            eff = self._effective(wp)
-            suffix = f"  -  {eff.name}" if eff else self._empty_suffix(wp)
+            eff = self._effective(wp) if self.pick_docks() else None
+            if not self.pick_docks():
+                suffix = ""
+            else:
+                suffix = f"  -  {eff.name}" if eff else self._empty_suffix(wp)
             it = QListWidgetItem(f"{i}: {wp.system.name}  ({wp.system.security:.1f}){suffix}")
             it.setData(_ROLE_SYS, wp.system.id)
             it.setData(_ROLE_UID, uid)
@@ -567,6 +613,11 @@ class RoutePanel(QWidget):
         row = self.wp_list.currentRow()
         self.cmb_pick.blockSignals(True)
         self.cmb_pick.clear()
+        if not self.pick_docks():
+            self.lbl_dock.setText("Dock: (passing through)")
+            self.cmb_pick.setEnabled(False)
+            self.cmb_pick.blockSignals(False)
+            return
         if not (0 <= row < len(self.waypoints)) or self.ctx.universe is None:
             self.lbl_dock.setText("Dock:")
             self.cmb_pick.setEnabled(False)
@@ -676,6 +727,8 @@ class RoutePanel(QWidget):
             "min_reactivation": self.chk_reactivation.isChecked(),
             "exclude_hostile": self.chk_hostile.isChecked(),
             "avoid_incursions": self.chk_incursions.isChecked(),
+            "avoid_kills": self.chk_kills.isChecked(),
+            "no_docks": self.chk_nodocks.isChecked(),
         }
 
     def restore(self, s: dict):
@@ -697,5 +750,7 @@ class RoutePanel(QWidget):
         self.chk_reactivation.setChecked(bool(s.get("min_reactivation", False)))
         self.chk_hostile.setChecked(bool(s.get("exclude_hostile", False)))
         self.chk_incursions.setChecked(bool(s.get("avoid_incursions", False)))
+        self.chk_kills.setChecked(bool(s.get("avoid_kills", False)))
+        self.chk_nodocks.setChecked(bool(s.get("no_docks", False)))
         for w in widgets:
             w.blockSignals(False)

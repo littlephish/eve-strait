@@ -366,6 +366,93 @@ class DockingRightsDialog(QDialog):
         return [n.strip() for n in self.box.toPlainText().splitlines() if n.strip()]
 
 
+class IntelSettingsDialog(QDialog):
+    """How often to re-poll kill, traffic, ADM and industry data."""
+
+    CHOICES = [("Never (manual only)", 0), ("Every 15 minutes", 15),
+               ("Every 30 minutes", 30), ("Every hour (recommended)", 60),
+               ("Every 3 hours", 180)]
+
+    def __init__(self, parent, current_minutes: int):
+        super().__init__(parent)
+        self.setWindowTitle("Intel refresh")
+        self.setMinimumWidth(460)
+        v = QVBoxLayout(self)
+        v.addWidget(_link_label(
+            "Kill activity, gate traffic, sovereignty defense (ADM) and "
+            "industry indices are re-polled on this interval.<br><br>"
+            "ESI caches these for an hour, so polling faster returns the same "
+            "numbers. The 24 hour totals are built from the samples taken while "
+            "the app is running, so a longer interval means thinner history."))
+
+        self.cmb = QComboBox()
+        for label, minutes in self.CHOICES:
+            self.cmb.addItem(label, minutes)
+        idx = self.cmb.findData(current_minutes)
+        self.cmb.setCurrentIndex(idx if idx >= 0 else 3)
+        v.addWidget(self.cmb)
+
+        self.chk_now = QCheckBox("Refresh now")
+        self.chk_now.setChecked(True)
+        v.addWidget(self.chk_now)
+
+        v.addWidget(_link_label(
+            "<br><b>Historical intel</b><br>"
+            "Keep every sample on disk so system activity can be compared over "
+            "time. Off by default: this grows by roughly a million rows a week, "
+            "stored in a SQLite database next to the map cache."))
+
+        self.cmb_history = QComboBox()
+        for label, days in (("Don't store history", 0), ("Keep 7 days", 7),
+                            ("Keep 30 days", 30), ("Keep 90 days", 90),
+                            ("Keep 1 year", 365)):
+            self.cmb_history.addItem(label, days)
+        v.addWidget(self.cmb_history)
+
+        self.lbl_stats = QLabel("")
+        self.lbl_stats.setWordWrap(True)
+        self.lbl_stats.setStyleSheet("color:#888")
+        v.addWidget(self.lbl_stats)
+
+        self.btn_purge = QPushButton("Delete stored history")
+        v.addWidget(self.btn_purge)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def set_history_days(self, days: int):
+        idx = self.cmb_history.findData(days)
+        self.cmb_history.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def history_days(self) -> int:
+        return int(self.cmb_history.currentData() or 0)
+
+    def set_stats(self, stats: dict):
+        if not stats.get("rows"):
+            self.lbl_stats.setText("No history stored yet.")
+            return
+        import datetime
+        span = ""
+        if stats.get("oldest") and stats.get("newest"):
+            fmt = "%Y-%m-%d %H:%M"
+            span = (" from "
+                    + datetime.datetime.fromtimestamp(stats["oldest"]).strftime(fmt)
+                    + " to "
+                    + datetime.datetime.fromtimestamp(stats["newest"]).strftime(fmt))
+        self.lbl_stats.setText(
+            f"{stats['rows']:,} samples across {stats['systems']:,} systems"
+            f"{span} ({stats['size_mb']:.1f} MB).")
+
+    def minutes(self) -> int:
+        return int(self.cmb.currentData() or 0)
+
+    def refresh_now(self) -> bool:
+        return self.chk_now.isChecked()
+
+
 class AvoidDialog(QDialog):
     """Systems the router must never pass through (one name per line)."""
 
