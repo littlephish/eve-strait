@@ -87,6 +87,17 @@ class MapView(QGraphicsView):
         self._hover_id = None
         self._sov_lookup = None
 
+        # The View menu flips these and every redraw re-applies them, so a
+        # background intel refresh can't bring a layer the user switched off
+        # back to life. Kill rings are off by default: nearly 3000 systems
+        # see a kill in any given hour, so leaving them on buries the map.
+        self._overlay_on = {"gates": True, "bridges": True, "regions": True,
+                            "kills": False, "avoid": True, "location": True,
+                            "heat": True}
+        self._heat_items: list = []
+        self._heat_label = ""
+        self._heat_max = 0.0
+
         self._build()
         self._build_hover()
 
@@ -213,6 +224,7 @@ class MapView(QGraphicsView):
             item.setZValue(2.5)
             self.scene_obj.addItem(item)
             self._kill_items.append(item)
+        self._apply_visibility("kills")
 
     def set_kill_lookup(self, fn):
         """callable(system_id) -> dict of kill counts, shown on hover."""
@@ -236,6 +248,7 @@ class MapView(QGraphicsView):
             ring.setZValue(6)
             self.scene_obj.addItem(ring)
             self._here_items.append(ring)
+        self._apply_visibility("location")
 
     def set_avoided(self, system_ids):
         """Mark avoided systems with a red X so they're obvious on the map."""
@@ -255,6 +268,7 @@ class MapView(QGraphicsView):
                 line.setZValue(6)
                 self.scene_obj.addItem(line)
                 self._avoid_items.append(line)
+        self._apply_visibility("avoid")
 
     def refresh_bridges(self):
         """(Re)draw Ansiblex jump-gate links in purple, over the gate mesh."""
@@ -292,15 +306,104 @@ class MapView(QGraphicsView):
         item.setZValue(-1.5)
         self.scene_obj.addItem(item)
         self._bridge_items.append(item)
+        self._apply_visibility("bridges")
 
     def set_gate_links_visible(self, visible: bool):
-        for item in getattr(self, "_gate_items", ()):
+        self.set_overlay_visible("gates", visible)
+
+    # -- heat map ----------------------------------------------------------
+    # Ramp for the value scale, coldest first.
+    _HEAT_RAMP = ("#2b4a8f", "#1f7a8c", "#3fa34d", "#c9b62a",
+                  "#e07a1f", "#d63b2a")
+
+    def set_heat(self, values: dict | None, label: str = ""):
+        """Shade systems by one metric, as a halo behind the system dot.
+
+        Scaled logarithmically: kills and gate traffic are so skewed that a
+        linear ramp paints Jita red and leaves everything else identically
+        blue. Pass None or an empty dict to clear the layer.
+        """
+        import math
+
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in self._heat_items:
+            self.scene_obj.removeItem(item)
+        self._heat_items = []
+        self._heat_label = label
+        self._heat_max = 0.0
+
+        clean = {sid: float(v) for sid, v in (values or {}).items()
+                 if v and float(v) > 0 and sid in self._pos}
+        if not clean:
+            self.viewport().update()
+            return
+
+        top = max(clean.values())
+        self._heat_max = top
+        span = math.log10(1.0 + top) or 1.0
+        n = len(self._HEAT_RAMP)
+
+        paths = {i: QPainterPath() for i in range(n)}
+        for sid, v in clean.items():
+            frac = math.log10(1.0 + v) / span
+            band = min(n - 1, int(frac * n))
+            p = self._pos[sid]
+            # Bigger halo for hotter systems, so the layer reads at a glance
+            # even before the colour registers.
+            r = 3.5 + 3.5 * (band / (n - 1))
+            paths[band].addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
+
+        visible = self._overlay_on.get("heat", True)
+        for i, colour in enumerate(self._HEAT_RAMP):
+            if paths[i].isEmpty():
+                continue
+            item = QGraphicsPathItem(paths[i])
+            c = QColor(colour)
+            c.setAlpha(190)
+            item.setBrush(QBrush(c))
+            item.setPen(QPen(Qt.PenStyle.NoPen))
+            item.setZValue(0.5)          # under the system dots
             item.setVisible(visible)
+            self.scene_obj.addItem(item)
+            self._heat_items.append(item)
+        self.viewport().update()         # repaint the legend
+
+    def set_overlay_visible(self, name: str, visible: bool):
+        """Show or hide one map layer by name."""
+        self._overlay_on[name] = bool(visible)
+        for item in self._items_for(name):
+            item.setVisible(bool(visible))
+        if name == "heat":
+            self.viewport().update()
+
+    def overlay_visible(self, name: str) -> bool:
+        return self._overlay_on.get(name, True)
+
+    def _items_for(self, name: str):
+        return {
+            "gates": getattr(self, "_gate_items", ()),
+            "bridges": getattr(self, "_bridge_items", ()),
+            "regions": getattr(self, "_region_items", ()),
+            "kills": getattr(self, "_kill_items", ()),
+            "avoid": getattr(self, "_avoid_items", ()),
+            "location": getattr(self, "_here_items", ()),
+            "heat": self._heat_items,
+        }.get(name, ())
+
+    def _apply_visibility(self, name: str):
+        """Re-assert a layer's state after it has been redrawn."""
+        if self._overlay_on.get(name, True):
+            return
+        for item in self._items_for(name):
+            item.setVisible(False)
 
     def _build(self):
         self._build_gate_links()
 
         # Region labels (behind everything).
+        self._region_items = []
         for name, x, z in self.universe.regions:
             t = QGraphicsSimpleTextItem(name)
             t.setBrush(QBrush(QColor(120, 140, 180, 140)))
@@ -312,6 +415,7 @@ class MapView(QGraphicsView):
             t.setFlag(_IGNORE_XF, True)
             t.setZValue(-1)
             self.scene_obj.addItem(t)
+            self._region_items.append(t)
 
         for s in self.universe.systems.values():
             x, y = s.x, -s.z  # north up
@@ -539,7 +643,28 @@ class MapView(QGraphicsView):
         painter.drawText(QPointF(x0 + width + 8, y0 + 4), label)
 
         self._draw_sec_legend(painter, x0, y0 - 26)
+        if self._heat_items and self._overlay_on.get("heat", True):
+            self._draw_heat_legend(painter, x0, y0 - 52)
         painter.restore()
+
+    def _draw_heat_legend(self, painter, x0: float, y_bottom: float):
+        """Key for the active heat layer: the ramp, its name and its peak."""
+        sw, h = 15.0, 8.0
+        f = QFont()
+        f.setPointSize(8)
+        painter.setFont(f)
+
+        x = x0
+        painter.setPen(QPen(Qt.PenStyle.NoPen))
+        for colour in self._HEAT_RAMP:
+            painter.fillRect(QRectF(x, y_bottom - h, sw, h), QColor(colour))
+            x += sw
+
+        painter.setPen(QPen(QColor("#cfe3ff")))
+        top = self._heat_max
+        peak = f"{top:,.1f}".rstrip("0").rstrip(".") if top < 10 else f"{top:,.0f}"
+        painter.drawText(QPointF(x + 6, y_bottom - 1), f"max {peak}")
+        painter.drawText(QPointF(x0, y_bottom - h - 3), self._heat_label or "heat")
 
     def _draw_sec_legend(self, painter, x0: float, y_bottom: float):
         """Security colour key: one swatch per 0.1 step, plus null."""

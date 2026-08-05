@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QDockWidget,
     QInputDialog,
@@ -345,12 +345,19 @@ class MainWindow(QMainWindow):
     def _fetch_defense(self):
         """ADM and industry indices: the 'is anyone actually here' signals."""
         from ..esi import client
+        def arrived(attr, key):
+            def slot(d):
+                setattr(self, attr, d or {})
+                if self._heat_key == key:
+                    self._set_heat_layer(key)
+            return slot
+
         w = Worker(client.sovereignty_defense)
-        w.finished_ok.connect(lambda d: setattr(self, "sov_defense", d or {}))
+        w.finished_ok.connect(arrived("sov_defense", "adm"))
         w.failed.connect(lambda m: None)
         self._run(w)
         w2 = Worker(client.industry_indices)
-        w2.finished_ok.connect(lambda d: setattr(self, "industry_index", d or {}))
+        w2.finished_ok.connect(arrived("industry_index", "industry"))
         w2.failed.connect(lambda m: None)
         self._run(w2)
 
@@ -394,8 +401,13 @@ class MainWindow(QMainWindow):
             intel_store.record(result, defense)
             return activity_history.totals()
 
+        def took(totals):
+            self.activity_totals = totals
+            if self._heat_key == "jumps_24h":
+                self._set_heat_layer(self._heat_key)
+
         w = Worker(persist)
-        w.finished_ok.connect(lambda totals: setattr(self, "activity_totals", totals))
+        w.finished_ok.connect(took)
         w.failed.connect(lambda m: None)
         self._run(w)
         if self.kill_activity:
@@ -405,6 +417,8 @@ class MainWindow(QMainWindow):
             if self.map_view:
                 self.map_view.set_kill_activity(self.kill_activity)
             self.route.refresh()
+        if self._heat_key in ("jumps_1h", "ship_kills", "pod_kills", "npc_kills"):
+            self._set_heat_layer(self._heat_key)
 
     def kills_in(self, system_id: int) -> dict:
         return self.kill_activity.get(system_id, {"ship": 0, "pod": 0, "npc": 0})
@@ -724,15 +738,130 @@ class MainWindow(QMainWindow):
         act_reset.triggered.connect(self.reset_panels)
         view.addAction(act_reset)
         view.addSeparator()
-        self.act_gate_links = QAction("Show stargate links", self, checkable=True)
-        self.act_gate_links.setChecked(True)
-        self.act_gate_links.toggled.connect(self._toggle_gate_links)
-        view.addAction(self.act_gate_links)
 
-    def _toggle_gate_links(self, visible: bool):
+        # -- map layers, each independently switchable -----------------------
+        layers = view.addMenu("Map layers")
+        self.act_layers = {}
+        for key, text, default, tip in self.MAP_LAYERS:
+            a = QAction(text, self, checkable=True)
+            a.setChecked(default)
+            a.setToolTip(tip)
+            a.toggled.connect(lambda on, k=key: self._toggle_layer(k, on))
+            layers.addAction(a)
+            self.act_layers[key] = a
+        # Kept as its own attribute: older saved settings and _on_universe
+        # both reference it by name.
+        self.act_gate_links = self.act_layers["gates"]
+
+        layers.addSeparator()
+        act_all_off = QAction("Turn all layers off", self)
+        act_all_off.triggered.connect(lambda: self._set_all_layers(False))
+        layers.addAction(act_all_off)
+        act_all_on = QAction("Turn all layers on", self)
+        act_all_on.triggered.connect(lambda: self._set_all_layers(True))
+        layers.addAction(act_all_on)
+
+        # -- heat map: one metric at a time ----------------------------------
+        heat = view.addMenu("Heat map")
+        self._heat_group = QActionGroup(self)
+        self._heat_group.setExclusive(True)
+        self.act_heat = {}
+        for key, text, tip in self.HEAT_LAYERS:
+            a = QAction(text, self, checkable=True)
+            a.setToolTip(tip)
+            a.setChecked(key == "none")
+            self._heat_group.addAction(a)
+            heat.addAction(a)
+            self.act_heat[key] = a
+            a.triggered.connect(lambda _c, k=key: self._set_heat_layer(k))
+            if key == "none":
+                heat.addSeparator()
+        self._heat_key = "none"
+
+    # Map layers: (settings key, menu text, on by default, tooltip).
+    MAP_LAYERS = (
+        ("gates", "Stargate links", True, "The gate mesh between systems."),
+        ("bridges", "Ansiblex bridges", True, "Your configured jump gates."),
+        ("regions", "Region names", True, "Region labels behind the map."),
+        ("kills", "Recent kill rings", False,
+         "Ring systems with player kills in the last hour. Nearly 3000 "
+         "systems qualify at any time, so this is busy by design."),
+        ("avoid", "Avoided systems", True, "Red X on systems you never route through."),
+        ("location", "Current location", True, "Cyan ring on your active character."),
+        ("heat", "Heat map", True, "The metric shading chosen below."),
+    )
+
+    # Heat metrics: (key, menu text, tooltip). Every one of these comes from
+    # an hourly ESI snapshot, so "recent" means the last full hour.
+    HEAT_LAYERS = (
+        ("none", "None", "No shading."),
+        ("jumps_1h", "Gate traffic, last hour",
+         "Ship jumps through the system's gates. ESI publishes no per-system "
+         "player count, so this is the closest thing to 'how busy is it'."),
+        ("jumps_24h", "Gate traffic, last 24h",
+         "Accumulated locally while the app runs; partial until it has been "
+         "open for a day."),
+        ("npc_kills", "Ratting (NPC kills, 1h)",
+         "NPC kills. High in null means someone is farming anomalies."),
+        ("ship_kills", "Player ship kills, last hour", "Where people are dying."),
+        ("pod_kills", "Pod kills, last hour", "Podded, so a fight went badly."),
+        ("adm", "Sovereignty ADM",
+         "Activity Defense Multiplier, 1 to 6. Raised by ratting, mining and "
+         "industry in the system, so a high ADM means a used system."),
+        ("industry", "Industry cost index",
+         "Manufacturing cost index. Rises with local production."),
+    )
+
+    def _toggle_layer(self, key: str, visible: bool):
         if self.map_view:
-            self.map_view.set_gate_links_visible(visible)
+            self.map_view.set_overlay_visible(key, visible)
         self._save_settings()
+
+    def _set_all_layers(self, on: bool):
+        for key, a in self.act_layers.items():
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+            if self.map_view:
+                self.map_view.set_overlay_visible(key, on)
+        self._save_settings()
+
+    def _set_heat_layer(self, key: str):
+        """Recompute the heat layer from whatever intel we already hold."""
+        self._heat_key = key
+        self._save_settings()
+        if not self.map_view:
+            return
+        if key == "none":
+            self.map_view.set_heat(None)
+            return
+
+        kills = self.kill_activity or {}
+        totals = self.activity_totals or {}
+        label = dict((k, t) for k, t, _ in self.HEAT_LAYERS).get(key, key)
+        if key == "jumps_1h":
+            values = dict(self.jump_activity or {})
+        elif key == "jumps_24h":
+            values = dict(totals.get("jumps") or {})
+            hours = totals.get("hours", 0)
+            label = f"{label} ({hours}h so far)" if hours < 24 else label
+        elif key in ("ship_kills", "pod_kills", "npc_kills"):
+            field = key.split("_")[0]
+            values = {sid: c.get(field, 0) for sid, c in kills.items()}
+        elif key == "adm":
+            values = {sid: d.get("adm") or 0
+                      for sid, d in (self.sov_defense or {}).items()}
+        elif key == "industry":
+            values = {sid: (d.get("manufacturing") or 0) * 100
+                      for sid, d in (self.industry_index or {}).items()}
+        else:
+            values = {}
+
+        if not values:
+            self._status.setText(
+                f"No {label.lower()} data yet. It arrives with the next intel "
+                "refresh (File → Intel refresh & history).")
+        self.map_view.set_heat(values, label)
 
     def _build_docks(self):
         self.ship = ShipSkillsPanel()
@@ -862,9 +991,19 @@ class MainWindow(QMainWindow):
         if s.get("route"):
             self.route.restore(s["route"])
         view = s.get("view", {})
-        self.act_gate_links.blockSignals(True)
-        self.act_gate_links.setChecked(bool(view.get("gate_links", True)))
-        self.act_gate_links.blockSignals(False)
+        layers = view.get("layers", {})
+        for key, a in self.act_layers.items():
+            # "gate_links" is where this setting lived before the layer menu.
+            fallback = view.get("gate_links", True) if key == "gates" else None
+            default = fallback if fallback is not None else \
+                dict((k, d) for k, _, d, _ in self.MAP_LAYERS)[key]
+            a.blockSignals(True)
+            a.setChecked(bool(layers.get(key, default)))
+            a.blockSignals(False)
+        key = view.get("heat", "none")
+        if key in self.act_heat:
+            self._heat_key = key
+            self.act_heat[key].setChecked(True)
 
     def _save_settings(self):
         if not self._built:
@@ -872,7 +1011,12 @@ class MainWindow(QMainWindow):
         config.save_settings({
             "ship": self.ship.state(),
             "route": self.route.state(),
-            "view": {"gate_links": self.act_gate_links.isChecked()},
+            "view": {
+                "layers": {k: a.isChecked() for k, a in self.act_layers.items()},
+                "heat": self._heat_key,
+                # Kept so downgrading to an older build doesn't lose this one.
+                "gate_links": self.act_gate_links.isChecked(),
+            },
         })
 
     # -- universe / stations ------------------------------------------------
@@ -889,7 +1033,8 @@ class MainWindow(QMainWindow):
         self.map_view = MapView(universe)
         self.map_view.system_clicked.connect(self._on_map_click)
         self.map_view.system_context.connect(self._map_context)
-        self.map_view.set_gate_links_visible(self.act_gate_links.isChecked())
+        for key, a in self.act_layers.items():
+            self.map_view.set_overlay_visible(key, a.isChecked())
         universe.set_bridges(config.get_bridges())
         self.map_view.refresh_bridges()
         self.avoided_ids = {s.id for s in
@@ -901,6 +1046,9 @@ class MainWindow(QMainWindow):
         self.map_view.set_kill_lookup(self.kills_in)
         if self.kill_activity:
             self.map_view.set_kill_activity(self.kill_activity)
+        if self._heat_key != "none":
+            # Intel may have arrived before the map finished building.
+            self._set_heat_layer(self._heat_key)
         if self.location_system_id:
             # Location may have arrived before the map existed.
             self._on_location({"solar_system_id": self.location_system_id})
