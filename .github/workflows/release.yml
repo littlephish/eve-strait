@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag to build the Windows artifacts and open a draft release:
+# Push a tag to build the Windows artifacts and publish a release:
 #
 #   git tag v0.1.0
 #   git push origin v0.1.0
