@@ -41,6 +41,13 @@ def app_icon():
 
 
 def main() -> int:
+    # The MCP server is a headless stdio process: no Qt, no window. It must be
+    # handled before QApplication exists, since Claude Desktop spawns it with
+    # stdin/stdout wired to the protocol.
+    if "--mcp" in sys.argv[1:]:
+        from .ai.mcp_server import serve
+        return serve()
+
     # Imported lazily so ``--help`` style tooling doesn't need Qt loaded.
     from PySide6.QtWidgets import QApplication, QMessageBox
 

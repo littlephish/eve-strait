@@ -246,6 +246,104 @@ def set_system_note(system_name: str, text: str | None) -> None:
     save_config(cfg)
 
 
+# ---------------------------------------------------------------------------
+# AI assistant. Everything here is off until the user opts in.
+#
+# Anything the assistant reads can be sent to Anthropic or OpenAI: system
+# names, your notes, your route, and (if you enable it) structure names and
+# standings. That is EVE intelligence, so none of it leaves the machine
+# without an explicit choice.
+# ---------------------------------------------------------------------------
+def get_ai_provider() -> str:
+    return load_config().get("ai_provider", "claude")
+
+
+def set_ai_provider(name: str) -> None:
+    cfg = load_config()
+    cfg["ai_provider"] = name
+    save_config(cfg)
+
+
+def get_ai_key(provider: str) -> str:
+    """API key for one provider, or "" if none is set.
+
+    Env var wins, so a key can be supplied without ever writing it to disk.
+    """
+    env = os.environ.get(
+        {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+        .get(provider, ""))
+    if env:
+        return env
+    return (load_config().get("ai_keys") or {}).get(provider, "")
+
+
+def set_ai_key(provider: str, key: str) -> None:
+    cfg = load_config()
+    keys = cfg.get("ai_keys") or {}
+    key = (key or "").strip()
+    if key:
+        keys[provider] = key
+    else:
+        keys.pop(provider, None)
+    cfg["ai_keys"] = keys
+    save_config(cfg)
+
+
+def get_ai_model(provider: str) -> str:
+    return (load_config().get("ai_models") or {}).get(provider, "")
+
+
+def set_ai_model(provider: str, model: str) -> None:
+    cfg = load_config()
+    models = cfg.get("ai_models") or {}
+    models[provider] = model
+    save_config(cfg)
+
+
+def ai_configured() -> bool:
+    """Whether any provider has a key. The chat panel does not exist until
+    this is true, so an unconfigured install has no AI surface at all."""
+    return any(get_ai_key(p) for p in ("claude", "openai"))
+
+
+def get_mcp_enabled() -> bool:
+    """MCP server opt-in. Off by default and checked by the server itself,
+    so an accidental launch refuses to serve rather than exposing tools."""
+    return bool(load_config().get("mcp_enabled", False))
+
+
+def set_mcp_enabled(on: bool) -> None:
+    cfg = load_config()
+    cfg["mcp_enabled"] = bool(on)
+    save_config(cfg)
+
+
+def get_mcp_allow_writes() -> bool:
+    """Whether MCP tools may change anything. Separate opt-in from enabling
+    the server, because reading intel and editing the avoid list are very
+    different levels of trust to hand a model."""
+    return bool(load_config().get("mcp_allow_writes", False))
+
+
+def set_mcp_allow_writes(on: bool) -> None:
+    cfg = load_config()
+    cfg["mcp_allow_writes"] = bool(on)
+    save_config(cfg)
+
+
+def get_mcp_allow_private() -> bool:
+    """Whether MCP may expose ESI-authenticated data: your characters, their
+    locations, structure names and standings. This is the real intel leak, so
+    it is its own opt-in and defaults off even when the server is on."""
+    return bool(load_config().get("mcp_allow_private", False))
+
+
+def set_mcp_allow_private(on: bool) -> None:
+    cfg = load_config()
+    cfg["mcp_allow_private"] = bool(on)
+    save_config(cfg)
+
+
 def get_avoided() -> list[str]:
     """System names the router must never route through."""
     return load_config().get("avoid", [])

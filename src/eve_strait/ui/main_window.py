@@ -67,6 +67,10 @@ class MainWindow(QMainWindow):
         self.cyno_activity = zkill.sweep_systems(self._cyno_sweep)
         self._cyno_worker = None
         self._cyno_stop = False
+        # Built only when a provider key exists; see _sync_chat_panel.
+        self.chat_dock = None
+        self.chat = None
+        self.agent = None
         self._workers: list[Worker] = []
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
@@ -93,6 +97,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._wire()
         self._built = True
+        self._sync_chat_panel()      # no-op unless a provider key is set
 
         self._refresh_character_list()
         self._load_cached_dockables()
@@ -718,6 +723,7 @@ class MainWindow(QMainWindow):
             ("Docking rights...", self._edit_docking_rights),
             ("Avoided systems...", self._edit_avoided),
             ("Intel refresh & history...", self._edit_intel_settings),
+            ("AI assistant...", self._edit_ai_settings),
             ("Reload map data", self._reload_map),
             ("Log out", self._logout),
             ("Quit", self.close),
@@ -891,6 +897,86 @@ class MainWindow(QMainWindow):
                     f"No {label.lower()} data yet. It arrives with the next "
                     "intel refresh (File -> Intel refresh & history).", 8000)
         self.map_view.set_heat(values, label)
+
+    # -- AI assistant -------------------------------------------------------
+    def _edit_ai_settings(self):
+        from .ai_dialog import AiSettingsDialog
+        dlg = AiSettingsDialog(self)
+        if not dlg.exec():
+            return
+        dlg.save()
+        self._sync_chat_panel()
+
+    def _sync_chat_panel(self):
+        """Create or tear down the chat dock to match the configuration.
+
+        The panel does not exist at all until a key is set, so an install that
+        never opts in has no AI surface to stumble into.
+        """
+        from ..ai.agent import Agent
+        if not Agent.configured():
+            if self.chat_dock is not None:
+                self.removeDockWidget(self.chat_dock)
+                self.chat_dock.deleteLater()
+                self.chat_dock = self.chat = self.agent = None
+                self.statusBar().showMessage("AI assistant disabled.", 5000)
+            return
+
+        label = Agent.provider_info()["label"]
+        if self.chat_dock is not None:
+            self.chat.set_status(f"Now using {label}.")
+            self.agent.reset()
+            return
+
+        from .panels.chat_panel import ChatPanel
+        self.agent = Agent(self)
+        self.chat = ChatPanel(label)
+        self.chat.asked.connect(self._ask_ai)
+        self.chat.reset_requested.connect(lambda: self.agent.reset())
+        self.chat_dock = QDockWidget("Assistant", self)
+        self.chat_dock.setObjectName("dock_chat")
+        self.chat_dock.setWidget(self.chat)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
+        self.statusBar().showMessage(f"AI assistant enabled ({label}).", 6000)
+
+    def _ask_ai(self, question: str):
+        agent = self.agent
+
+        def run(progress=None):
+            return agent.ask(question, progress=progress)
+
+        w = Worker(run)
+        w.progress.connect(self.chat.set_status)
+        w.finished_ok.connect(lambda text: self.chat.add_reply(text, agent.log))
+        w.failed.connect(self.chat.add_error)
+        self._run(w)
+
+    def run_ai_tool(self, tool, args: dict):
+        """Execute one assistant tool call.
+
+        Called from a worker thread. Tools that only read are safe there, but
+        anything touching a panel has to land on the UI thread, so those are
+        marshalled across and waited on.
+        """
+        if not tool.writes:
+            return tool.fn(self, **args)
+
+        from PySide6.QtCore import QEventLoop, QTimer
+        box = {}
+        loop = QEventLoop()
+
+        def call():
+            try:
+                box["out"] = tool.fn(self, **args)
+            except Exception as exc:
+                box["err"] = exc
+            loop.quit()
+
+        QTimer.singleShot(0, call)
+        loop.exec()
+        if "err" in box:
+            raise box["err"]
+        return box.get("out", "")
 
     # -- system notes -------------------------------------------------------
     def note_for(self, system_id: int) -> str:
