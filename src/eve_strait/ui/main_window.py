@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         self.chat_dock = None
         self.chat = None
         self.agent = None
+        self.bridge = None
         self._workers: list[Worker] = []
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self._wire()
         self._built = True
         self._sync_chat_panel()      # no-op unless a provider key is set
+        self._sync_bridge()          # no-op unless the MCP server is enabled
 
         self._refresh_character_list()
         self._load_cached_dockables()
@@ -906,6 +908,7 @@ class MainWindow(QMainWindow):
             return
         dlg.save()
         self._sync_chat_panel()
+        self._sync_bridge()
 
     def _sync_chat_panel(self):
         """Create or tear down the chat dock to match the configuration.
@@ -938,6 +941,23 @@ class MainWindow(QMainWindow):
         self.chat_dock.setWidget(self.chat)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
         self.statusBar().showMessage(f"AI assistant enabled ({label}).", 6000)
+
+    def _sync_bridge(self):
+        """Listen for the MCP process, but only while MCP is enabled.
+
+        Without this the MCP server can read intel but cannot touch the map
+        you have open, because it runs in its own process. Turning MCP off
+        closes the pipe, so there is nothing listening when the feature is off.
+        """
+        from ..ai.bridge import BridgeServer
+        if config.get_mcp_enabled():
+            if self.bridge is None:
+                self.bridge = BridgeServer(self)
+                if not self.bridge.start():
+                    self.bridge = None      # another instance owns the pipe
+        elif self.bridge is not None:
+            self.bridge.stop()
+            self.bridge = None
 
     def _ask_ai(self, question: str):
         agent = self.agent

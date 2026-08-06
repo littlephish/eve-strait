@@ -39,9 +39,18 @@ jobs:
       # before Nuitka. Skipping this is how a v0.2.0 build kept reporting
       # 0.1.0, which made the updater offer an update to the running build.
       - name: Stamp the version
+        shell: pwsh
         run: |
+          # Read the version back through the same script rather than
+          # grepping the file from an inline python -c: the nested quoting
+          # needed to match "x.y.z" inside a YAML block scalar does not
+          # survive, which is how this step first shipped broken.
           python scripts/version.py ${{ steps.ver.outputs.version }}
-          python -c "import re,sys; v=open('src/eve_strait/__init__.py').read(); assert '\"${{ steps.ver.outputs.version }}\"' in v, v; print('stamped OK')"
+          $got = (python scripts/version.py).Trim()
+          if ($got -ne "${{ steps.ver.outputs.version }}") {
+            throw "stamp failed: file says '$got', tag says '${{ steps.ver.outputs.version }}'"
+          }
+          Write-Host "stamped OK: $got"
 
       - name: Install dependencies
         run: |

@@ -18,8 +18,12 @@ What it deliberately does NOT do:
 * Expose ESI-authenticated data (characters, locations, structure names,
   standings) unless ``mcp_allow_private`` is true. That is the real
   intelligence leak and it is off even when the server is on.
-* Touch the running GUI. This is a separate process with its own copy of the
-  map; tools that need live panels are not offered at all.
+* Touch the running GUI *directly*. This is a separate process with its own
+  copy of the map. Tools that need live panels are forwarded to the open
+  window over the IPC bridge (see bridge.py: a Windows named pipe or a Unix
+  domain socket, never a network port). If the app is not running they are
+  still listed, and calling one explains that rather than silently mutating a
+  route nobody can see.
 
 Every call is appended to ``mcp-audit.log`` beside the settings, so the user
 can see exactly what was asked for and when.
@@ -34,7 +38,8 @@ from .. import config
 
 PROTOCOL = "2024-11-05"
 
-# Tools that need the running Qt app, and so cannot be served here.
+# Tools that need the running Qt app. Served by forwarding to the open window
+# over the bridge rather than executed in this process.
 _UI_ONLY = {"add_waypoint", "remove_waypoint", "clear_waypoints", "set_ship",
             "set_options", "auto_route", "get_route", "get_setup"}
 # Tools that read ESI-authenticated data about your characters.
@@ -136,6 +141,10 @@ def _servable():
     out = []
     for t in tools.TOOLS:
         if t.name in _UI_ONLY:
+            # Live-map tools that change things still need the writes opt-in.
+            if t.writes and not allow_writes:
+                continue
+            out.append(t)
             continue
         if t.name in _WRITES and not allow_writes:
             continue
@@ -213,9 +222,13 @@ def serve() -> int:
                 continue
             _audit(f"call {name} {json.dumps(args, default=str)}")
             try:
-                if app is None:
-                    app = _Headless()
-                out = tool.fn(app, **args)
+                if name in _UI_ONLY:
+                    from .bridge import call as bridge_call
+                    out = bridge_call(name, args)
+                else:
+                    if app is None:
+                        app = _Headless()
+                    out = tool.fn(app, **args)
                 _reply(req_id, {"content": [{"type": "text", "text": str(out)}]})
             except Exception as exc:
                 _audit(f"  error {type(exc).__name__}: {exc}")
