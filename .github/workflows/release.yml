@@ -27,6 +27,22 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Read version from the tag
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v',''
+          if (-not $v) { $v = "0.0.0" }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # Stamp the tag into __init__.py and pyproject BEFORE pip install and
+      # before Nuitka. Skipping this is how a v0.2.0 build kept reporting
+      # 0.1.0, which made the updater offer an update to the running build.
+      - name: Stamp the version
+        run: |
+          python scripts/version.py ${{ steps.ver.outputs.version }}
+          python -c "import re,sys; v=open('src/eve_strait/__init__.py').read(); assert '\"${{ steps.ver.outputs.version }}\"' in v, v; print('stamped OK')"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -39,14 +55,6 @@ jobs:
           path: ~/AppData/Local/Nuitka/Nuitka/Cache
           key: nuitka-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: nuitka-${{ runner.os }}-
-
-      - name: Read version from the tag
-        id: ver
-        shell: pwsh
-        run: |
-          $v = "${{ github.ref_name }}" -replace '^v',''
-          if (-not $v) { $v = "0.0.0" }
-          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
 
       # --standalone, never --onefile: a self-extracting single exe unpacks to
       # %TEMP% and runs itself, which Defender and CrowdStrike flag as dropper
@@ -66,9 +74,20 @@ jobs:
           --product-version=${{ steps.ver.outputs.version }}
           --file-description="EVE Online capital jump route planner"
           --copyright=Eve-Strait
+          --windows-icon-from-ico=dist_assets/win/eve-strait.ico
+          --include-package-data=eve_strait
           --output-dir=out
           --output-filename=eve-strait.exe
           app.py
+
+      - name: Verify the built package reports the tag version
+        shell: pwsh
+        run: |
+          $v = python -c "import eve_strait; print(eve_strait.__version__)"
+          if ($v.Trim() -ne "${{ steps.ver.outputs.version }}") {
+            throw "version mismatch: package says '$v', tag says '${{ steps.ver.outputs.version }}'"
+          }
+          Write-Host "version OK: $v"
 
       # Rust ships on windows-latest, so this needs no toolchain setup step.
       # Fatal if it fails: a published build must carry update.exe, or every

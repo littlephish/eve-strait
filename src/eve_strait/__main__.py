@@ -25,6 +25,21 @@ def _log(message: str) -> None:
         pass
 
 
+def app_icon():
+    """The window / taskbar icon, or None if it is missing.
+
+    Windows takes the *executable's* icon for the taskbar button only once the
+    app sets a matching window icon, so this is not redundant with the icon
+    compiled into the exe. Missing art must never stop the app starting.
+    """
+    from pathlib import Path
+
+    from PySide6.QtGui import QIcon
+
+    png = Path(__file__).resolve().parent / "assets" / "icon.png"
+    return QIcon(str(png)) if png.is_file() else None
+
+
 def main() -> int:
     # Imported lazily so ``--help`` style tooling doesn't need Qt loaded.
     from PySide6.QtWidgets import QApplication, QMessageBox
@@ -35,6 +50,11 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Eve-Strait")
     app.setOrganizationName("eve-strait")
+    icon = app_icon()
+    if icon is not None:
+        app.setWindowIcon(icon)
+    else:
+        _log("icon.png missing; running without a window icon")
     # Closing a floating panel must not be able to end the session; only
     # quitting explicitly should.
     app.setQuitOnLastWindowClosed(True)

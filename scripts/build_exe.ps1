@@ -39,6 +39,11 @@ Copy-Item (Join-Path $proj "README.md")      $build
 # Build a plain path string first: PowerShell splits `--opt=(expr)` into two
 # tokens, which Nuitka rejects as extra positional arguments.
 $out = Join-Path $build "out"
+# The icon lives in the repo, not the temp build copy.
+$icon = Join-Path $proj "dist_assets\win\eve-strait.ico"
+# Single source of truth, so a local build never disagrees with
+# what the app reports about itself.
+$ver = (uv run python (Join-Path $proj "scripts\version.py")).Trim()
 $mode = if ($OneFile) { "--onefile" } else { "--standalone" }
 
 Push-Location $build
@@ -63,10 +68,12 @@ try {
         --assume-yes-for-downloads `
         --company-name="Eve-Strait" `
         --product-name="Eve-Strait" `
-        --file-version=0.1.0 `
-        --product-version=0.1.0 `
+        --file-version=$ver `
+        --product-version=$ver `
         --file-description="EVE Online capital jump route planner" `
         --copyright="Eve-Strait" `
+        --windows-icon-from-ico=$icon `
+        --include-package-data=eve_strait `
         --output-dir=$out `
         --output-filename=eve-strait.exe `
         app.py
@@ -127,10 +134,10 @@ if ($cargo) {
 }
 
 if (-not $NoZip) {
-    $zip = Join-Path $proj "dist\Eve-Strait-0.1.0-win64.zip"
+    $zip = Join-Path $proj "dist\Eve-Strait-$ver-win64.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }
     Compress-Archive -Path $target -DestinationPath $zip
-    Write-Host "`nZipped: dist\Eve-Strait-0.1.0-win64.zip" -ForegroundColor Green
+    Write-Host "`nZipped: dist\Eve-Strait-$ver-win64.zip" -ForegroundColor Green
 }
 
 Remove-Item -Recurse -Force $build -ErrorAction SilentlyContinue

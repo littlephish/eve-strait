@@ -34,6 +34,7 @@ OutputBaseFilename={#AppName}-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=eve-strait.ico
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 UninstallDisplayName={#AppName}

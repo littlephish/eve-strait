@@ -1,0 +1,20 @@
+<!-- Eve-Strait app icon.
+     A jump route arcing from origin (cyan) to destination (gold) across a
+     faint map ring. Kept to three shapes on purpose: at 16 px in a taskbar
+     anything more collapses into mush. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="bg" cx=".5" cy=".36" r=".78">
+      <stop offset="0" stop-color="#1a2a4c"/><stop offset="1" stop-color="#05080f"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="96" fill="none" stroke="#26375c" stroke-width="9"/>
+  <circle cx="128" cy="128" r="62" fill="none" stroke="#1d2b49" stroke-width="5"/>
+  <path d="M46 186 A 118 118 0 0 1 210 70" fill="none" stroke="#00e5ff"
+        stroke-width="24" stroke-linecap="round" opacity=".2"/>
+  <path d="M46 186 A 118 118 0 0 1 210 70" fill="none" stroke="#00e5ff"
+        stroke-width="11" stroke-linecap="round"/>
+  <circle cx="46" cy="186" r="25" fill="#00e5ff"/>
+  <circle cx="210" cy="70" r="25" fill="#ffc247"/>
+</svg>
