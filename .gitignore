@@ -21,3 +21,6 @@ app.dist/
 # App data / secrets (tokens live in %LOCALAPPDATA%, but just in case)
 token.json
 config.json
+
+# Rust updater build output (update.exe is built in CI, never committed)
+updater/target/

@@ -70,6 +70,19 @@ jobs:
           --output-filename=eve-strait.exe
           app.py
 
+      # Rust ships on windows-latest, so this needs no toolchain setup step.
+      # Fatal if it fails: a published build must carry update.exe, or every
+      # install it reaches falls back to the PowerShell path that a machine
+      # execution policy can block.
+      - name: Build the updater (update.exe)
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path updater\Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          if (-not (Test-Path updater\target\release\update.exe)) {
+            throw "cargo reported success but produced no update.exe"
+          }
+
       - name: Stage the program folder
         shell: pwsh
         run: |
@@ -77,6 +90,7 @@ jobs:
           if (-not $dist) { throw "Nuitka produced no program folder" }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item $dist.FullName dist\Eve-Strait -Recurse
+          Copy-Item updater\target\release\update.exe dist\Eve-Strait -Force
 
       # The updater looks for a *-win*.zip asset, so keep "win" in the name.
       - name: Zip the portable build

@@ -1,0 +1,21 @@
+[package]
+name = "app-updater"
+version = "1.0.0"
+edition = "2021"
+description = "Generic in-place folder updater for Windows desktop apps"
+license = "GPL-3.0-or-later"
+
+# Produces update.exe
+[[bin]]
+name = "update"
+path = "src/main.rs"
+
+# Tiny, self-contained binary: optimize for size, strip symbols, statically
+# link the CRT (see .cargo/config.toml) so update.exe runs from anywhere with
+# zero DLL dependencies.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -104,6 +104,28 @@ $target = Join-Path $proj "dist\Eve-Strait"
 if (Test-Path $target) { Remove-Item -Recurse -Force $target }
 Copy-Item $distSrc.FullName $target -Recurse
 
+# update.exe: the helper that swaps the program folder on the next launch.
+# Built here rather than committed, so the binary in the release is always
+# built from the source in updater/. Not fatal locally: the app falls back to
+# the PowerShell path, and a dev build is rarely the one that self-updates.
+$cargo = (Get-Command cargo -ErrorAction SilentlyContinue).Source
+if (-not $cargo -and (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe")) {
+    $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"   # rustup installs here
+}
+if ($cargo) {
+    & $cargo build --release --manifest-path (Join-Path $proj "updater\Cargo.toml")
+    $upd = Join-Path $proj "updater\target\release\update.exe"
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $upd)) {
+        Copy-Item $upd $target -Force
+        Write-Host "Bundled: update.exe" -ForegroundColor Green
+    } else {
+        Write-Host "WARNING: updater build failed; shipping without update.exe" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "WARNING: cargo not found; shipping without update.exe." -ForegroundColor Yellow
+    Write-Host "         The app will fall back to the PowerShell updater."
+}
+
 if (-not $NoZip) {
     $zip = Join-Path $proj "dist\Eve-Strait-0.1.0-win64.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }

@@ -5,14 +5,19 @@ folder, so an update is "download the new folder, swap it in, relaunch". That
 is impossible with a onefile build (the exe is locked and self-extracting),
 which is one more reason the shipped artifact is a folder.
 
-Windows locks the running executable, so the swap is handed to a small
-throwaway .cmd that waits for us to exit, mirrors the new folder over the old
-one, relaunches, and deletes itself.
+Windows locks the running executable, so the swap is handed to a helper that
+waits for us to exit, mirrors the new folder over the old one and relaunches.
+That helper is ``update.exe``, a small dependency-free Rust binary shared with
+ore-hold-watcher (see ``updater/``). It replaced a PowerShell script because a
+machine-wide execution policy could block the script outright, and the failure
+was silent. The PowerShell path survives only as a fallback for builds that
+somehow ship without ``update.exe``.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -221,6 +226,44 @@ try {
 """
 
 
+UPDATER_EXE = "update.exe"
+
+
+def _updater_command(new_dir: Path, target: Path) -> list[str] | None:
+    """Command line for the bundled Rust updater, or None if it is missing.
+
+    The updater is copied out to a temp folder first. A running program cannot
+    overwrite files in its own folder, and the updater lives *in* the folder
+    being replaced, so running it in place would leave it unable to replace
+    itself. See updater/README.md.
+    """
+    shipped = target / UPDATER_EXE
+    if not shipped.is_file():
+        return None
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix="eve-strait-updater-")) / UPDATER_EXE
+        shutil.copy2(shipped, tmp)
+    except OSError:
+        return None
+    return [str(tmp), str(new_dir), str(target), _EXE_NAME]
+
+
+def _powershell_command(new_dir: Path, target: Path) -> list[str]:
+    """Fallback swap helper, used only when update.exe is absent.
+
+    Kept because the Rust updater needs a Rust toolchain at build time. If that
+    step is ever skipped, the app can still update itself. It is the weaker
+    path: a machine-wide execution policy or Constrained Language Mode can
+    block it, which is the reason update.exe exists.
+    """
+    script = staging_dir() / "apply_update.ps1"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(_SWAP_PS1, encoding="utf-8")
+    return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden", "-File", str(script),
+            "-Src", str(new_dir), "-Dst", str(target), "-ExeName", _EXE_NAME]
+
+
 def apply_and_restart(zip_path: Path, progress=None) -> None:
     """Swap in the downloaded build and relaunch. Does not return on success."""
     if not is_frozen():
@@ -228,15 +271,9 @@ def apply_and_restart(zip_path: Path, progress=None) -> None:
     new_dir = _extract(zip_path, progress)
     target = install_dir()
 
-    script = staging_dir() / "apply_update.ps1"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(_SWAP_PS1, encoding="utf-8")
+    args = _updater_command(new_dir, target) or _powershell_command(new_dir, target)
     if progress:
         progress("Restarting to finish the update...")
-
-    args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden", "-File", str(script),
-            "-Src", str(new_dir), "-Dst", str(target), "-ExeName", _EXE_NAME]
 
     DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0x8)
     NEWGROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)

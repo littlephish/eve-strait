@@ -1,0 +1,4 @@
+# Statically link the MSVC runtime so update.exe has NO DLL dependencies and
+# can be copied to a temp folder and run there on any Windows machine.
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]
