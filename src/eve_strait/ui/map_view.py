@@ -93,7 +93,7 @@ class MapView(QGraphicsView):
         # see a kill in any given hour, so leaving them on buries the map.
         self._overlay_on = {"gates": True, "bridges": True, "regions": True,
                             "kills": False, "avoid": True, "location": True,
-                            "heat": True}
+                            "notes": True, "heat": True}
         self._dots: dict[int, QGraphicsEllipseItem] = {}
         self._sec_brushes: dict[int, QBrush] = {}
         self._heat_brushes: dict[int, QBrush] = {}
@@ -252,6 +252,34 @@ class MapView(QGraphicsView):
             self._here_items.append(ring)
         self._apply_visibility("location")
 
+    def set_noted(self, system_ids):
+        """Mark systems you have written a note about with a small tag.
+
+        Drawn above the dot so it survives whatever the heat layer is doing to
+        the dot colour underneath.
+        """
+        for item in getattr(self, "_note_items", ()):
+            self.scene_obj.removeItem(item)
+        self._note_items = []
+        for sid in system_ids:
+            p = self._pos.get(sid)
+            if p is None:
+                continue
+            tag = QGraphicsEllipseItem(-2.6, -2.6, 5.2, 5.2)
+            tag.setPos(p.x() + 6.5, p.y() - 6.5)
+            tag.setBrush(QBrush(QColor("#ffd479")))
+            tag.setPen(QPen(QColor("#3a2c08"), 1.2))
+            tag.setFlag(_IGNORE_XF, True)
+            tag.setZValue(5.5)
+            self.scene_obj.addItem(tag)
+            self._note_items.append(tag)
+        self._apply_visibility("notes")
+
+    def set_note_lookup(self, fn):
+        """callable(system_id) -> note text, shown on hover."""
+        self._note_lookup = fn
+        self._hover_id = None
+
     def set_avoided(self, system_ids):
         """Mark avoided systems with a red X so they're obvious on the map."""
         for item in getattr(self, "_avoid_items", ()):
@@ -385,6 +413,7 @@ class MapView(QGraphicsView):
             "kills": getattr(self, "_kill_items", ()),
             "avoid": getattr(self, "_avoid_items", ()),
             "location": getattr(self, "_here_items", ()),
+            "notes": getattr(self, "_note_items", ()),
         }.get(name, ())
 
     def _apply_visibility(self, name: str):
@@ -568,6 +597,15 @@ class MapView(QGraphicsView):
             if k.get("ship") or k.get("pod"):
                 label = (f"{label}  |  {k.get('ship', 0)} kills, "
                          f"{k.get('pod', 0)} pods (1h)")
+        notes = getattr(self, "_note_lookup", None)
+        if notes is not None:
+            note = (notes(sid) or "").strip()
+            if note:
+                # Your own note outranks everything else on the line.
+                one_line = " ".join(note.split())
+                if len(one_line) > 70:
+                    one_line = one_line[:67] + "..."
+                label = f"{label}\n✎ {one_line}"
         self._hover_text.setText(label)
         _anchor_px(self._hover_text, p, 11, 4)
         self._hover_text.show()

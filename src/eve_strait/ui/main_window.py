@@ -801,6 +801,8 @@ class MainWindow(QMainWindow):
          "systems qualify at any time, so this is busy by design."),
         ("avoid", "Avoided systems", True, "Red X on systems you never route through."),
         ("location", "Current location", True, "Cyan ring on your active character."),
+        ("notes", "System notes", True,
+         "Amber tag on systems you have written a note about."),
         ("heat", "Heat map", True, "The metric shading chosen below."),
     )
 
@@ -889,6 +891,23 @@ class MainWindow(QMainWindow):
                     f"No {label.lower()} data yet. It arrives with the next "
                     "intel refresh (File -> Intel refresh & history).", 8000)
         self.map_view.set_heat(values, label)
+
+    # -- system notes -------------------------------------------------------
+    def note_for(self, system_id: int) -> str:
+        """Your free-text note for a system, or "" if there is none."""
+        s = self.universe.systems.get(system_id) if self.universe else None
+        return config.get_system_notes().get(s.name, "") if s else ""
+
+    def refresh_notes(self):
+        """Re-mark the map after a note is added, edited or cleared."""
+        if not (self.map_view and self.universe):
+            return
+        ids = []
+        for name in config.get_system_notes():
+            s = self.universe.by_name(name)
+            if s is not None:
+                ids.append(s.id)
+        self.map_view.set_noted(ids)
 
     def check_cyno_activity(self, system_id: int, done):
         """Look one system up on zKillboard, off the UI thread.
@@ -1155,6 +1174,8 @@ class MainWindow(QMainWindow):
         if self.sov_owners:
             self.map_view.set_sov_lookup(self.sov_label)
         self.map_view.set_kill_lookup(self.kills_in)
+        self.map_view.set_note_lookup(self.note_for)
+        self.refresh_notes()
         if self.kill_activity:
             self.map_view.set_kill_activity(self.kill_activity)
         if self._heat_key != "none":

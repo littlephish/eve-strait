@@ -149,7 +149,7 @@ class SystemInfoDialog(QDialog):
     """
 
     def __init__(self, parent, system, region: str, sov, intel: dict,
-                 cyno_cb=None):
+                 cyno_cb=None, note: str = ""):
         super().__init__(parent)
         self.setWindowTitle(f"System: {system.name}")
         self.setMinimumWidth(430)
@@ -226,6 +226,17 @@ class SystemInfoDialog(QDialog):
         self.btn_cyno.setEnabled(cyno_cb is not None)
         lay.addWidget(self.btn_cyno)
 
+        # -- notes ---------------------------------------------------------
+        lay.addWidget(_section("Your notes"))
+        self.txt_note = QPlainTextEdit(note)
+        self.txt_note.setPlaceholderText(
+            "Gate camp on the Amarr side. Friendly Fortizar. Cyno alt parked "
+            "here.")
+        self.txt_note.setFixedHeight(64)
+        lay.addWidget(self.txt_note)
+        lay.addWidget(_muted("Saved when you close this dialog. Clear the box "
+                             "to delete the note."))
+
         dotlan = system.name.replace(" ", "_")
         lay.addWidget(_link_label(
             f'<a href="https://evemaps.dotlan.net/system/{dotlan}">Dotlan</a> '
@@ -233,8 +244,11 @@ class SystemInfoDialog(QDialog):
             f'<a href="https://zkillboard.com/system/{system.id}/">zKillboard</a>'))
 
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        box.rejected.connect(self.reject)
+        box.rejected.connect(self.accept)   # closing still commits the note
         lay.addWidget(box)
+
+    def note(self) -> str:
+        return self.txt_note.toPlainText().strip()
 
     @staticmethod
     def _pair(now, day, span: str) -> str:

@@ -686,18 +686,25 @@ class RoutePanel(QWidget):
         self._emit_changed()
 
     def show_system_info(self, system_id):
+        from ... import config
         from ..dialogs import SystemInfoDialog
         uni = self.ctx.universe
         if uni is None or system_id not in uni.systems:
             return
         s = uni.systems[system_id]
-        SystemInfoDialog(
+        before = config.get_system_notes().get(s.name, "")
+        dlg = SystemInfoDialog(
             self, s,
             f"Region: {uni.region_names.get(s.region_id, str(s.region_id))}",
             self.ctx.sov_of(s.id),
             self.ctx.system_intel(s.id),
             cyno_cb=self.ctx.check_cyno_activity,
-        ).exec()
+            note=before,
+        )
+        dlg.exec()
+        if dlg.note() != before:
+            config.set_system_note(s.name, dlg.note())
+            self.ctx.refresh_notes()
 
     def refresh(self):
         self._rebuild()

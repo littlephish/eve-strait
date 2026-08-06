@@ -222,6 +222,30 @@ def delete_route(name: str) -> None:
         save_config(cfg)
 
 
+def get_system_notes() -> dict:
+    """system name -> free text ("gate camp", "friendly Fortizar").
+
+    Keyed by name rather than ID so the file stays readable and survives an
+    SDE refresh, same as saved routes and the avoid list.
+    """
+    notes = load_config().get("system_notes", {})
+    return notes if isinstance(notes, dict) else {}
+
+
+def set_system_note(system_name: str, text: str | None) -> None:
+    cfg = load_config()
+    notes = cfg.get("system_notes", {})
+    if not isinstance(notes, dict):
+        notes = {}
+    text = (text or "").strip()
+    if text:
+        notes[system_name] = text
+    else:
+        notes.pop(system_name, None)     # empty text means delete the note
+    cfg["system_notes"] = notes
+    save_config(cfg)
+
+
 def get_avoided() -> list[str]:
     """System names the router must never route through."""
     return load_config().get("avoid", [])
