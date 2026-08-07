@@ -149,6 +149,10 @@ class MainWindow(QMainWindow):
                 f"Sovereignty loaded for {len(self.sov_owners)} systems.", 5000)
         if self.map_view:
             self.map_view.set_sov_lookup(self.sov_label)
+            # Only rebuild if the layer is actually on; baking costs a second
+            # of worker time and an off layer should cost nothing.
+            if self.act_layers["sov"].isChecked():
+                self.refresh_sov_territory()
 
     def sov_label(self, system_id: int):
         """Short owner label for map hover, e.g. 'Goonswarm Federation'."""
@@ -811,6 +815,9 @@ class MainWindow(QMainWindow):
         ("location", "Current location", True, "Cyan ring on your active character."),
         ("notes", "System notes", True,
          "Amber tag on systems you have written a note about."),
+        ("sov", "Sovereignty territory", False,
+         "Fill null-sec space by who holds it. Off by default: it is the "
+         "heaviest layer to draw."),
         ("heat", "Heat map", True, "The metric shading chosen below."),
     )
 
@@ -843,6 +850,9 @@ class MainWindow(QMainWindow):
     def _toggle_layer(self, key: str, visible: bool):
         if self.map_view:
             self.map_view.set_overlay_visible(key, visible)
+            # Territory is baked lazily the first time it is switched on.
+            if key == "sov" and visible and not self.map_view._sov_items:
+                self.refresh_sov_territory()
         self._save_settings()
 
     def _set_all_layers(self, on: bool):
@@ -997,6 +1007,68 @@ class MainWindow(QMainWindow):
         if "err" in box:
             raise box["err"]
         return box.get("out", "")
+
+    # -- sovereignty territory ----------------------------------------------
+    # Standing colours first: for a route planner the question is not "who
+    # owns this" but "do they shoot me", and that is what the contacts data
+    # already answers.
+    SOV_COLOURS = {"self": "#2f6fe0", "blue": "#2f8fd0", "neutral": "#6b7a90",
+                   "red": "#c0392b", "unknown": "#4a5568"}
+
+    def refresh_sov_territory(self):
+        """One blob per alliance, coloured by how they feel about you.
+
+        Grouping per alliance rather than per standing is a performance
+        decision as much as a visual one. Merging the discs is superlinear in
+        subpath count, so folding every neutral system into one shape cost
+        1.8 s to build and 93 ms a frame to draw; 79 smaller shapes are far
+        cheaper, and you also get to see each alliance's border.
+        """
+        from PySide6.QtGui import QColor
+        if not (self.map_view and self.universe and self.sov_owners):
+            return
+        by_alliance: dict[int, list[int]] = {}
+        for sid, (owner_id, kind) in self.sov_owners.items():
+            if kind != "alliance" or sid not in self.universe.systems:
+                continue                    # NPC/faction space is not territory
+            by_alliance.setdefault(owner_id, []).append(sid)
+
+        rank = {"unknown": 0, "neutral": 1, "blue": 2, "self": 3, "red": 4}
+        groups = []
+        for owner_id, sids in by_alliance.items():
+            bucket = self._standing_bucket(owner_id)
+            groups.append((rank[bucket], QColor(self.SOV_COLOURS[bucket]), sids))
+        groups.sort(key=lambda g: g[0])     # hostile space drawn last, on top
+
+        # Merging and rasterising takes over a second, so it happens on a
+        # worker. Positions are resolved here because _pos belongs to the view.
+        pos = self.map_view._pos
+        payload = [(colour, [pos[s] for s in sids if s in pos])
+                   for _, colour, sids in groups]
+        radius = self.map_view.SOV_RADIUS
+        bake = self.map_view.bake_sov_image
+
+        w = Worker(lambda: bake(payload, radius))
+        w.finished_ok.connect(self._on_sov_territory)
+        w.failed.connect(lambda m: self.statusBar().showMessage(
+            f"Sovereignty layer: {m}", 8000))
+        self._run(w)
+
+    def _on_sov_territory(self, baked):
+        if self.map_view is not None:
+            self.map_view.set_sov_image(baked)
+
+    def _standing_bucket(self, owner_id) -> str:
+        if self.my_alliance_id and owner_id == self.my_alliance_id:
+            return "self"
+        standing = self.standings.get(owner_id)
+        if standing is None:
+            return "unknown"
+        if standing > 0:
+            return "blue"
+        if standing < 0:
+            return "red"
+        return "neutral"
 
     # -- system notes -------------------------------------------------------
     def note_for(self, system_id: int) -> str:

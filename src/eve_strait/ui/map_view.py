@@ -93,7 +93,8 @@ class MapView(QGraphicsView):
         # see a kill in any given hour, so leaving them on buries the map.
         self._overlay_on = {"gates": True, "bridges": True, "regions": True,
                             "kills": False, "avoid": True, "location": True,
-                            "notes": True, "heat": True}
+                            "notes": True, "heat": True, "sov": False}
+        self._sov_items: list = []
         self._dots: dict[int, QGraphicsEllipseItem] = {}
         self._sec_brushes: dict[int, QBrush] = {}
         self._heat_brushes: dict[int, QBrush] = {}
@@ -251,6 +252,120 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(ring)
             self._here_items.append(ring)
         self._apply_visibility("location")
+
+    # Influence radius in light years. Sovereign systems sit a median 0.4 ly
+    # apart (p90 0.7). Tuned by eye against real sov: 0.8 leaves the blobs
+    # beady, with each system still readable as its own disc, and 2.0 bleeds
+    # neighbouring alliances into each other. 1.3 reads as continuous
+    # territory while keeping borders where they belong.
+    SOV_RADIUS = 1.3
+    # Resolution of the baked territory layer. 26 px/ly stays crisp well past
+    # the zoom levels territory is actually looked at; the cap bounds memory
+    # on the ~90 x 100 ly sovereign area to a few tens of MB.
+    SOV_PIXELS_PER_LY = 26.0
+    SOV_MAX_PIXELS = 2800
+
+    def set_sov_territory(self, groups, radius: float | None = None):
+        """Fill each owner's space as one continuous blob.
+
+        ``groups`` is [(QColor, [system_id, ...]), ...], one entry per owner.
+
+        Each system contributes a disc and the discs are merged with
+        QPainterPath.simplified(), which resolves the overlaps into a single
+        outline. Drawing the discs individually would be far more subpaths to
+        rasterise every frame, and every internal arc would show through as a
+        seam once the shape is outlined.
+
+        A convex hull would be wrong here, not just slower: holdings are
+        concave and interleaved, so a hull would swallow a neighbour's space.
+        """
+        baked = self.bake_sov_image(
+            [(c, [self._pos[s] for s in ids if s in self._pos])
+             for c, ids in groups],
+            self.SOV_RADIUS if radius is None else radius)
+        self.set_sov_image(baked)
+
+    @classmethod
+    def bake_sov_image(cls, groups, radius: float):
+        """Merge and rasterise the territory. Safe to call off the UI thread.
+
+        ``groups`` is [(QColor, [QPointF, ...]), ...]. Returns
+        (QImage, top_left QPointF, px_per_ly) or None.
+
+        Rasterising once beats re-drawing the borders every frame. Merging
+        2700 discs produces ~78k path elements, and this view repaints in full
+        on every mouse move, so as live paths the layer cost 75 ms a frame
+        against a 26 ms baseline. As an image it is one blit: measured 26.6 ms,
+        i.e. free. Territory is a soft, zoomed-out feature, so the resolution
+        cap does not show.
+
+        QImage rather than QPixmap deliberately: QPixmap may only be touched on
+        the GUI thread, and merging plus rasterising takes over a second.
+        """
+        from PySide6.QtGui import QImage, QPainterPath
+
+        merged = []
+        bounds = QRectF()
+        for colour, points in groups:
+            path = QPainterPath()
+            for p in points:
+                path.addEllipse(p.x() - radius, p.y() - radius,
+                                2 * radius, 2 * radius)
+            if path.isEmpty():
+                continue
+            # One boolean pass per owner, at build time rather than per frame.
+            # Grouping per alliance matters here: simplify is superlinear in
+            # subpath count, so one shape per standing took 1.8 s where 79
+            # smaller ones take 0.2 s.
+            merged.append((QColor(colour), path.simplified()))
+            bounds = bounds.united(merged[-1][1].boundingRect())
+        if not merged:
+            return None
+
+        bounds = bounds.adjusted(-radius, -radius, radius, radius)
+        px_per_ly = min(cls.SOV_MAX_PIXELS / max(bounds.width(), bounds.height()),
+                        cls.SOV_PIXELS_PER_LY)
+        image = QImage(max(1, int(bounds.width() * px_per_ly)),
+                       max(1, int(bounds.height() * px_per_ly)),
+                       QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.scale(px_per_ly, px_per_ly)
+        painter.translate(-bounds.left(), -bounds.top())
+        for colour, path in merged:
+            fill = QColor(colour)
+            fill.setAlpha(56)              # dots and gate links stay readable
+            edge = QColor(colour)
+            # Soft: a hard border traces every merged arc and reads as
+            # scalloped. Just enough to separate touching territories.
+            edge.setAlpha(96)
+            painter.setBrush(QBrush(fill))
+            painter.setPen(QPen(edge, 1.0 / px_per_ly))
+            painter.drawPath(path)
+        painter.end()
+        return image, bounds.topLeft(), px_per_ly
+
+    def set_sov_image(self, baked):
+        """Install a baked territory image. UI thread only."""
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QGraphicsPixmapItem
+
+        for item in self._sov_items:
+            self.scene_obj.removeItem(item)
+        self._sov_items = []
+        if baked is None:
+            return
+        image, top_left, px_per_ly = baked
+        item = QGraphicsPixmapItem(QPixmap.fromImage(image))
+        item.setPos(top_left)
+        item.setScale(1.0 / px_per_ly)
+        item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        item.setZValue(-3)                 # under the gate mesh and everything
+        self.scene_obj.addItem(item)
+        self._sov_items.append(item)
+        self._apply_visibility("sov")
 
     def set_noted(self, system_ids):
         """Mark systems you have written a note about with a small tag.
@@ -414,6 +529,7 @@ class MapView(QGraphicsView):
             "avoid": getattr(self, "_avoid_items", ()),
             "location": getattr(self, "_here_items", ()),
             "notes": getattr(self, "_note_items", ()),
+            "sov": self._sov_items,
         }.get(name, ())
 
     def _apply_visibility(self, name: str):
