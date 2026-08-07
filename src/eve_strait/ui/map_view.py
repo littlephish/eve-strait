@@ -266,6 +266,7 @@ class MapView(QGraphicsView):
     SOV_MAX_PIXELS = 2800
     SOV_ALPHA = 0.42          # washed enough that the star field reads through
     SOV_EMPIRE_RADIUS = 4.2   # how far empire space pushes sovereignty back
+    SOV_CORE = 0.45           # fraction of the reach that stays fully solid
     SOV_BORDER_LY = 0.16      # dilation that forms the outer rim
 
     def set_sov_territory(self, groups, radius: float | None = None):
@@ -328,7 +329,7 @@ class MapView(QGraphicsView):
         QImage rather than QPixmap: QPixmap may only be touched on the GUI
         thread, and this takes long enough to need a worker.
         """
-        from PySide6.QtGui import QImage
+        from PySide6.QtGui import QImage, QRadialGradient
 
         clean = [(QColor(c), pts, links) for c, pts, links in groups if pts]
         if not clean:
@@ -352,14 +353,28 @@ class MapView(QGraphicsView):
         mask.fill(Qt.GlobalColor.transparent)
 
         def blob(mp, pts, links, r, colour):
-            pen = QPen(colour, 2 * r, Qt.PenStyle.SolidLine,
-                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            # Corridors stay flat so the territory reads as connected: a
+            # gradient along a link would thin out in the middle and break the
+            # join it exists to make.
             mp.setBrush(QBrush(colour))
-            mp.setPen(pen)
-            for a, b in links:              # corridors along gate links
+            mp.setPen(QPen(colour, 1.2 * r, Qt.PenStyle.SolidLine,
+                           Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            for a, b in links:
                 mp.drawLine(a, b)
+
+            # Systems fall off like a heat field rather than ending at a rim.
+            # Solid to the core stop, then fading to nothing, so overlapping
+            # neighbours blend into one soft mass and the outer boundary is a
+            # glow instead of a hard circle.
             mp.setPen(Qt.PenStyle.NoPen)
+            edge = QColor(colour)
+            edge.setAlpha(0)
             for p in pts:
+                grad = QRadialGradient(p, r)
+                grad.setColorAt(0.0, colour)
+                grad.setColorAt(cls.SOV_CORE, colour)
+                grad.setColorAt(1.0, edge)
+                mp.setBrush(QBrush(grad))
                 mp.drawEllipse(p, r, r)
 
         # Everything goes into one opaque mask, then the mask is composited
