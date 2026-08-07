@@ -7,6 +7,12 @@ timing** for each leg. It can authenticate to **ESI** and pull the stations / st
 your character has assets in, to use as staging points, and classify where your hull can
 actually dock.
 
+![Eve-Strait planning an Ark jump from Jita to M-OEE8, with the 10 ly jump range drawn on the New Eden map](docs/screenshot.png)
+
+*Planning an Ark jump freighter run out of Jita: the blue circle is the 10 ly reach at
+JDC 5, the route panel shows fuel and the reactivation timer per leg, and the left panel
+lists the structures that character can actually dock at.*
+
 ## Run
 
 ```bash
