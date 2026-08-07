@@ -1103,10 +1103,14 @@ class MainWindow(QMainWindow):
                 colour,
                 len(pts) / biggest))
 
+        # Empire space carves the territory back, so sovereignty can reach
+        # outward without swallowing high and low-sec.
+        empire = [pos[s.id] for s in self.universe.systems.values()
+                  if s.security > 0.0 and s.id in pos]
         radius = self.map_view.SOV_RADIUS
         bake = self.map_view.bake_sov_image
 
-        w = Worker(lambda: bake(payload, radius))
+        w = Worker(lambda: bake(payload, radius, empire))
         w.finished_ok.connect(self._on_sov_territory)
         w.failed.connect(lambda m: self.statusBar().showMessage(
             f"Sovereignty layer: {m}", 8000))

@@ -253,19 +253,19 @@ class MapView(QGraphicsView):
             self._here_items.append(ring)
         self._apply_visibility("location")
 
-    # Influence radius in light years. Sovereign systems sit a median 0.4 ly
-    # apart, so a small radius traces the constellations and leaves black
-    # gaps between them. Influence maps of null-sec are read as *territory*:
-    # neighbours should meet at a border, not float in space. A large radius
-    # makes the holdings tessellate, and because the biggest are drawn first
-    # the smaller ones stay visible on top.
-    SOV_RADIUS = 3.0
+    # Influence radius in light years. Deliberately far larger than the 0.4 ly
+    # median spacing between sovereign systems: influence maps are read as
+    # *territory*, so a holding should reach outward until something stops it
+    # rather than hugging its own constellations. What stops it is empire
+    # space, which is punched back out afterwards, and the edge of the map.
+    SOV_RADIUS = 4.5
     # Resolution of the baked territory layer. 26 px/ly stays crisp well past
     # the zoom levels territory is actually looked at; the cap bounds memory
     # on the ~90 x 100 ly sovereign area to a few tens of MB.
     SOV_PIXELS_PER_LY = 26.0
     SOV_MAX_PIXELS = 2800
-    SOV_ALPHA = 0.72          # near-opaque: the dots read on top of it
+    SOV_ALPHA = 0.42          # washed enough that the star field reads through
+    SOV_EMPIRE_RADIUS = 4.2   # how far empire space pushes sovereignty back
     SOV_BORDER_LY = 0.16      # dilation that forms the outer rim
 
     def set_sov_territory(self, groups, radius: float | None = None):
@@ -289,13 +289,20 @@ class MapView(QGraphicsView):
         self.set_sov_image(baked)
 
     @classmethod
-    def bake_sov_image(cls, groups, radius: float):
+    def bake_sov_image(cls, groups, radius: float, empire=()):
         """Merge and rasterise the territory. Safe to call off the UI thread.
 
         ``groups`` is [(QColor, [QPointF, ...], [(QPointF, QPointF), ...]), ...]
         -- one entry per owner, in draw order: its systems, and the gate links
         between systems it owns. Each owner gets its own colour, so later
-        entries overwrite earlier ones where territory is contested. Returns (QImage, top_left QPointF, px_per_ly) or None.
+        entries overwrite earlier ones where territory is contested.
+
+        ``empire`` is the high and low-sec systems. Sovereignty is drawn with a
+        wide reach and then cleared back around them, which is what gives the
+        border along empire space and lets holdings run out to the edge of the
+        map everywhere else. Drawing the reach small enough to avoid empire in
+        the first place would leave the holdings hugging their own
+        constellations with black between them. Returns (QImage, top_left QPointF, px_per_ly) or None.
 
         Each system contributes a disc and each internal gate link a thick
         capsule, so the shape follows the owner's actual topology and reads as
@@ -369,6 +376,16 @@ class MapView(QGraphicsView):
             blob(mp, pts, links, wide_r, colour.lighter(150))   # border under
         for colour, pts, links in clean:
             blob(mp, pts, links, radius, colour)                # interior over
+        # Punch empire space back out. CompositionMode_Clear rather than
+        # painting the background colour: the mask is composited translucently,
+        # so anything painted here would tint the map instead of revealing it.
+        if empire:
+            mp.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            mp.setPen(Qt.PenStyle.NoPen)
+            mp.setBrush(QBrush(Qt.GlobalColor.black))
+            r = cls.SOV_EMPIRE_RADIUS
+            for p in empire:
+                mp.drawEllipse(p, r, r)
         mp.end()
 
         painter = QPainter(image)
