@@ -265,7 +265,15 @@ class MapView(QGraphicsView):
     SOV_PIXELS_PER_LY = 26.0
     SOV_MAX_PIXELS = 2800
     SOV_ALPHA = 0.42          # washed enough that the star field reads through
-    SOV_EMPIRE_RADIUS = 4.2   # how far empire space pushes sovereignty back
+    # Empire pushes back far less than sovereignty projects. Giving both the
+    # same reach let high-sec claim as much space as an alliance, which is
+    # backwards: empire should trim the edge of a holding, not compete with it.
+    SOV_EMPIRE_RADIUS = 1.8
+    # Blur applied to the field before empire is carved, as a fraction the
+    # mask is scaled down to and back up. Smooths the per-system lobes into
+    # one boundary; carving afterwards keeps the empire border crisp.
+    SOV_SMOOTH = 0.14
+    SOV_CONTRAST = 4          # restacks of the blurred field; sharpens the edge
     SOV_CORE = 0.45           # fraction of the reach that stays fully solid
     SOV_BORDER_LY = 0.16      # dilation that forms the outer rim
 
@@ -391,17 +399,49 @@ class MapView(QGraphicsView):
             blob(mp, pts, links, wide_r, colour.lighter(150))   # border under
         for colour, pts, links in clean:
             blob(mp, pts, links, radius, colour)                # interior over
-        # Punch empire space back out. CompositionMode_Clear rather than
-        # painting the background colour: the mask is composited translucently,
-        # so anything painted here would tint the map instead of revealing it.
+        mp.end()
+
+        # Smooth the lobes away. Each system contributes a circular gradient,
+        # so the raw field is visibly scalloped where they meet; scaling down
+        # and back up with smooth interpolation is a cheap blur that leaves one
+        # boundary instead of a row of arcs.
+        if cls.SOV_SMOOTH:
+            small = mask.scaled(max(1, int(mask.width() * cls.SOV_SMOOTH)),
+                                max(1, int(mask.height() * cls.SOV_SMOOTH)),
+                                Qt.AspectRatioMode.IgnoreAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+            blurred = small.scaled(image.width(), image.height(),
+                                   Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+            # Blurring alone only softens the transition; the lobes are still
+            # there, just fuzzy. Compositing the blurred field over itself
+            # steepens the alpha curve back up, which turns the smooth-but-
+            # vague field into a smooth-and-definite contour. Same idea as
+            # thresholding a metaball field, without touching 7M pixels in
+            # Python.
+            mask = QImage(image.size(), QImage.Format.Format_ARGB32_Premultiplied)
+            mask.fill(Qt.GlobalColor.transparent)
+            sp = QPainter(mask)
+            for _ in range(cls.SOV_CONTRAST):
+                sp.drawImage(0, 0, blurred)
+            sp.end()
+
+        # Punch empire space back out, after the blur so this border stays
+        # crisp. CompositionMode_Clear rather than painting the background
+        # colour: the mask is composited translucently, so anything painted
+        # here would tint the map instead of revealing it.
         if empire:
+            mp = QPainter(mask)
+            mp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            mp.scale(px_per_ly, px_per_ly)
+            mp.translate(-bounds.left(), -bounds.top())
             mp.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
             mp.setPen(Qt.PenStyle.NoPen)
             mp.setBrush(QBrush(Qt.GlobalColor.black))
             r = cls.SOV_EMPIRE_RADIUS
             for p in empire:
                 mp.drawEllipse(p, r, r)
-        mp.end()
+            mp.end()
 
         painter = QPainter(image)
         painter.setOpacity(cls.SOV_ALPHA)
