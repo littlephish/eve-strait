@@ -1012,8 +1012,24 @@ class MainWindow(QMainWindow):
     # Standing colours first: for a route planner the question is not "who
     # owns this" but "do they shoot me", and that is what the contacts data
     # already answers.
-    SOV_COLOURS = {"self": "#2f6fe0", "blue": "#2f8fd0", "neutral": "#6b7a90",
-                   "red": "#c0392b", "unknown": "#4a5568"}
+    SOV_LABEL_MIN_SYSTEMS = 8
+
+    @staticmethod
+    def alliance_colour(rank: int):
+        """A stable, well-separated colour for one alliance.
+
+        Stepping the hue by the golden angle keeps consecutive alliances far
+        apart on the wheel, so neighbours in space rarely end up neighbours in
+        colour. Keyed by rank within the sorted alliance list rather than by a
+        hash of the id, so the palette is deterministic across runs instead of
+        reshuffling every time sovereignty changes.
+        """
+        from PySide6.QtGui import QColor
+        hue = (rank * 137.508) % 360
+        # Alternate value slightly so same-hue collisions in a large field
+        # still separate, and keep saturation high enough to read at 30% alpha
+        # over a near-black map.
+        return QColor.fromHsv(int(hue), 190, 235 if rank % 2 else 200)
 
     def refresh_sov_territory(self):
         """One blob per alliance, coloured by how they feel about you.
@@ -1033,18 +1049,60 @@ class MainWindow(QMainWindow):
                 continue                    # NPC/faction space is not territory
             by_alliance.setdefault(owner_id, []).append(sid)
 
-        rank = {"unknown": 0, "neutral": 1, "blue": 2, "self": 3, "red": 4}
-        groups = []
-        for owner_id, sids in by_alliance.items():
-            bucket = self._standing_bucket(owner_id)
-            groups.append((rank[bucket], QColor(self.SOV_COLOURS[bucket]), sids))
-        groups.sort(key=lambda g: g[0])     # hostile space drawn last, on top
+        # Draw the biggest holdings first so small territories land on top and
+        # stay visible instead of being buried under a neighbour.
+        ranked = {oid: i for i, oid in enumerate(sorted(by_alliance))}
+        groups = sorted(((self.alliance_colour(ranked[oid]), sids)
+                         for oid, sids in by_alliance.items()),
+                        key=lambda g: -len(g[1]))
+        groups = [(0, colour, sids) for colour, sids in groups]
 
-        # Merging and rasterising takes over a second, so it happens on a
-        # worker. Positions are resolved here because _pos belongs to the view.
         pos = self.map_view._pos
-        payload = [(colour, [pos[s] for s in sids if s in pos])
-                   for _, colour, sids in groups]
+        gates = self.universe.gates
+        owner_of = {s: o for s, (o, k) in self.sov_owners.items()
+                    if k == "alliance"}
+
+        payload = []
+        for _, colour, sids in groups:
+            pts = [pos[s] for s in sids if s in pos]
+            if not pts:
+                continue
+            # Corridors along gate links the owner holds both ends of. Without
+            # these the discs are beads on a string; with them the shape
+            # follows the topology and reads as one connected territory.
+            owner = owner_of.get(sids[0])
+            links = []
+            seen = set()
+            for a in sids:
+                if a not in pos:
+                    continue
+                for b in gates.get(a, ()):  # both ends must be theirs
+                    if owner_of.get(b) != owner or b not in pos:
+                        continue
+                    pair = (a, b) if a < b else (b, a)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    links.append((pos[a], pos[b]))
+            payload.append((colour, pts, links))
+
+        # Name the territories big enough to carry a label. Below this the
+        # names collide, and the long tail of tiny holdings collides first.
+        from PySide6.QtCore import QPointF
+        biggest = max((len(s) for s in by_alliance.values()), default=1)
+        self._sov_labels = []
+        for _, colour, sids in groups:
+            pts = [pos[s] for s in sids if s in pos]
+            name = self.sov_names.get(owner_of.get(sids[0]))
+            if len(pts) < self.SOV_LABEL_MIN_SYSTEMS or not name:
+                continue
+            self._sov_labels.append((
+                name,
+                QPointF(sum(p.x() for p in pts) / len(pts),
+                        sum(p.y() for p in pts) / len(pts)),
+                colour,
+                len(pts) / biggest))
+
         radius = self.map_view.SOV_RADIUS
         bake = self.map_view.bake_sov_image
 
@@ -1055,8 +1113,10 @@ class MainWindow(QMainWindow):
         self._run(w)
 
     def _on_sov_territory(self, baked):
-        if self.map_view is not None:
-            self.map_view.set_sov_image(baked)
+        if self.map_view is None:
+            return
+        self.map_view.set_sov_image(baked)
+        self.map_view.set_sov_labels(getattr(self, "_sov_labels", []))
 
     def _standing_bucket(self, owner_id) -> str:
         if self.my_alliance_id and owner_id == self.my_alliance_id:

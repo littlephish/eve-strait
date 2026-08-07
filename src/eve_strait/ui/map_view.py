@@ -254,16 +254,19 @@ class MapView(QGraphicsView):
         self._apply_visibility("location")
 
     # Influence radius in light years. Sovereign systems sit a median 0.4 ly
-    # apart (p90 0.7). Tuned by eye against real sov: 0.8 leaves the blobs
-    # beady, with each system still readable as its own disc, and 2.0 bleeds
-    # neighbouring alliances into each other. 1.3 reads as continuous
-    # territory while keeping borders where they belong.
-    SOV_RADIUS = 1.3
+    # apart, so a small radius traces the constellations and leaves black
+    # gaps between them. Influence maps of null-sec are read as *territory*:
+    # neighbours should meet at a border, not float in space. A large radius
+    # makes the holdings tessellate, and because the biggest are drawn first
+    # the smaller ones stay visible on top.
+    SOV_RADIUS = 3.0
     # Resolution of the baked territory layer. 26 px/ly stays crisp well past
     # the zoom levels territory is actually looked at; the cap bounds memory
     # on the ~90 x 100 ly sovereign area to a few tens of MB.
     SOV_PIXELS_PER_LY = 26.0
     SOV_MAX_PIXELS = 2800
+    SOV_ALPHA = 0.72          # near-opaque: the dots read on top of it
+    SOV_BORDER_LY = 0.16      # dilation that forms the outer rim
 
     def set_sov_territory(self, groups, radius: float | None = None):
         """Fill each owner's space as one continuous blob.
@@ -289,63 +292,117 @@ class MapView(QGraphicsView):
     def bake_sov_image(cls, groups, radius: float):
         """Merge and rasterise the territory. Safe to call off the UI thread.
 
-        ``groups`` is [(QColor, [QPointF, ...]), ...]. Returns
-        (QImage, top_left QPointF, px_per_ly) or None.
+        ``groups`` is [(QColor, [QPointF, ...], [(QPointF, QPointF), ...]), ...]
+        -- one entry per owner, in draw order: its systems, and the gate links
+        between systems it owns. Each owner gets its own colour, so later
+        entries overwrite earlier ones where territory is contested. Returns (QImage, top_left QPointF, px_per_ly) or None.
 
-        Rasterising once beats re-drawing the borders every frame. Merging
-        2700 discs produces ~78k path elements, and this view repaints in full
-        on every mouse move, so as live paths the layer cost 75 ms a frame
-        against a 26 ms baseline. As an image it is one blit: measured 26.6 ms,
-        i.e. free. Territory is a soft, zoomed-out feature, so the resolution
-        cap does not show.
+        Each system contributes a disc and each internal gate link a thick
+        capsule, so the shape follows the owner's actual topology and reads as
+        one connected territory rather than beads on a string.
 
-        QImage rather than QPixmap deliberately: QPixmap may only be touched on
-        the GUI thread, and merging plus rasterising takes over a second.
+        Three things this deliberately does NOT do, each learned the hard way:
+
+        * No stroking of the shapes. The discs overlap, so a pen traces every
+          internal arc and draws a lattice of circles instead of a border. The
+          border is a dilation: the same geometry drawn larger underneath.
+        * No QPainterPath.simplified(). It does not reduce the discs to one
+          outline, it splits them at every intersection, and building the
+          border from a stroker union on top of that took 45 seconds.
+        * No single giant path per owner. Rasterising 500 overlapping subpaths
+          under the winding rule is far slower than 500 independent opaque
+          fills that simply overwrite each other.
+
+        Colours are composited one at a time through an opaque mask. Painting
+        translucent shapes straight onto the canvas makes every overlap darker,
+        so two neighbours sharing a colour show a seam and connected space
+        stops looking connected.
+
+        QImage rather than QPixmap: QPixmap may only be touched on the GUI
+        thread, and this takes long enough to need a worker.
         """
-        from PySide6.QtGui import QImage, QPainterPath
+        from PySide6.QtGui import QImage
 
-        merged = []
-        bounds = QRectF()
-        for colour, points in groups:
-            path = QPainterPath()
-            for p in points:
-                path.addEllipse(p.x() - radius, p.y() - radius,
-                                2 * radius, 2 * radius)
-            if path.isEmpty():
-                continue
-            # One boolean pass per owner, at build time rather than per frame.
-            # Grouping per alliance matters here: simplify is superlinear in
-            # subpath count, so one shape per standing took 1.8 s where 79
-            # smaller ones take 0.2 s.
-            merged.append((QColor(colour), path.simplified()))
-            bounds = bounds.united(merged[-1][1].boundingRect())
-        if not merged:
+        clean = [(QColor(c), pts, links) for c, pts, links in groups if pts]
+        if not clean:
             return None
 
-        bounds = bounds.adjusted(-radius, -radius, radius, radius)
+        wide_r = radius + cls.SOV_BORDER_LY
+        xs = [p.x() for _, pts, _ in clean for p in pts]
+        ys = [p.y() for _, pts, _ in clean for p in pts]
+        bounds = QRectF(min(xs) - wide_r, min(ys) - wide_r,
+                        max(xs) - min(xs) + 2 * wide_r,
+                        max(ys) - min(ys) + 2 * wide_r)
+
         px_per_ly = min(cls.SOV_MAX_PIXELS / max(bounds.width(), bounds.height()),
                         cls.SOV_PIXELS_PER_LY)
-        image = QImage(max(1, int(bounds.width() * px_per_ly)),
-                       max(1, int(bounds.height() * px_per_ly)),
-                       QImage.Format.Format_ARGB32_Premultiplied)
+        size = (max(1, int(bounds.width() * px_per_ly)),
+                max(1, int(bounds.height() * px_per_ly)))
+
+        image = QImage(*size, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(Qt.GlobalColor.transparent)
+        mask = QImage(*size, QImage.Format.Format_ARGB32_Premultiplied)
+        mask.fill(Qt.GlobalColor.transparent)
+
+        def blob(mp, pts, links, r, colour):
+            pen = QPen(colour, 2 * r, Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            mp.setBrush(QBrush(colour))
+            mp.setPen(pen)
+            for a, b in links:              # corridors along gate links
+                mp.drawLine(a, b)
+            mp.setPen(Qt.PenStyle.NoPen)
+            for p in pts:
+                mp.drawEllipse(p, r, r)
+
+        # Everything goes into one opaque mask, then the mask is composited
+        # once. Painting translucent shapes straight onto the canvas makes
+        # every overlap darker, so an alliance's own discs and corridors show
+        # seams where they meet and its space stops looking connected. Opaque,
+        # they simply coincide. Between alliances the later colour overwrites,
+        # which gives a clean border rather than a muddy blend.
+        mp = QPainter(mask)
+        mp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        mp.scale(px_per_ly, px_per_ly)
+        mp.translate(-bounds.left(), -bounds.top())
+        for colour, pts, links in clean:
+            blob(mp, pts, links, wide_r, colour.lighter(150))   # border under
+        for colour, pts, links in clean:
+            blob(mp, pts, links, radius, colour)                # interior over
+        mp.end()
 
         painter = QPainter(image)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.scale(px_per_ly, px_per_ly)
-        painter.translate(-bounds.left(), -bounds.top())
-        for colour, path in merged:
-            fill = QColor(colour)
-            fill.setAlpha(56)              # dots and gate links stay readable
-            edge = QColor(colour)
-            # Soft: a hard border traces every merged arc and reads as
-            # scalloped. Just enough to separate touching territories.
-            edge.setAlpha(96)
-            painter.setBrush(QBrush(fill))
-            painter.setPen(QPen(edge, 1.0 / px_per_ly))
-            painter.drawPath(path)
+        painter.setOpacity(cls.SOV_ALPHA)
+        painter.drawImage(0, 0, mask)
         painter.end()
         return image, bounds.topLeft(), px_per_ly
+
+    def set_sov_labels(self, labels):
+        """Name each territory. ``labels`` is [(text, QPointF, QColor), ...].
+
+        Added to the same item list as the territory image so the View menu
+        toggle covers both, and drawn ignoring the view transform so the names
+        stay legible at any zoom, like the region labels.
+        """
+        for text, point, colour, weight in labels:
+            item = QGraphicsSimpleTextItem(text)
+            item.setBrush(QBrush(QColor(colour).lighter(160)))
+            font = QFont()
+            # Size by holding, so the map reads at a glance: the bloc that owns
+            # a third of null-sec should not be labelled like a five-system
+            # renter.
+            font.setPointSize(max(7, min(22, int(7 + 15 * weight ** 0.5))))
+            font.setBold(True)
+            item.setFont(font)
+            item.setFlag(_IGNORE_XF, True)
+            item.setZValue(-0.5)      # over the fill, under the system dots
+            # Centre the name on the territory rather than hanging it off the
+            # corner: these mark an area, not a point.
+            rect = item.boundingRect()
+            _anchor_px(item, point, -rect.width() / 2, -rect.height() / 2)
+            self.scene_obj.addItem(item)
+            self._sov_items.append(item)
+        self._apply_visibility("sov")
 
     def set_sov_image(self, baked):
         """Install a baked territory image. UI thread only."""
