@@ -1,8 +1,18 @@
 """2D pan/zoom map of New Eden with region labels, range and route overlays."""
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QTransform
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QPainter,
+    QPen,
+    QPolygonF,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsLineItem,
@@ -253,11 +263,13 @@ class MapView(QGraphicsView):
             self._here_items.append(ring)
         self._apply_visibility("location")
 
-    # Influence radius in light years. Deliberately far larger than the 0.4 ly
-    # median spacing between sovereign systems: influence maps are read as
-    # *territory*, so a holding should reach outward until something stops it
-    # rather than hugging its own constellations. What stops it is empire
-    # space, which is punched back out afterwards, and the edge of the map.
+    # Influence radius in light years, away from any rival. Deliberately far
+    # larger than the 0.4 ly median spacing between sovereign systems:
+    # influence maps are read as *territory*, so a holding should reach
+    # outward until something stops it rather than hugging its own
+    # constellations. What stops it is a rival, which splits the space between
+    # them down the middle (see rival_fronts), empire space, which is punched
+    # back out afterwards, and the edge of the map.
     SOV_RADIUS = 4.5
     # Resolution of the baked territory layer. 26 px/ly stays crisp well past
     # the zoom levels territory is actually looked at; the cap bounds memory
@@ -277,25 +289,140 @@ class MapView(QGraphicsView):
     SOV_CORE = 0.45           # fraction of the reach that stays fully solid
     SOV_BORDER_LY = 0.16      # dilation that forms the outer rim
 
-    def set_sov_territory(self, groups, radius: float | None = None):
-        """Fill each owner's space as one continuous blob.
+    # Sides of the polygon that stands in for a system's disc once the disc
+    # has to be cut. Inscribed, so it is 0.8% under the true circle at 24
+    # sides -- invisible under the blur, and only at the outer edge where the
+    # gradient has already faded to nothing.
+    SOV_CELL_SIDES = 24
 
-        ``groups`` is [(QColor, [system_id, ...]), ...], one entry per owner.
+    @classmethod
+    def rival_fronts(cls, clean, radius: float):
+        """Where each system meets a rival. The Voronoi part of the fit.
 
-        Each system contributes a disc and the discs are merged with
-        QPainterPath.simplified(), which resolves the overlaps into a single
-        outline. Drawing the discs individually would be far more subpaths to
-        rasterise every frame, and every internal arc would show through as a
-        seam once the shape is outlined.
+        Returns [[(clearance, [(reach, mx, my, nx, ny), ...]), ...], ...]
+        parallel to ``clean``: for every system, how far it is from the
+        nearest rival, and a half-plane per rival in range -- how far the
+        bisector sits from the system, a point on it, and the unit normal
+        pointing at the rival. Sorted nearest first, so the clip cuts the
+        shape down fast and can stop as soon as a bisector no longer reaches
+        it.
 
-        A convex hull would be wrong here, not just slower: holdings are
-        concave and interleaved, so a hull would swallow a neighbour's space.
+        Without this every system projects the same ``radius`` and conflicts
+        are settled by paint order, so where two alliances interleave the one
+        drawn later covers the other's *core*, not just its fringe, and the
+        boundary sits at the late-comer's reach instead of between the two.
+
+        Cutting each system's disc at the bisector fixes that, and fixes it
+        the same way from both sides: each owner arrives at the same line from
+        its own geometry, so who paints last stops mattering. The result is
+        the system's Voronoi cell, bounded by ``radius``.
+
+        The cut has to be *directional*. Simply shrinking the radius to half
+        the distance to the nearest rival puts the border in the same place
+        and is much less code, but a radius is the same in every direction: a
+        system with a rival 0.9 ly away would pull in to 0.45 ly on its
+        outward side too, and since sov systems sit ~0.4 ly apart that eats a
+        bite out of the whole holding's silhouette wherever a rival happens to
+        be near. Half-planes only cut toward the rival. Outward, the reach is
+        untouched.
+
+        ``clearance`` is what is left for the corridors, which are drawn as
+        thick lines and have no cell to be clipped to. There a plain width
+        clamp is the right analogue -- a corridor squeezing past a rival
+        genuinely should be thin from both sides.
+
+        Empire is deliberately not a rival here. It is carved out afterwards
+        at its own radius, and counting it twice would shrink every border
+        holding away from the line it is supposed to sit on.
+
+        Bucketed on a ``2 * radius`` grid so each system only looks at the 3x3
+        cells around it rather than all ~1k of them; the all-pairs version
+        costs the better part of a second, which would show up next to the bake.
         """
-        baked = self.bake_sov_image(
-            [(c, [self._pos[s] for s in ids if s in self._pos])
-             for c, ids in groups],
-            self.SOV_RADIUS if radius is None else radius)
-        self.set_sov_image(baked)
+        cutoff = 2.0 * radius
+        buckets: dict[tuple[int, int], list[tuple[int, float, float]]] = {}
+        for owner, (_, pts, _) in enumerate(clean):
+            for p in pts:
+                x, y = p.x(), p.y()
+                buckets.setdefault((int(x // cutoff), int(y // cutoff)),
+                                   []).append((owner, x, y))
+
+        out = []
+        for owner, (_, pts, _) in enumerate(clean):
+            fronts = []
+            for p in pts:
+                x, y = p.x(), p.y()
+                cx, cy = int(x // cutoff), int(y // cutoff)
+                planes = []
+                for ox in (-1, 0, 1):
+                    for oy in (-1, 0, 1):
+                        for other, qx, qy in buckets.get((cx + ox, cy + oy), ()):
+                            if other == owner:
+                                continue
+                            dx, dy = qx - x, qy - y
+                            d = math.hypot(dx, dy)
+                            # Beyond the cutoff the bisector is outside the
+                            # disc and cuts nothing. A rival at zero distance
+                            # has no direction to cut in -- two alliances
+                            # cannot hold the same system, but a caller that
+                            # passes one twice should not divide by zero.
+                            if d >= cutoff or d == 0.0:
+                                continue
+                            planes.append((d / 2, x + dx / 2, y + dy / 2,
+                                           dx / d, dy / d))
+                # Nearest first, so the clip collapses the shape on the first
+                # few cuts and can then stop. Keeping only the nearest N
+                # instead would be unsound: N rivals clustered on one side
+                # leave a further one still cutting the other.
+                planes.sort()
+                near = planes[0][0] * 2 if planes else cutoff
+                fronts.append((min(radius, 0.5 * near), planes))
+            out.append(fronts)
+        return out
+
+    @classmethod
+    def cell_polygon(cls, p, r: float, planes, extra: float):
+        """The disc of radius ``r + extra`` around ``p``, cut at each bisector.
+
+        Sutherland-Hodgman against one half-plane at a time. The shape stays
+        convex, so clipping never splits it and the vertex list only shrinks.
+
+        ``extra`` pushes the bisectors out as well as the rim, so the dilated
+        border pass keeps the same shape and overhangs the boundary evenly on
+        both sides. The two owners' borders then overlap in a thin strip along
+        the line, which is what draws the seam between them.
+
+        ``planes`` arrives nearest first, so the shape collapses on the first
+        few cuts and the rest are tested against a handful of vertices. Once a
+        bisector sits further out than the whole shape, so does every one
+        after it, and the loop is done -- which is most of them, most of the
+        time.
+        """
+        r += extra
+        step = 2.0 * math.pi / cls.SOV_CELL_SIDES
+        x, y = p.x(), p.y()
+        poly = [(x + r * math.cos(i * step), y + r * math.sin(i * step))
+                for i in range(cls.SOV_CELL_SIDES)]
+        far = r                                  # furthest vertex from p
+        for reach, mx, my, nx, ny in planes:
+            if reach + extra >= far:
+                break
+            mx, my = mx + nx * extra, my + ny * extra
+            out = []
+            for i, (ax, ay) in enumerate(poly):
+                bx, by = poly[(i + 1) % len(poly)]
+                da = (ax - mx) * nx + (ay - my) * ny
+                db = (bx - mx) * nx + (by - my) * ny
+                if da <= 0.0:
+                    out.append((ax, ay))
+                if (da > 0.0) != (db > 0.0):
+                    t = da / (da - db)
+                    out.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+            poly = out
+            if len(poly) < 3:
+                return None
+            far = max(math.hypot(ax - x, ay - y) for ax, ay in poly)
+        return QPolygonF([QPointF(px, py) for px, py in poly])
 
     @classmethod
     def bake_sov_image(cls, groups, radius: float, empire=()):
@@ -304,7 +431,12 @@ class MapView(QGraphicsView):
         ``groups`` is [(QColor, [QPointF, ...], [(QPointF, QPointF), ...]), ...]
         -- one entry per owner, in draw order: its systems, and the gate links
         between systems it owns. Each owner gets its own colour, so later
-        entries overwrite earlier ones where territory is contested.
+        entries overwrite earlier ones where two reaches still overlap.
+
+        ``radius`` is the reach away from rivals. Toward one, the disc is cut
+        back to the bisector by rival_fronts / cell_polygon, so contested
+        space is split down the middle rather than handed to whoever paints
+        last.
 
         ``empire`` is the high and low-sec systems. Sovereignty is drawn with a
         wide reach and then cleared back around them, which is what gives the
@@ -360,14 +492,32 @@ class MapView(QGraphicsView):
         mask = QImage(*size, QImage.Format.Format_ARGB32_Premultiplied)
         mask.fill(Qt.GlobalColor.transparent)
 
-        def blob(mp, pts, links, r, colour):
+        # Where each system meets a rival, so contested space is split down
+        # the middle instead of going to whoever paints last.
+        fronts = cls.rival_fronts(clean, radius)
+
+        # Corridor widths resolve through the endpoints' clearance, taking the
+        # narrower of the two. The caller hands links as raw point pairs, so
+        # they are matched back to their systems by coordinate.
+        sized = []
+        for (colour, pts, links), front in zip(clean, fronts):
+            clear = {(p.x(), p.y()): c for p, (c, _) in zip(pts, front)}
+            sized.append((colour, pts, front, [
+                (a, b, min(clear.get((a.x(), a.y()), radius),
+                           clear.get((b.x(), b.y()), radius)))
+                for a, b in links]))
+
+        def blob(mp, pts, front, links, extra, colour):
             # Corridors stay flat so the territory reads as connected: a
             # gradient along a link would thin out in the middle and break the
-            # join it exists to make.
+            # join it exists to make. Width follows the narrower end, so a
+            # corridor squeezing past a rival is pulled in from both sides
+            # rather than bridging straight over the border.
             mp.setBrush(QBrush(colour))
-            mp.setPen(QPen(colour, 1.2 * r, Qt.PenStyle.SolidLine,
-                           Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            for a, b in links:
+            for a, b, c in links:
+                mp.setPen(QPen(colour, 1.2 * (c + extra), Qt.PenStyle.SolidLine,
+                               Qt.PenCapStyle.RoundCap,
+                               Qt.PenJoinStyle.RoundJoin))
                 mp.drawLine(a, b)
 
             # Systems fall off like a heat field rather than ending at a rim.
@@ -377,28 +527,37 @@ class MapView(QGraphicsView):
             mp.setPen(Qt.PenStyle.NoPen)
             edge = QColor(colour)
             edge.setAlpha(0)
-            for p in pts:
+            r = radius + extra
+            for p, (_, planes) in zip(pts, front):
                 grad = QRadialGradient(p, r)
                 grad.setColorAt(0.0, colour)
                 grad.setColorAt(cls.SOV_CORE, colour)
                 grad.setColorAt(1.0, edge)
                 mp.setBrush(QBrush(grad))
-                mp.drawEllipse(p, r, r)
+                # No rival in range is the common case away from a border, and
+                # there the disc is untouched -- drawn as a disc, both because
+                # it is exact and because it skips the clip entirely.
+                if not planes:
+                    mp.drawEllipse(p, r, r)
+                    continue
+                cell = cls.cell_polygon(p, radius, planes, extra)
+                if cell is not None:
+                    mp.drawPolygon(cell)
 
         # Everything goes into one opaque mask, then the mask is composited
         # once. Painting translucent shapes straight onto the canvas makes
         # every overlap darker, so an alliance's own discs and corridors show
         # seams where they meet and its space stops looking connected. Opaque,
         # they simply coincide. Between alliances the later colour overwrites,
-        # which gives a clean border rather than a muddy blend.
+        # which now only happens inside the dilated border strip.
         mp = QPainter(mask)
         mp.setRenderHint(QPainter.RenderHint.Antialiasing)
         mp.scale(px_per_ly, px_per_ly)
         mp.translate(-bounds.left(), -bounds.top())
-        for colour, pts, links in clean:
-            blob(mp, pts, links, wide_r, colour.lighter(150))   # border under
-        for colour, pts, links in clean:
-            blob(mp, pts, links, radius, colour)                # interior over
+        for colour, pts, front, links in sized:                 # border under
+            blob(mp, pts, front, links, cls.SOV_BORDER_LY, colour.lighter(150))
+        for colour, pts, front, links in sized:                 # interior over
+            blob(mp, pts, front, links, 0.0, colour)
         mp.end()
 
         # Smooth the lobes away. Each system contributes a circular gradient,
