@@ -1014,33 +1014,85 @@ class MainWindow(QMainWindow):
     # already answers.
     SOV_LABEL_MIN_SYSTEMS = 8
 
-    @staticmethod
-    def alliance_colour(rank: int):
-        """A stable, well-separated colour for one alliance.
+    # Distinct colours to hand out. Only ever a handful are in play at any one
+    # border -- a map needs four -- so this is far more than enough to also
+    # keep the big blocs looking different from each other across the map.
+    SOV_PALETTE = 24
 
-        Stepping the hue by the golden angle keeps consecutive alliances far
-        apart on the wheel, so neighbours in space rarely end up neighbours in
-        colour. Keyed by rank within the sorted alliance list rather than by a
-        hash of the id, so the palette is deterministic across runs instead of
-        reshuffling every time sovereignty changes.
+    @classmethod
+    def alliance_colour(cls, slot: int):
+        """One entry of the territory palette.
+
+        Stepping the hue by the golden angle keeps consecutive slots far apart
+        on the wheel, so anything handed neighbouring slots is obviously
+        different.
         """
         from PySide6.QtGui import QColor
-        hue = (rank * 137.508) % 360
-        # Alternate value slightly so same-hue collisions in a large field
-        # still separate, and keep saturation high enough to read at 30% alpha
-        # over a near-black map.
-        return QColor.fromHsv(int(hue), 190, 235 if rank % 2 else 200)
+        hue = (slot * 137.508) % 360
+        # Alternate value slightly so two hues that come out close in a large
+        # field still separate, and keep saturation high enough to read at
+        # SOV_ALPHA over a near-black map.
+        return QColor.fromHsv(int(hue), 190, 235 if slot % 2 else 200)
+
+    @classmethod
+    def sov_colours(cls, ranked, borders):
+        """Pick a colour per alliance so no two that share a border match.
+
+        ``ranked`` is the alliance ids worth colouring, biggest holding first.
+        ``borders`` maps an id to the ids it actually touches, which comes out
+        of the Voronoi cells rather than being guessed from distance.
+
+        Territory used to be coloured by position in the sorted id list, which
+        has nothing to do with where anyone is. That was survivable while
+        holdings were islands with black between them -- two alliances sharing
+        a colour on opposite sides of the map read as two things. Now that the
+        layer fills the box, two same-coloured neighbours share an edge and
+        read as one big holding, which is worse than a merely ugly palette: it
+        is wrong.
+
+        Biggest first is deliberate. Greedy colouring gives whoever goes first
+        the freest choice, and the blocs holding half a region are the ones a
+        reader most needs to tell apart; the five-system renters can take
+        what is left. Among the colours still open, the least-used one wins,
+        so the palette spreads instead of everyone landing on the first few
+        slots -- and ties break toward the hue furthest from the neighbours
+        already placed, so borders separate as much as the palette allows.
+        """
+        hues = [(i * 137.508) % 360 for i in range(cls.SOV_PALETTE)]
+
+        def gap(a, b):
+            d = abs(a - b) % 360
+            return min(d, 360 - d)
+
+        used = [0] * cls.SOV_PALETTE
+        slot: dict[int, int] = {}
+        for oid in ranked:
+            near = [slot[n] for n in borders.get(oid, ()) if n in slot]
+            taken = set(near)
+            free = [i for i in range(cls.SOV_PALETTE) if i not in taken]
+            # Everything adjacent is spoken for. Nothing to do but repeat the
+            # least-used colour; with 24 slots this needs a 25-way junction.
+            free = free or list(range(cls.SOV_PALETTE))
+            slot[oid] = min(free, key=lambda i: (
+                used[i], -min((gap(hues[i], hues[n]) for n in near),
+                              default=0.0), i))
+            used[slot[oid]] += 1
+        return {oid: cls.alliance_colour(i) for oid, i in slot.items()}
 
     def refresh_sov_territory(self):
-        """One blob per alliance, coloured by how they feel about you.
+        """One territory per alliance, filling New Eden.
 
         Grouping per alliance rather than per standing is a performance
-        decision as much as a visual one. Merging the discs is superlinear in
-        subpath count, so folding every neutral system into one shape cost
-        1.8 s to build and 93 ms a frame to draw; 79 smaller shapes are far
-        cheaper, and you also get to see each alliance's border.
+        decision as much as a visual one. Merging the shapes is superlinear in
+        subpath count, so folding every neutral system into one cost 1.8 s to
+        build and 93 ms a frame to draw; 79 smaller ones are far cheaper, and
+        you also get to see each alliance's border.
+
+        Colours are not chosen here. They depend on who borders whom, which is
+        only known once the cells are built, so the worker returns the
+        adjacency and _on_sov_territory does the picking.
         """
-        from PySide6.QtGui import QColor
+        from PySide6.QtCore import QPointF
         if not (self.map_view and self.universe and self.sov_owners):
             return
         by_alliance: dict[int, list[int]] = {}
@@ -1049,78 +1101,67 @@ class MainWindow(QMainWindow):
                 continue                    # NPC/faction space is not territory
             by_alliance.setdefault(owner_id, []).append(sid)
 
-        # Draw the biggest holdings first so small territories land on top and
-        # stay visible instead of being buried under a neighbour.
-        ranked = {oid: i for i, oid in enumerate(sorted(by_alliance))}
-        groups = sorted(((self.alliance_colour(ranked[oid]), sids)
-                         for oid, sids in by_alliance.items()),
-                        key=lambda g: -len(g[1]))
-        groups = [(0, colour, sids) for colour, sids in groups]
-
         pos = self.map_view._pos
-        gates = self.universe.gates
-        owner_of = {s: o for s, (o, k) in self.sov_owners.items()
-                    if k == "alliance"}
-
+        # Biggest holding first, and it stays that order all the way through:
+        # it is the order colours are handed out in, so the blocs a reader
+        # most needs to tell apart get the freest pick.
+        ranked = sorted(by_alliance, key=lambda oid: (-len(by_alliance[oid]),
+                                                      oid))
         payload = []
-        for _, colour, sids in groups:
-            pts = [pos[s] for s in sids if s in pos]
-            if not pts:
-                continue
-            # Corridors along gate links the owner holds both ends of. Without
-            # these the discs are beads on a string; with them the shape
-            # follows the topology and reads as one connected territory.
-            owner = owner_of.get(sids[0])
-            links = []
-            seen = set()
-            for a in sids:
-                if a not in pos:
-                    continue
-                for b in gates.get(a, ()):  # both ends must be theirs
-                    if owner_of.get(b) != owner or b not in pos:
-                        continue
-                    pair = (a, b) if a < b else (b, a)
-                    if pair in seen:
-                        continue
-                    seen.add(pair)
-                    links.append((pos[a], pos[b]))
-            payload.append((colour, pts, links))
+        for oid in ranked:
+            pts = [pos[s] for s in by_alliance[oid] if s in pos]
+            if pts:
+                payload.append((oid, pts))
 
         # Name the territories big enough to carry a label. Below this the
         # names collide, and the long tail of tiny holdings collides first.
-        from PySide6.QtCore import QPointF
+        # Colour is filled in once it is known.
         biggest = max((len(s) for s in by_alliance.values()), default=1)
         self._sov_labels = []
-        for _, colour, sids in groups:
-            pts = [pos[s] for s in sids if s in pos]
-            name = self.sov_names.get(owner_of.get(sids[0]))
+        for oid in ranked:
+            pts = [pos[s] for s in by_alliance[oid] if s in pos]
+            name = self.sov_names.get(oid)
             if len(pts) < self.SOV_LABEL_MIN_SYSTEMS or not name:
                 continue
             self._sov_labels.append((
-                name,
+                oid, name,
                 QPointF(sum(p.x() for p in pts) / len(pts),
                         sum(p.y() for p in pts) / len(pts)),
-                colour,
                 len(pts) / biggest))
 
-        # Empire space carves the territory back, so sovereignty can reach
-        # outward without swallowing high and low-sec.
+        # Empire bounds the territory, so sovereignty can fill the box without
+        # swallowing high and low-sec.
         empire = [pos[s.id] for s in self.universe.systems.values()
                   if s.security > 0.0 and s.id in pos]
-        radius = self.map_view.SOV_RADIUS
-        bake = self.map_view.bake_sov_image
+        box = self.map_view.universe_box()
+        build = self.map_view.build_sov_paths
 
-        w = Worker(lambda: bake(payload, radius, empire))
+        w = Worker(lambda: build(payload, box, empire))
         w.finished_ok.connect(self._on_sov_territory)
         w.failed.connect(lambda m: self.statusBar().showMessage(
             f"Sovereignty layer: {m}", 8000))
         self._run(w)
 
-    def _on_sov_territory(self, baked):
+    def _on_sov_territory(self, built):
+        """Colour the finished territory and install it.
+
+        ``built`` is [(alliance_id, QPainterPath, bordering ids), ...] in the
+        order refresh_sov_territory ranked them: biggest holding first, which
+        is the order sov_colours wants.
+        """
         if self.map_view is None:
             return
-        self.map_view.set_sov_image(baked)
-        self.map_view.set_sov_labels(getattr(self, "_sov_labels", []))
+        if not built:
+            self.map_view.set_sov_paths(None)
+            return
+        borders = {oid: touching for oid, _, touching in built}
+        colours = self.sov_colours([oid for oid, _, _ in built], borders)
+        self.map_view.set_sov_paths(
+            [(colours[oid], path) for oid, path, _ in built])
+        self.map_view.set_sov_labels(
+            [(name, point, colours[oid], weight)
+             for oid, name, point, weight in getattr(self, "_sov_labels", ())
+             if oid in colours])
 
     def _standing_bucket(self, owner_id) -> str:
         if self.my_alliance_id and owner_id == self.my_alliance_id:
