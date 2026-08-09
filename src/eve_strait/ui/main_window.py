@@ -1017,22 +1017,44 @@ class MainWindow(QMainWindow):
     # Distinct colours to hand out. Only ever a handful are in play at any one
     # border -- a map needs four -- so this is far more than enough to also
     # keep the big blocs looking different from each other across the map.
-    SOV_PALETTE = 24
+    SOV_PALETTE = 20
+    # The arc of the hue wheel territory may use. Red is left out on purpose:
+    # every system inside sovereign space is null-sec, null-sec dots are dark
+    # red, and a red territory swallows the very systems it is drawn for. No
+    # amount of transparency fixes that -- it moves lightness, and the clash
+    # is in hue -- so the security ramp keeps red and the territory palette,
+    # which is arbitrary anyway, starts past it.
+    SOV_HUE_FROM = 40         # clear of red-orange
+    SOV_HUE_SPAN = 285        # up to ~325, stopping short of magenta-red
 
     @classmethod
     def alliance_colour(cls, slot: int):
         """One entry of the territory palette.
 
-        Stepping the hue by the golden angle keeps consecutive slots far apart
-        on the wheel, so anything handed neighbouring slots is obviously
-        different.
+        Hues are spread evenly over the arc rather than stepped by the golden
+        angle. The golden angle is only well behaved around a full circle; run
+        modulo a partial arc it stops filling the gaps and starts landing
+        colours on top of each other -- it put two slots close enough to be
+        indistinguishable, which is the exact fault this palette exists to
+        avoid. Even spacing has no such failure and guarantees the widest gap
+        the arc allows.
+
+        The slots are then handed out on a stride coprime to the count, so
+        consecutive slots are still far apart on the wheel -- which is what
+        the golden angle was there for -- while every pair stays separated.
         """
+        import math
+
         from PySide6.QtGui import QColor
-        hue = (slot * 137.508) % 360
-        # Alternate value slightly so two hues that come out close in a large
-        # field still separate, and keep saturation high enough to read at
-        # SOV_ALPHA over a near-black map.
-        return QColor.fromHsv(int(hue), 190, 235 if slot % 2 else 200)
+        n = cls.SOV_PALETTE
+        stride = max(1, int(n * 0.382) | 1)
+        while math.gcd(stride, n) != 1:
+            stride += 2
+        hue = cls.SOV_HUE_FROM + cls.SOV_HUE_SPAN * ((slot * stride) % n) / n
+        # Alternate value so that even the closest pair of hues separates, and
+        # keep saturation high enough to read at SOV_ALPHA over a near-black
+        # map.
+        return QColor.fromHsv(int(hue), 190, 235 if slot % 2 else 190)
 
     @classmethod
     def sov_colours(cls, ranked, borders):
@@ -1129,14 +1151,17 @@ class MainWindow(QMainWindow):
                         sum(p.y() for p in pts) / len(pts)),
                 len(pts) / biggest))
 
-        # Empire bounds the territory, so sovereignty can fill the box without
-        # swallowing high and low-sec.
-        empire = [pos[s.id] for s in self.universe.systems.values()
-                  if s.security > 0.0 and s.id in pos]
+        # Everything no alliance holds bounds the territory: empire, NPC
+        # null-sec, faction space. Testing for held rather than for high-sec
+        # is what keeps NPC null out -- it is below 0.0 like sovereign space,
+        # so a security test hands it to whichever alliance happens to be
+        # nearest, and Curse or Venal ends up painted as somebody's.
+        held = {sid for sids in by_alliance.values() for sid in sids}
+        outside = [p for sid, p in pos.items() if sid not in held]
         box = self.map_view.universe_box()
         build = self.map_view.build_sov_paths
 
-        w = Worker(lambda: build(payload, box, empire))
+        w = Worker(lambda: build(payload, box, outside))
         w.finished_ok.connect(self._on_sov_territory)
         w.failed.connect(lambda m: self.statusBar().showMessage(
             f"Sovereignty layer: {m}", 8000))

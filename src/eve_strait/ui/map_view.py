@@ -313,10 +313,10 @@ class MapView(QGraphicsView):
         other. It also keeps every cell small, so the search below terminates
         early.
 
-        High and low-sec systems are sites like any other. They get no cell
-        drawn, so empire reads as a hole -- but it is a hole with a real
-        boundary, running exactly halfway between the last sovereign system
-        and the first empire one, rather than a fixed radius punched out
+        Systems nobody holds are sites like any other. They get no cell drawn,
+        so empire and NPC null-sec read as holes -- but holes with real
+        boundaries, running exactly halfway between the last sovereign system
+        and the first unheld one, rather than a fixed radius punched out
         around each.
 
         The search widens a ring of buckets at a time and stops once the cell
@@ -447,13 +447,14 @@ class MapView(QGraphicsView):
         return poly, far
 
     @classmethod
-    def build_sov_paths(cls, groups, box: QRectF, empire=()):
+    def build_sov_paths(cls, groups, box: QRectF, outside=()):
         """One filled outline per owner. Safe to call off the UI thread.
 
         ``groups`` is [(key, [QPointF, ...]), ...] -- one entry per owner, some
-        hashable identity and its systems. ``empire`` is the high and low-sec
-        systems: they bound the territory but are not drawn. ``box`` is the
-        bounding box the territory fills, from universe_box().
+        hashable identity and its systems. ``outside`` is every system nobody
+        holds -- empire, NPC null-sec, faction space: they bound the territory
+        but are not drawn. ``box`` is the bounding box the territory fills,
+        from universe_box().
 
         Returns [(key, QPainterPath, frozenset of bordering keys), ...], or
         None. A path, not an image: the layer is drawn by the scene at
@@ -492,14 +493,14 @@ class MapView(QGraphicsView):
             return None
 
         # Sovereign systems first so their cells come back in the same order;
-        # empire follows, cutting but never drawn.
+        # the unheld ones follow, cutting but never drawn.
         sites = [(p.x(), p.y()) for _, pts in clean for p in pts]
         owned = len(sites)
-        sites += [(p.x(), p.y()) for p in empire]
+        sites += [(p.x(), p.y()) for p in outside]
         cells = cls.voronoi_cells(sites, box, owned)
 
         # Which owner each site belongs to, so a cell's neighbouring sites can
-        # be turned into neighbouring owners. Empire sites are absent, which
+        # be turned into neighbouring owners. Unheld sites are absent, which
         # is what drops them out of the adjacency.
         owner_of, at = {}, 0
         for gi, (_, pts) in enumerate(clean):
