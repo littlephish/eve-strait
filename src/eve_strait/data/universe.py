@@ -59,6 +59,12 @@ class Universe:
         self.gates = gates or {}
         # Ansiblex jump-gate adjacency (player-built, user-configured).
         self.bridges: dict[int, set[int]] = {}
+        # Scouted Thera/Turnur wormholes: adjacency plus per-edge detail, the
+        # latter keyed by the sorted id pair. Detail is kept because a
+        # wormhole leg is useless without it -- which hub it runs through and
+        # what signature to search for at each end.
+        self.holes: dict[int, set[int]] = {}
+        self.hole_info: dict[tuple[int, int], dict] = {}
         # Populated lazily by load_stations().
         self.stations: dict[int, Station] = {}
         self.system_stations: dict[int, list[Station]] = {}
@@ -108,6 +114,32 @@ class Universe:
             resolved.append([a.name, b.name])
         self.bridges = bridges
         return resolved
+
+    # -- scouted wormholes --------------------------------------------------
+    def set_wormholes(self, edges) -> int:
+        """Install Thera/Turnur connections from evescout.graph() output.
+
+        ``edges`` is {(a, b): info}. Pairs naming a system this app does not
+        know are dropped rather than raising: the list is scouted by hand and
+        an unrecognised id should cost one connection, not the whole layer.
+
+        Returns how many edges were installed.
+        """
+        holes: dict[int, set[int]] = {}
+        info: dict[tuple[int, int], dict] = {}
+        for (a, b), detail in (edges or {}).items():
+            if a not in self.systems or b not in self.systems or a == b:
+                continue
+            holes.setdefault(a, set()).add(b)
+            holes.setdefault(b, set()).add(a)
+            info[(a, b) if a < b else (b, a)] = detail
+        self.holes = holes
+        self.hole_info = info
+        return len(info)
+
+    def hole_between(self, a: int, b: int) -> dict | None:
+        """Detail for the wormhole edge joining two systems, if there is one."""
+        return self.hole_info.get((a, b) if a < b else (b, a))
 
     def long_gates(self, min_ly: float):
         """Stargate links spanning at least ``min_ly`` light years.

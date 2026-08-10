@@ -162,6 +162,24 @@ class RoutePanel(QWidget):
         self.chk_ansiblex.toggled.connect(self._emit_changed)
         v.addWidget(self.chk_ansiblex)
 
+        # Off by default: these are volunteer-scanned connections that expire
+        # in hours, so opting in should be deliberate rather than something
+        # that quietly reroutes a freighter through a hole that has collapsed.
+        self.chk_holes = QCheckBox("Use EVE-Scout wormholes (Thera / Turnur)")
+        self.chk_holes.setChecked(False)
+        self.chk_holes.setToolTip(
+            "Route through the public Thera and Turnur wormholes scouted by "
+            "EVE-Scout.\nHoles too small for the selected hull are ignored.\n"
+            "Connections are scanned by volunteers and expire within hours — "
+            "check before you commit.")
+        self.chk_holes.toggled.connect(self._emit_changed)
+        v.addWidget(self.chk_holes)
+        # Filled in by set_hole_status() once the connections are fetched.
+        self.lbl_holes = QLabel("")
+        self.lbl_holes.setWordWrap(True)
+        self.lbl_holes.setVisible(False)
+        v.addWidget(self.lbl_holes)
+
         opt3 = QHBoxLayout()
         self.cmb_gate = QComboBox()
         self.cmb_gate.addItems(["Fastest", "Safer (prefer high-sec)",
@@ -258,6 +276,36 @@ class RoutePanel(QWidget):
 
     def use_ansiblex(self) -> bool:
         return self.chk_ansiblex.isChecked()
+
+    def use_wormholes(self) -> bool:
+        return self.chk_holes.isChecked()
+
+    def set_hole_status(self, total: int, passable: int, hull: str,
+                        stale: bool = False):
+        """Say what the scouted connections amount to for this hull.
+
+        Worth its own line because the interesting case is silent otherwise:
+        a dozen holes scouted and not one of them big enough, which would
+        otherwise look identical to nothing having been fetched.
+        """
+        if not self.chk_holes.isChecked():
+            self.lbl_holes.setVisible(False)
+            return
+        if not total:
+            msg, colour = "No EVE-Scout connections available.", "#c9a227"
+        elif not passable:
+            msg = (f"{total} wormhole{'s' if total != 1 else ''} scouted, "
+                   f"none passable by a {hull}.")
+            colour = "#c9a227"
+        else:
+            msg = (f"{passable} of {total} scouted wormholes fit a {hull}.")
+            colour = "#7a8494"
+        if stale:
+            msg += "  Connections may have expired — refresh before flying."
+            colour = "#c9a227"
+        self.lbl_holes.setText(msg)
+        self.lbl_holes.setStyleSheet(f"color: {colour};")
+        self.lbl_holes.setVisible(True)
 
     def gate_pref(self) -> str:
         return ("fast", "safe", "insecure")[self.cmb_gate.currentIndex()]
@@ -762,7 +810,18 @@ class RoutePanel(QWidget):
     def display_plan(self, plan):
         self.table.setRowCount(len(plan.legs))
         for i, leg in enumerate(plan.legs):
-            if leg.mode == "bridge":
+            if leg.mode == "hole":
+                # Which hub, and the signature to search for at this end --
+                # without those the leg cannot actually be flown.
+                info = (self.ctx.universe.hole_between(leg.src.id, leg.dst.id)
+                        if getattr(self.ctx, "universe", None) else None)
+                via = (info or {}).get("via", "wormhole")
+                sig = (info or {}).get("sigs", {}).get(leg.src.id)
+                label = f"{via.lower()} {sig}" if sig else via.lower()
+                vals = [label, leg.src.name, leg.dst.name,
+                        f"{leg.distance_ly:.2f}", "-", "-",
+                        f"{leg.fatigue_after_min:.0f}m", "✓"]
+            elif leg.mode == "bridge":
                 vals = ["ansiblex", leg.src.name, leg.dst.name,
                         f"{leg.distance_ly:.2f}", "-",
                         f"{leg.cooldown_min:.1f}m",
@@ -827,6 +886,7 @@ class RoutePanel(QWidget):
             "allow_gates": self.chk_gates.isChecked(),
             "balance": self.cmb_balance.currentIndex(),
             "use_ansiblex": self.chk_ansiblex.isChecked(),
+            "use_wormholes": self.chk_holes.isChecked(),
             "gate": self.cmb_gate.currentIndex(),
             "min_reactivation": self.chk_reactivation.isChecked(),
             "exclude_hostile": self.chk_hostile.isChecked(),
@@ -837,8 +897,8 @@ class RoutePanel(QWidget):
 
     def restore(self, s: dict):
         widgets = (self.cmb_policy, self.chk_gates, self.cmb_balance, self.chk_ansiblex,
-                   self.cmb_gate, self.chk_reactivation, self.chk_hostile,
-                   self.chk_incursions)
+                   self.chk_holes, self.cmb_gate, self.chk_reactivation,
+                   self.chk_hostile, self.chk_incursions)
         for w in widgets:
             w.blockSignals(True)
         self.cmb_policy.setCurrentIndex(int(s.get("policy", 0)))
@@ -850,6 +910,7 @@ class RoutePanel(QWidget):
         self.cmb_balance.setCurrentIndex(int(s.get("balance", 1)))
         self.cmb_balance.setEnabled(bool(allow))
         self.chk_ansiblex.setChecked(bool(s.get("use_ansiblex", True)))
+        self.chk_holes.setChecked(bool(s.get("use_wormholes", False)))
         self.cmb_gate.setCurrentIndex(int(s.get("gate", 0)))
         self.chk_reactivation.setChecked(bool(s.get("min_reactivation", False)))
         self.chk_hostile.setChecked(bool(s.get("exclude_hostile", False)))

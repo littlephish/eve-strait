@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.docking_rights_ids: set[int] = set()
         self.starbase_systems: dict[int, int] = {}
         self.sov_owners: dict[int, tuple] = {}
+        self._hole_data: dict = {}
         self.sov_names: dict[int, str] = {}
         self._built = False
 
@@ -111,11 +112,69 @@ class MainWindow(QMainWindow):
         self.refresh_intel()
         self._start_intel_timer()
         self._fetch_sovereignty()
+        self._fetch_wormholes()
         self._resolve_docking_rights()
         from .. import update as _upd
         if _upd.auto_check_enabled() and _upd.is_frozen():
             self._check_updates()
         self._load_universe()
+
+    def _fetch_wormholes(self, force: bool = False):
+        """Pull the scouted Thera/Turnur connections and install them.
+
+        Cached on disk, because the route panel asks for these on every
+        replan and EVE-Scout is volunteer-run. ``force`` skips the cache for
+        the explicit refresh action -- connections expire in hours, so before
+        committing a freighter you want the current list, not a 15-minute-old
+        one.
+        """
+        from ..esi import evescout
+
+        cached = {} if force else evescout.load()
+        if cached.get("rows") and not cached.get("stale"):
+            self._on_wormholes(cached)
+            return
+        w = Worker(evescout.refresh)
+        w.finished_ok.connect(self._on_wormholes)
+        w.failed.connect(lambda m: self.statusBar().showMessage(
+            f"EVE-Scout: {m}", 8000))
+        self._run(w)
+
+    def _on_wormholes(self, data):
+        from ..esi import evescout
+
+        self._hole_data = data or {}
+        if self.universe is None:
+            return          # installed by _on_universe once the map is loaded
+        rows = self._hole_data.get("rows") or []
+        conns = evescout.connections(rows, self.universe.systems)
+        turnur = self.universe.by_name("Turnur")
+        n = self.universe.set_wormholes(
+            evescout.graph(conns, turnur.id if turnur else None))
+        # Which hubs each system connects to, for the map tooltip.
+        hub_of: dict[int, set] = {}
+        for c in conns:
+            hub_of.setdefault(c["system_id"], set()).add(c["hub"])
+        if self.map_view:
+            self.map_view.refresh_wormholes(hub_of)
+        self._sync_hole_status()
+        if n:
+            self.statusBar().showMessage(
+                f"EVE-Scout: {len(conns)} connections to k-space "
+                f"({n} routes).", 5000)
+
+    def _sync_hole_status(self):
+        """Tell the route panel what the connections are worth to this hull."""
+        from ..esi import evescout
+
+        if not (self._built and self.universe):
+            return
+        info = self.universe.hole_info
+        hull = self.ship.current_ship().hull_class
+        passable = sum(1 for i in info.values()
+                       if evescout.fits(hull, i))
+        self.route.set_hole_status(len(info), passable, hull,
+                                   bool(self._hole_data.get("stale")))
 
     def sov_of(self, system_id: int):
         """(owner_name, kind, standing, label) for a system's sov holder."""
@@ -815,6 +874,9 @@ class MainWindow(QMainWindow):
         ("location", "Current location", True, "Cyan ring on your active character."),
         ("notes", "System notes", True,
          "Amber tag on systems you have written a note about."),
+        ("holes", "EVE-Scout wormholes", False,
+         "Ring systems with a scouted Thera or Turnur connection. Volunteer "
+         "data that expires in hours, so off by default."),
         ("sov", "Sovereignty territory", False,
          "Fill null-sec space by who holds it. Off by default: it is the "
          "heaviest layer to draw."),
@@ -1475,6 +1537,10 @@ class MainWindow(QMainWindow):
             self.map_view.set_overlay_visible(key, a.isChecked())
         universe.set_bridges(config.get_bridges())
         self.map_view.refresh_bridges()
+        if self._hole_data:
+            # Scouted holes may have landed before the map did; they need a
+            # universe to resolve system ids against.
+            self._on_wormholes(self._hole_data)
         self.avoided_ids = {s.id for s in
                             (universe.by_name(n) for n in config.get_avoided())
                             if s is not None}
@@ -1532,11 +1598,16 @@ class MainWindow(QMainWindow):
     def _recalc(self):
         if not self.universe or not self.map_view:
             return
+        # What the scouted holes are worth depends on the hull and on whether
+        # the toggle is on, both of which change here rather than when the
+        # connections arrive.
+        self._sync_hole_status()
         ship = self.ship.current_ship()
         skills = self.ship.current_skills()
         wps = self.route.systems()
         modes = self.route.modes()
-        plan = router.simulate(ship, skills, wps, modes, self.route.strategy())
+        plan = router.simulate(ship, skills, wps, modes, self.route.strategy(),
+                               universe=self.universe)
         self.route.display_plan(plan)
 
         reach_sys = self.route.selected_system()
@@ -1673,6 +1744,7 @@ class MainWindow(QMainWindow):
                    minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems())
@@ -1954,6 +2026,7 @@ class MainWindow(QMainWindow):
                    origin, dest, gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
                    can_land=self._dock_predicate(ship), avoid=self.avoid_systems(),

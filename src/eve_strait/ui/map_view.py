@@ -103,7 +103,8 @@ class MapView(QGraphicsView):
         # see a kill in any given hour, so leaving them on buries the map.
         self._overlay_on = {"gates": True, "bridges": True, "regions": True,
                             "kills": False, "avoid": True, "location": True,
-                            "notes": True, "heat": True, "sov": False}
+                            "notes": True, "heat": True, "sov": False,
+                            "holes": False}
         self._sov_items: list = []
         self._dots: dict[int, QGraphicsEllipseItem] = {}
         self._sec_brushes: dict[int, QBrush] = {}
@@ -634,6 +635,82 @@ class MapView(QGraphicsView):
                 self._avoid_items.append(line)
         self._apply_visibility("avoid")
 
+    # Wormhole markers, in light years. A ring rather than a fill so the
+    # system's own security-coloured dot still reads through it.
+    HOLE_RING_LY = 0.55
+    HOLE_COLOUR = (108, 224, 196)     # Thera green, distinct from Ansiblex purple
+
+    def refresh_wormholes(self, hub_of=None):
+        """Ring every k-space system with a scouted Thera/Turnur connection.
+
+        ``hub_of`` maps system_id -> {"Thera", "Turnur"} for the tooltip; the
+        ring itself is drawn from ``universe.holes``.
+
+        Turnur connections are also drawn as a line, because both ends are on
+        the map. Thera ones cannot be: Thera is not a system this app loads,
+        so its connections are marked at the k-space end only. Drawing the
+        collapsed Thera-to-Thera edges as lines would be actively misleading
+        -- they are two holes and a hub, not a link between those systems.
+        """
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in getattr(self, "_hole_items", ()):
+            self.scene_obj.removeItem(item)
+        self._hole_items = []
+        if not self.universe or not self.universe.holes:
+            return
+
+        systems = self.universe.systems
+        turnur = self.universe.by_name("Turnur")
+        colour = QColor(*self.HOLE_COLOUR)
+        r = self.HOLE_RING_LY
+
+        marked = set()
+        for (a_id, b_id), info in self.universe.hole_info.items():
+            for sid in (a_id, b_id):
+                if info["via"] == "Turnur" and turnur and sid == turnur.id:
+                    continue          # the hub itself is not an exit
+                marked.add(sid)
+
+        for sid in marked:
+            s = systems.get(sid)
+            if s is None:
+                continue
+            ring = QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
+            ring.setPos(s.x, -s.z)
+            pen = QPen(colour, 1.6)
+            pen.setCosmetic(True)
+            ring.setPen(pen)
+            ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            hubs = sorted((hub_of or {}).get(sid, ())) or ["wormhole"]
+            ring.setToolTip(f"{s.name}: {' + '.join(hubs)} connection")
+            ring.setZValue(2)         # over the dot, under the route
+            self.scene_obj.addItem(ring)
+            self._hole_items.append(ring)
+
+        # Turnur's own links, which do have two ends on the map.
+        if turnur:
+            path = QPainterPath()
+            for (a_id, b_id), info in self.universe.hole_info.items():
+                if info["via"] != "Turnur":
+                    continue
+                a, b = systems.get(a_id), systems.get(b_id)
+                if a and b:
+                    path.moveTo(a.x, -a.z)
+                    path.lineTo(b.x, -b.z)
+            if not path.isEmpty():
+                item = QGraphicsPathItem(path)
+                pen = QPen(QColor(*self.HOLE_COLOUR, 190), 1.4)
+                pen.setCosmetic(True)
+                pen.setStyle(Qt.PenStyle.DashLine)   # temporary, unlike a gate
+                item.setPen(pen)
+                item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                item.setZValue(-1.4)
+                self.scene_obj.addItem(item)
+                self._hole_items.append(item)
+        self._apply_visibility("holes")
+
     def refresh_bridges(self):
         """(Re)draw Ansiblex jump-gate links in purple, over the gate mesh."""
         from PySide6.QtGui import QPainterPath
@@ -749,6 +826,7 @@ class MapView(QGraphicsView):
             "location": getattr(self, "_here_items", ()),
             "notes": getattr(self, "_note_items", ()),
             "sov": self._sov_items,
+            "holes": getattr(self, "_hole_items", ()),
         }.get(name, ())
 
     def _apply_visibility(self, name: str):

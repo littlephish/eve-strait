@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ..data import docking
 from ..data.ships import Ship, Skills
 from ..data.universe import System, Universe
+from ..esi import evescout
 from . import mechanics
 
 
@@ -14,7 +15,7 @@ from . import mechanics
 class Leg:
     src: System
     dst: System
-    mode: str                    # "jump" or "gate"
+    mode: str                    # "jump", "gate", "bridge" or "hole"
     distance_ly: float
     fuel: int
     in_range: bool
@@ -46,6 +47,10 @@ class RoutePlan:
     def bridges(self) -> int:
         return sum(1 for leg in self.legs if leg.mode == "bridge")
 
+    @property
+    def holes(self) -> int:
+        return sum(1 for leg in self.legs if leg.mode == "hole")
+
 
 def simulate(
     ship: Ship,
@@ -54,6 +59,7 @@ def simulate(
     modes: list[str] | None = None,
     strategy: str = "min_time",
     start_fatigue_min: float = 0.0,
+    universe: Universe | None = None,
 ) -> RoutePlan:
     """Simulate travelling an ordered list of systems (jumps and/or gates).
 
@@ -66,6 +72,10 @@ def simulate(
     Fatigue and the reactivation (blue) timer both decay 1:1 with real time.
     Gate hops don't use fuel, add no fatigue, and aren't blocked by the blue
     timer, but time still passes (letting timers decay).
+
+    ``universe`` is only needed for wormhole legs, to tell a Turnur hole (one
+    transit) from a Thera crossing (two). Without it a hole is timed as one,
+    which under-states a Thera leg rather than inventing a number.
     """
     n = len(waypoints) - 1
     if modes is None:
@@ -87,6 +97,19 @@ def simulate(
             cooldown_remaining = max(0.0, cooldown_remaining - travel)
             plan.legs.append(Leg(src, dst, "gate", dist, 0, True, 0.0,
                                  fatigue, wait, clock))
+            clock += travel
+            continue
+
+        if mode == "hole":
+            # A wormhole is flown through, not jumped. No fuel, no fatigue, no
+            # blue timer -- that is the whole reason it is worth routing over.
+            # Only time passes, and timers decay while it does.
+            info = universe.hole_between(src.id, dst.id) if universe else None
+            travel = mechanics.GATE_TRAVEL_MIN * (info or {}).get("hops", 1)
+            fatigue = max(0.0, fatigue - travel)
+            cooldown_remaining = max(0.0, cooldown_remaining - travel)
+            plan.legs.append(Leg(src, dst, "hole", dist, 0, True, 0.0,
+                                 fatigue, 0.0, clock))
             clock += travel
             continue
 
@@ -240,6 +263,7 @@ def plan_multimodal(
     gate_pref: str = "fast",
     jump_cost: float | None = None,
     use_ansiblex: bool = True,
+    use_wormholes: bool = False,
     haven=None,
     haven_penalty: float = 0.35,
     jammed=None,
@@ -349,6 +373,29 @@ def plan_multimodal(
                 prev[bid] = (nid, "bridge")
                 heapq.heappush(pq, (nc, bid))
 
+        # Scouted Thera/Turnur wormholes. Like an Ansiblex these are traversed
+        # rather than jumped, so "only jumps" does not exclude them and there
+        # is no fatigue -- but unlike an Ansiblex they have a size limit, and a
+        # hull that does not fit simply has no edge here.
+        if use_wormholes:
+            for hid in universe.holes.get(nid, ()):
+                h = universe.systems.get(hid)
+                info = universe.hole_between(nid, hid)
+                if (h is None or info is None or blocked(hid)
+                        or edge_banned(nid, hid)
+                        or not docking.gate_allowed(ship, h.security)
+                        or not evescout.fits(ship.hull_class, info)):
+                    continue
+                # A Thera crossing is two holes, so it costs two hops. Charging
+                # one would make it look like a shortcut it is not.
+                nc = c + w_gate * info.get("hops", 1)
+                if danger is not None and hid != destination.id and danger(hid):
+                    nc += danger_penalty
+                if nc < best.get(hid, float("inf")):
+                    best[hid] = nc
+                    prev[hid] = (nid, "hole")
+                    heapq.heappush(pq, (nc, hid))
+
         # Jump edges. You may jump OUT of high-sec, but never INTO high-sec
         # (a cyno can't be lit there) -- hence jumpable_only on the target.
         if rng > 0:
@@ -420,6 +467,7 @@ def gate_runs(systems, modes):
 
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
+                        use_wormholes=False,
                         haven=None, jammed=None, danger=None,
                         can_land=None, avoid=None, strategy="min_time"):
     """Quantify what stargates buy you on this route.
@@ -428,19 +476,41 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
     see when a short gate run replaces several jumps (or makes an otherwise
     impossible high-sec origin/destination reachable at all).
     """
-    def build(minimize, cost=None):
+    def build(minimize, cost=None, holes=False):
         res = plan_multimodal(universe, ship, skills, origin, destination,
                               minimize=minimize, gate_pref=gate_pref,
                               jump_cost=cost, use_ansiblex=use_ansiblex,
+                              use_wormholes=holes,
                               haven=haven, jammed=jammed, danger=danger,
                               can_land=can_land, avoid=avoid)
         if res is None:
             return None
         return _plan_stats(ship, skills, res[0], res[1], strategy)
 
+    # The three baselines never use wormholes, so the comparison below is
+    # honestly "what do the holes add" rather than a mix of the two.
     jump_only = build("only_jumps")
     mixed = build("jumps", jump_cost)
     gating = build("fuel")
+
+    # What the scouted holes are worth, and which ones the route would use.
+    # Only computed when asked: it is a second full search.
+    holed = build("jumps", jump_cost, holes=True) if use_wormholes else None
+    hole_legs = []
+    if holed:
+        for a, b, mode in zip(holed["systems"], holed["systems"][1:],
+                              holed["modes"]):
+            if mode != "hole":
+                continue
+            info = universe.hole_between(a.id, b.id) or {}
+            hole_legs.append({
+                "from": a, "to": b,
+                "via": info.get("via", "?"),
+                "sig_from": info.get("sigs", {}).get(a.id),
+                "sig_to": info.get("sigs", {}).get(b.id),
+                "max_t": info.get("max_t"),
+                "hours": info.get("hours"),
+            })
 
     runs = gate_runs(mixed["systems"], mixed["modes"]) if mixed else []
 
@@ -450,6 +520,9 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
     # one gate is the only link" case).
     annotated = []
     for a, b, hops, edges in runs:
+        # Probed without wormholes on purpose: "mandatory" should mean the
+        # gates are unavoidable in their own right, not that they became
+        # avoidable thanks to a connection that expires this evening.
         probe = plan_multimodal(universe, ship, skills, origin, destination,
                                 minimize="jumps", gate_pref=gate_pref,
                                 jump_cost=jump_cost, use_ansiblex=use_ansiblex,
@@ -462,7 +535,18 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         })
 
     result = {"jump_only": jump_only, "mixed": mixed, "gating": gating,
-              "runs": annotated}
+              "runs": annotated, "holed": holed, "hole_legs": hole_legs}
+
+    if holed and mixed:
+        result["hole_saved"] = {
+            "jumps": mixed["jumps"] - holed["jumps"],
+            "gates": mixed["gates"] - holed["gates"],
+            "fuel": mixed["fuel"] - holed["fuel"],
+            "time_min": mixed["time_min"] - holed["time_min"],
+            "fatigue": mixed["peak_fatigue"] - holed["peak_fatigue"],
+        }
+    elif holed and not mixed:
+        result["hole_saved"] = None     # a hole is the only way through
 
     if mixed and jump_only:
         result["saved"] = {
@@ -478,6 +562,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
 
 def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
+                  use_wormholes=False,
                   haven=None, jammed=None, danger=None,
                   can_land=None, avoid=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
@@ -490,7 +575,8 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
     for a, b in zip(systems, systems[1:]):
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
                               gate_pref=gate_pref, jump_cost=jump_cost,
-                              use_ansiblex=use_ansiblex, haven=haven,
+                              use_ansiblex=use_ansiblex,
+                              use_wormholes=use_wormholes, haven=haven,
                               jammed=jammed, danger=danger,
                               can_land=can_land, avoid=avoid)
         if res is None:

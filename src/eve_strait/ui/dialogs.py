@@ -307,10 +307,18 @@ class GateAssistDialog(QDialog):
         mixed = analysis.get("mixed")
         gating = analysis.get("gating")
 
+        holed = analysis.get("holed")
+
         rows = []
         for title, plan in (("Jumps only", jump_only),
                             ("Prefer jumping (gates allowed)", mixed),
-                            ("Prefer gating", gating)):
+                            ("Prefer gating", gating),
+                            ("With EVE-Scout wormholes", holed)):
+            # The wormhole row is absent rather than "not possible" when the
+            # option is off -- there is nothing to report, not a failure.
+            if plan is None and title.startswith("With EVE-Scout") \
+                    and "holed" not in analysis:
+                continue
             if not plan:
                 rows.append(f"<tr><td>{title}</td><td colspan=5>"
                             "<i>not possible</i></td></tr>")
@@ -335,6 +343,49 @@ class GateAssistDialog(QDialog):
         v.addWidget(table)
 
         v.addWidget(QLabel(self._verdict(analysis)))
+
+        # Which holes the route would actually use, and what to look for. A
+        # wormhole leg is unflyable without its signature, and the remaining
+        # hours decide whether it is worth committing a freighter to.
+        hole_legs = analysis.get("hole_legs") or []
+        if hole_legs:
+            items = []
+            for h in hole_legs:
+                sig_a = f" (sig <b>{h['sig_from']}</b>)" if h["sig_from"] else ""
+                sig_b = f" (sig <b>{h['sig_to']}</b>)" if h["sig_to"] else ""
+                life = (f", ~{h['hours']}h left" if h.get("hours") is not None
+                        else "")
+                mass = (f", max {h['max_t']:,} t per jump"
+                        if h.get("max_t") else "")
+                items.append(
+                    f"<li>via <b>{h['via']}</b>: "
+                    f"{h['from'].name}{sig_a} → {h['to'].name}{sig_b}"
+                    f"{mass}{life}</li>")
+            saved = analysis.get("hole_saved")
+            if saved is None and holed:
+                head = ("<b>Wormholes are the only way through</b>")
+            elif saved:
+                bits = []
+                if saved["jumps"]:
+                    bits.append(f"{saved['jumps']} jump"
+                                f"{'s' if abs(saved['jumps']) != 1 else ''}")
+                if saved["gates"]:
+                    bits.append(f"{saved['gates']} gate hop"
+                                f"{'s' if abs(saved['gates']) != 1 else ''}")
+                if saved["fuel"]:
+                    bits.append(f"{saved['fuel']:,} isotopes")
+                head = ("<b>Wormhole route saves "
+                        + ", ".join(bits) + "</b>" if bits
+                        else "<b>Wormhole route</b>")
+            else:
+                head = "<b>Wormhole route</b>"
+            wl = QLabel(head + "<ul>" + "".join(items) + "</ul>"
+                        "<i>Scouted by EVE-Scout volunteers and expiring in "
+                        "hours — confirm the signature is still there before "
+                        "you commit.</i>")
+            wl.setTextFormat(Qt.TextFormat.RichText)
+            wl.setWordWrap(True)
+            v.addWidget(wl)
 
         runs = analysis.get("runs") or []
         if runs:
