@@ -373,11 +373,16 @@ def plan_multimodal(
                 prev[bid] = (nid, "bridge")
                 heapq.heappush(pq, (nc, bid))
 
-        # Scouted Thera/Turnur wormholes. Like an Ansiblex these are traversed
-        # rather than jumped, so "only jumps" does not exclude them and there
-        # is no fatigue -- but unlike an Ansiblex they have a size limit, and a
-        # hull that does not fit simply has no edge here.
-        if use_wormholes:
+        # Scouted Thera/Turnur wormholes. Taking one is like taking a gate: you
+        # warp to it and jump through, burning no fuel, taking no fatigue and
+        # lighting no cyno. So it is costed as a gate hop and answers to the
+        # same controls -- "only jumps" excludes it, and the gate security
+        # preference applies to where it puts you down. Not an Ansiblex, which
+        # is a jump and carries a jump's fatigue.
+        #
+        # The one thing a gate does not have is a size limit; a hull too heavy
+        # for the hole simply has no edge here.
+        if use_wormholes and allow_gates:
             for hid in universe.holes.get(nid, ()):
                 h = universe.systems.get(hid)
                 info = universe.hole_between(nid, hid)
@@ -388,7 +393,7 @@ def plan_multimodal(
                     continue
                 # A Thera crossing is two holes, so it costs two hops. Charging
                 # one would make it look like a shortcut it is not.
-                nc = c + w_gate * info.get("hops", 1)
+                nc = c + gate_cost(h.security) * info.get("hops", 1)
                 if danger is not None and hid != destination.id and danger(hid):
                     nc += danger_penalty
                 if nc < best.get(hid, float("inf")):

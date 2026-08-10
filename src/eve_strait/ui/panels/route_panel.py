@@ -185,12 +185,15 @@ class RoutePanel(QWidget):
         self.cmb_gate.addItems(["Fastest", "Safer (prefer high-sec)",
                                 "Less secure (prefer low/null)"])
         self.cmb_gate.currentIndexChanged.connect(self._emit_changed)
+        self.cmb_gate.currentIndexChanged.connect(
+            lambda _=0: self._sync_hole_toggle())
         self.b_auto = QPushButton("Auto-route origin → last")
         self.b_auto.clicked.connect(self.autoroute_requested)
         opt3.addWidget(QLabel("Gates:"))
         opt3.addWidget(self.cmb_gate, 1)
         opt3.addWidget(self.b_auto)
         v.addLayout(opt3)
+        self._sync_hole_toggle()      # cmb_gate exists only from here on
 
         self.busy = QProgressBar()
         self.busy.setRange(0, 0)          # indeterminate spinner
@@ -278,7 +281,23 @@ class RoutePanel(QWidget):
         return self.chk_ansiblex.isChecked()
 
     def use_wormholes(self) -> bool:
-        return self.chk_holes.isChecked()
+        """Whether the planner may route over scouted wormholes.
+
+        Forced on under "Fastest", for every hull. A wormhole is a gate that
+        happens to be temporary, and ignoring one can cost a dozen jumps --
+        so asking for the fastest route and not being shown it is just a
+        wrong answer. The hole's mass limit still decides what fits, which is
+        the only thing that should depend on the ship.
+        """
+        return self.chk_holes.isChecked() or self.gate_pref() == "fast"
+
+    def _sync_hole_toggle(self):
+        """Show that Fastest has taken the choice out of the user's hands."""
+        forced = self.gate_pref() == "fast"
+        self.chk_holes.setEnabled(not forced)
+        self.chk_holes.setText(
+            "Use EVE-Scout wormholes (Thera / Turnur)"
+            + ("  — always on for Fastest" if forced else ""))
 
     def set_hole_status(self, total: int, passable: int, hull: str,
                         stale: bool = False):
@@ -911,6 +930,7 @@ class RoutePanel(QWidget):
         self.cmb_balance.setEnabled(bool(allow))
         self.chk_ansiblex.setChecked(bool(s.get("use_ansiblex", True)))
         self.chk_holes.setChecked(bool(s.get("use_wormholes", False)))
+        self._sync_hole_toggle()
         self.cmb_gate.setCurrentIndex(int(s.get("gate", 0)))
         self.chk_reactivation.setChecked(bool(s.get("min_reactivation", False)))
         self.chk_hostile.setChecked(bool(s.get("exclude_hostile", False)))
