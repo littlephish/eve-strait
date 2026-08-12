@@ -344,6 +344,41 @@ def set_mcp_allow_private(on: bool) -> None:
     save_config(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Wanderer map (wanderer.ltd). Self-hosted, so the instance URL, the map and
+# its token all have to come from the user; there is nothing to hard-code.
+# The token is a per-map key, not an account credential.
+# ---------------------------------------------------------------------------
+def get_wanderer_url() -> str:
+    return (load_config().get("wanderer_url") or "").strip()
+
+
+def get_wanderer_map() -> str:
+    """Map slug or UUID, whichever the user pasted."""
+    return (load_config().get("wanderer_map") or "").strip()
+
+
+def get_wanderer_token() -> str:
+    env = os.environ.get("WANDERER_TOKEN")
+    return env or (load_config().get("wanderer_token") or "")
+
+
+def set_wanderer(url: str, map_id: str, token: str) -> None:
+    cfg = load_config()
+    cfg["wanderer_url"] = (url or "").strip().rstrip("/")
+    cfg["wanderer_map"] = (map_id or "").strip()
+    token = (token or "").strip()
+    if token:
+        cfg["wanderer_token"] = token
+    else:
+        cfg.pop("wanderer_token", None)
+    save_config(cfg)
+
+
+def wanderer_configured() -> bool:
+    return bool(get_wanderer_url() and get_wanderer_map() and get_wanderer_token())
+
+
 def get_avoided() -> list[str]:
     """System names the router must never route through."""
     return load_config().get("avoid", [])

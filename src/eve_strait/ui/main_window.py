@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.docking_rights_ids: set[int] = set()
         self.starbase_systems: dict[int, int] = {}
         self.sov_owners: dict[int, tuple] = {}
+        self._wanderer_data: dict = {}
         self._hole_data: dict = {}
         self.sov_names: dict[int, str] = {}
         self._built = False
@@ -139,6 +140,46 @@ class MainWindow(QMainWindow):
         w.failed.connect(lambda m: self.statusBar().showMessage(
             f"EVE-Scout: {m}", 8000))
         self._run(w)
+        self._fetch_wanderer(force)
+
+    def _fetch_wanderer(self, force: bool = False):
+        """Pull the user's own Wanderer map, if they configured one."""
+        from ..esi import wanderer
+
+        if not config.wanderer_configured():
+            return
+        cached = {} if force else wanderer.load()
+        if cached.get("connections"):
+            self._on_wanderer(cached)
+            return
+        w = Worker(wanderer.refresh)
+        w.finished_ok.connect(self._on_wanderer)
+        w.failed.connect(lambda m: self.statusBar().showMessage(
+            f"Wanderer: {m}", 8000))
+        self._run(w)
+
+    def _on_wanderer(self, data):
+        from ..esi import wanderer
+
+        self._wanderer_data = data or {}
+        if self.universe is None:
+            return          # re-applied by _on_universe once the map exists
+        self._install_wormholes()
+        if self._wanderer_data:
+            self.statusBar().showMessage(wanderer.describe(self._wanderer_data),
+                                         6000)
+
+    def _edit_wanderer(self):
+        from .dialogs import WandererDialog
+        dlg = WandererDialog(self, config.get_wanderer_url(),
+                             config.get_wanderer_map(),
+                             config.get_wanderer_token())
+        if not dlg.exec():
+            return
+        config.set_wanderer(*dlg.values())
+        # Settings changed, so any cached map is for the wrong instance.
+        self._wanderer_data = {}
+        self._fetch_wanderer(force=True)
 
     def _on_wormholes(self, data):
         from ..esi import evescout
@@ -146,22 +187,46 @@ class MainWindow(QMainWindow):
         self._hole_data = data or {}
         if self.universe is None:
             return          # installed by _on_universe once the map is loaded
-        rows = self._hole_data.get("rows") or []
-        conns = evescout.connections(rows, self.universe.systems)
-        turnur = self.universe.by_name("Turnur")
-        n = self.universe.set_wormholes(
-            evescout.graph(conns, turnur.id if turnur else None))
-        # Which hubs each system connects to, for the map tooltip.
-        hub_of: dict[int, set] = {}
-        for c in conns:
-            hub_of.setdefault(c["system_id"], set()).add(c["hub"])
-        if self.map_view:
-            self.map_view.refresh_wormholes(hub_of)
-        self._sync_hole_status()
+        n, conns = self._install_wormholes()
         if n:
             self.statusBar().showMessage(
                 f"EVE-Scout: {len(conns)} connections to k-space "
                 f"({n} routes).", 5000)
+
+    def _install_wormholes(self):
+        """Merge every wormhole source into one edge set and install it.
+
+        set_wormholes replaces wholesale, so both sources have to be combined
+        here rather than each installing its own. Where the two describe the
+        same pair the roomier edge wins, since that is the one that decides
+        whether the hull fits.
+        """
+        from ..esi import evescout, wanderer
+
+        rows = (self._hole_data or {}).get("rows") or []
+        conns = evescout.connections(rows, self.universe.systems)
+        turnur = self.universe.by_name("Turnur")
+        edges = dict(evescout.graph(conns, turnur.id if turnur else None))
+
+        for key, info in wanderer.edges(getattr(self, "_wanderer_data", {}) or {},
+                                        self.universe.systems).items():
+            old = edges.get(key)
+            if old is None or info["max_t"] > old["max_t"]:
+                edges[key] = info
+
+        n = self.universe.set_wormholes(edges)
+        # Which hubs each system connects to, for the map tooltip.
+        hub_of: dict[int, set] = {}
+        for c in conns:
+            hub_of.setdefault(c["system_id"], set()).add(c["hub"])
+        for (a, b), info in edges.items():
+            if info.get("via") == "Wanderer":
+                hub_of.setdefault(a, set()).add("Wanderer")
+                hub_of.setdefault(b, set()).add("Wanderer")
+        if self.map_view:
+            self.map_view.refresh_wormholes(hub_of)
+        self._sync_hole_status()
+        return n, conns
 
     def _sync_hole_status(self):
         """Tell the route panel what the connections are worth to this hull."""
@@ -785,6 +850,7 @@ class MainWindow(QMainWindow):
             ("Set EVE Client ID...", self._set_client_id),
             ("Set ESI scopes...", self._set_scopes),
             ("Ansiblex jump gates...", self._edit_bridges),
+            ("Wanderer map...", self._edit_wanderer),
             ("Docking rights...", self._edit_docking_rights),
             ("Avoided systems...", self._edit_avoided),
             ("Intel refresh & history...", self._edit_intel_settings),

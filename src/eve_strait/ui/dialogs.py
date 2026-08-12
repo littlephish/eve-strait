@@ -100,6 +100,85 @@ class EsiSetupDialog(QDialog):
         return self.field.text().strip()
 
 
+class WandererDialog(QDialog):
+    """Where the user's own Wanderer instance lives and how to read it.
+
+    Wanderer is self-hosted, so none of this can be hard-coded: the instance
+    URL, which map, and that map's token all have to be supplied. The token is
+    a per-map key rather than an account credential, but it still reads your
+    group's scanned chains, so it is treated like a secret.
+    """
+
+    def __init__(self, parent, url: str, map_id: str, token: str):
+        super().__init__(parent)
+        self.setWindowTitle("Wanderer map")
+        self.setMinimumWidth(560)
+        v = QVBoxLayout(self)
+
+        v.addWidget(_link_label(
+            'Route over your own scanned chains from a '
+            '<a href="https://wanderer.ltd">Wanderer</a> map, instead of only '
+            'the public Thera and Turnur holes.<br><br>'
+            'In Wanderer open the map, then <b>Settings &rarr; API</b> for its '
+            'token. Each map has its own.'))
+
+        v.addWidget(QLabel("<b>Instance URL</b>"))
+        self.f_url = QLineEdit(url)
+        self.f_url.setPlaceholderText("https://wanderer.example.com")
+        v.addWidget(self.f_url)
+
+        v.addWidget(QLabel("<b>Map</b> - the slug or UUID from the map's URL"))
+        self.f_map = QLineEdit(map_id)
+        self.f_map.setPlaceholderText("my-corp-map")
+        v.addWidget(self.f_map)
+
+        v.addWidget(QLabel("<b>Map API token</b>"))
+        self.f_token = QLineEdit(token)
+        self.f_token.setEchoMode(QLineEdit.EchoMode.Password)
+        v.addWidget(self.f_token)
+        v.addWidget(_muted(
+            "Can also come from the WANDERER_TOKEN environment variable, which "
+            "keeps it off disk. Chains are scanned by your group and collapse "
+            "without warning, so treat a route over them as a plan to verify, "
+            "not a guarantee."))
+
+        row = QHBoxLayout()
+        self.b_test = QPushButton("Test connection")
+        self.b_test.clicked.connect(self._test)
+        row.addWidget(self.b_test)
+        self.lbl_test = _muted("")
+        row.addWidget(self.lbl_test, 1)
+        v.addLayout(row)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
+                               QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        v.addWidget(box)
+
+    def values(self) -> tuple[str, str, str]:
+        return (self.f_url.text().strip(), self.f_map.text().strip(),
+                self.f_token.text().strip())
+
+    def _test(self):
+        """Fetch once, so a typo is caught here rather than silently later."""
+        from ..esi import wanderer
+        url, map_id, token = self.values()
+        if not (url and map_id and token):
+            self.lbl_test.setText("Fill in all three fields first.")
+            return
+        self.b_test.setEnabled(False)
+        self.lbl_test.setText("Contacting...")
+        QGuiApplication.processEvents()
+        try:
+            data = wanderer.fetch(url, token, map_id, timeout=15)
+            self.lbl_test.setText(wanderer.describe(data))
+        except Exception as exc:
+            self.lbl_test.setText(f"{type(exc).__name__}: {exc}")
+        finally:
+            self.b_test.setEnabled(True)
+
+
 def standing_html(standing, label: str = "") -> str:
     """Colored standing text: + dark blue, - dark red (EVE contact colors)."""
     suffix = f" <span style='color:#888'>({label})</span>" if label else ""
