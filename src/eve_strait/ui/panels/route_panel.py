@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..collapsible import Section
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
@@ -61,7 +62,12 @@ class RoutePanel(QWidget):
         v.addLayout(sbox)
 
         self.search_results = QListWidget()
-        self.search_results.setMaximumHeight(84)
+        # Was pinned to 84px, about two and a half rows, which made picking
+        # from a list of similarly-named null systems a scrolling exercise.
+        # Now it is hidden until a search actually returns something and gets
+        # room to show a useful number of hits when it does.
+        self.search_results.setMaximumHeight(150)
+        self.search_results.setVisible(False)
         self.search_results.itemDoubleClicked.connect(
             lambda it: self._add_system(it.data(_ROLE_SYS)))
         self.search_results.setContextMenuPolicy(
@@ -83,7 +89,9 @@ class RoutePanel(QWidget):
         self.wp_list.customContextMenuRequested.connect(self._wp_menu)
         self.wp_list.itemSelectionChanged.connect(self._on_select)
         self.wp_list.model().rowsMoved.connect(self._on_rows_moved)
-        v.addWidget(self.wp_list)
+        # Stretch rather than natural size: the waypoint list and the plan are
+        # what the panel is for, and everything between them is settings.
+        v.addWidget(self.wp_list, 3)
 
         row = QHBoxLayout()
         for text, slot in (("↑", self._up), ("↓", self._down),
@@ -91,7 +99,27 @@ class RoutePanel(QWidget):
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
+        row.addStretch(1)
+        self.b_auto = QPushButton("Auto-route origin → last")
+        self.b_auto.clicked.connect(self.autoroute_requested)
+        row.addWidget(self.b_auto)
         v.addLayout(row)
+
+        self.busy = QProgressBar()
+        self.busy.setRange(0, 0)          # indeterminate spinner
+        self.busy.setFormat("Finding route…")
+        self.busy.hide()
+        v.addWidget(self.busy)
+
+        # -- options, grouped and collapsed ----------------------------------
+        # Nineteen controls in one flat column made the panel a wall. They are
+        # the same controls, sorted by the question they answer, with the
+        # current state summarised in each header so collapsing hides the
+        # widgets without hiding what they are set to.
+        sec_jumps = Section("Ship & jumps")
+        sec_safety = Section("Safety")
+        sec_dock = Section("Docking")
+        self._sections = (sec_jumps, sec_safety, sec_dock)
 
         # -- dock picker (change which dock) --------------------------------
         self.lbl_dock = QLabel("Dock:")
@@ -100,7 +128,7 @@ class RoutePanel(QWidget):
         pick_row = QHBoxLayout()
         pick_row.addWidget(self.lbl_dock)
         pick_row.addWidget(self.cmb_pick, 1)
-        v.addLayout(pick_row)
+        sec_dock.add(pick_row)
 
         # -- options --------------------------------------------------------
         opt = QHBoxLayout()
@@ -110,7 +138,7 @@ class RoutePanel(QWidget):
             ["No docking filter", "Require any docking", "Prefer safe docking only"])
         self.cmb_policy.currentIndexChanged.connect(self._emit_changed)
         opt.addWidget(self.cmb_policy, 1)
-        v.addLayout(opt)
+        sec_dock.add(opt)
 
         self.chk_nodocks = QCheckBox("Just passing through (don't pick docks)")
         self.chk_nodocks.setToolTip(
@@ -118,7 +146,7 @@ class RoutePanel(QWidget):
             "naming a station, and the dock picker is disabled. The docking "
             "filter above still applies to routing.")
         self.chk_nodocks.toggled.connect(self._on_nodocks_toggled)
-        v.addWidget(self.chk_nodocks)
+        sec_dock.add(self.chk_nodocks)
 
         self.chk_gates = QCheckBox("Allow gates to reduce the number of jumps")
         self.chk_gates.setChecked(True)
@@ -127,7 +155,7 @@ class RoutePanel(QWidget):
             "further than you can jump, and gating out of hi-sec to a jumpable "
             "system. Unchecked = jump drive only.")
         self.chk_gates.toggled.connect(self._on_gates_toggled)
-        v.addWidget(self.chk_gates)
+        sec_jumps.add(self.chk_gates)
 
         opt2 = QHBoxLayout()
         opt2.addWidget(QLabel("     Balance:"))
@@ -152,7 +180,7 @@ class RoutePanel(QWidget):
             "any setting, because no number of jumps replaces it.")
         self.cmb_balance.currentIndexChanged.connect(self._emit_changed)
         opt2.addWidget(self.cmb_balance, 1)
-        v.addLayout(opt2)
+        sec_jumps.add(opt2)
 
         self.chk_ansiblex = QCheckBox("Use Ansiblex network")
         self.chk_ansiblex.setChecked(True)
@@ -160,7 +188,7 @@ class RoutePanel(QWidget):
             "Route through your configured Ansiblex jump gates "
             "(File → Ansiblex jump gates…).")
         self.chk_ansiblex.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_ansiblex)
+        sec_jumps.add(self.chk_ansiblex)
 
         # Off by default: these are volunteer-scanned connections that expire
         # in hours, so opting in should be deliberate rather than something
@@ -173,12 +201,12 @@ class RoutePanel(QWidget):
             "Connections are scanned by volunteers and expire within hours — "
             "check before you commit.")
         self.chk_holes.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_holes)
+        sec_jumps.add(self.chk_holes)
         # Filled in by set_hole_status() once the connections are fetched.
         self.lbl_holes = QLabel("")
         self.lbl_holes.setWordWrap(True)
         self.lbl_holes.setVisible(False)
-        v.addWidget(self.lbl_holes)
+        sec_jumps.add(self.lbl_holes)
 
         opt3 = QHBoxLayout()
         self.cmb_gate = QComboBox()
@@ -191,29 +219,22 @@ class RoutePanel(QWidget):
         self.b_auto.clicked.connect(self.autoroute_requested)
         opt3.addWidget(QLabel("Gates:"))
         opt3.addWidget(self.cmb_gate, 1)
-        opt3.addWidget(self.b_auto)
-        v.addLayout(opt3)
+        sec_jumps.add(opt3)
         self._sync_hole_toggle()      # cmb_gate exists only from here on
-
-        self.busy = QProgressBar()
-        self.busy.setRange(0, 0)          # indeterminate spinner
-        self.busy.setFormat("Finding route…")
-        self.busy.hide()
-        v.addWidget(self.busy)
 
         self.chk_reactivation = QCheckBox(
             "Minimize reactivation timer (wait out fatigue between jumps)")
         self.chk_reactivation.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_reactivation)
+        sec_safety.add(self.chk_reactivation)
 
         self.chk_hostile = QCheckBox(
             "Exclude hostile-owned structures (bad standing)")
         self.chk_hostile.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_hostile)
+        sec_safety.add(self.chk_hostile)
 
         self.chk_incursions = QCheckBox("Avoid incursion systems")
         self.chk_incursions.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_incursions)
+        sec_safety.add(self.chk_incursions)
 
         self.chk_kills = QCheckBox("Steer around recent kills")
         self.chk_kills.setToolTip(
@@ -221,7 +242,24 @@ class RoutePanel(QWidget):
             "hour. A preference, not a hard block: a route is never made "
             "impossible by it.")
         self.chk_kills.toggled.connect(self._emit_changed)
-        v.addWidget(self.chk_kills)
+        sec_safety.add(self.chk_kills)
+
+
+        for _s in self._sections:
+            v.addWidget(_s)
+
+        # -- results --------------------------------------------------------
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(
+            ["Mode", "From", "To", "LY", "Fuel", "Reactivate", "Fatigue", "OK"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        v.addWidget(self.table, 2)
+
+        self.totals = QLabel("Add 2+ waypoints to plan a route.")
+        self.totals.setWordWrap(True)
+        self.totals.setStyleSheet("font-weight:bold")
+        v.addWidget(self.totals)
 
         act_row = QHBoxLayout()
         b_assist = QPushButton("Gate assist…")
@@ -243,18 +281,7 @@ class RoutePanel(QWidget):
         self.b_saved.clicked.connect(self._saved_menu)
         v.addWidget(self.b_saved)
 
-        # -- results --------------------------------------------------------
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(
-            ["Mode", "From", "To", "LY", "Fuel", "Reactivate", "Fatigue", "OK"])
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents)
-        v.addWidget(self.table)
-
-        self.totals = QLabel("Add 2+ waypoints to plan a route.")
-        self.totals.setWordWrap(True)
-        self.totals.setStyleSheet("font-weight:bold")
-        v.addWidget(self.totals)
+        self._sync_sections()
 
     # ---- exposed getters --------------------------------------------------
     def systems(self):
@@ -391,6 +418,7 @@ class RoutePanel(QWidget):
                 return
 
     def _add_system(self, system_id):
+        self.search_results.setVisible(False)
         uni = self.ctx.universe
         if not uni or system_id not in uni.systems:
             return
@@ -881,6 +909,12 @@ class RoutePanel(QWidget):
             it = QListWidgetItem(f"{s.name}  ({s.security:.1f})")
             it.setData(_ROLE_SYS, s.id)
             self.search_results.addItem(it)
+        # The list is hidden when there is nothing in it, so it has to be
+        # brought back here or searching silently stops working.
+        n = self.search_results.count()
+        self.search_results.setVisible(bool(n))
+        if not n:
+            self.totals.setText(f"No system matches {self.search.text()!r}.")
 
     # ---- copy -------------------------------------------------------------
     def _copy_route(self):
@@ -896,7 +930,38 @@ class RoutePanel(QWidget):
         self.totals.setText(f"Copied {len(lines)} waypoint(s) to clipboard.")
 
     # ---- persistence ------------------------------------------------------
+    def _sync_sections(self):
+        """Keep each collapsed header showing what is set inside it.
+
+        This is what makes collapsing safe: you can still read that you are
+        avoiding incursions without opening the section to check.
+        """
+        jumps, safety, dock = self._sections
+
+        bits = [self.cmb_balance.currentText().split(" - ")[0]]
+        if not self.chk_gates.isChecked():
+            bits = ["jump drive only"]
+        if self.chk_ansiblex.isChecked():
+            bits.append("Ansiblex")
+        if self.chk_holes.isChecked():
+            bits.append("wormholes")
+        jumps.set_summary(" · ".join(bits))
+
+        on = [name for name, w in (
+            ("incursions", self.chk_incursions),
+            ("hostiles", self.chk_hostile),
+            ("kills", self.chk_kills),
+            ("fatigue", self.chk_reactivation),
+        ) if w.isChecked()]
+        safety.set_summary(f"avoiding {', '.join(on)}" if on else "no filters")
+
+        if not self.pick_docks():
+            dock.set_summary("passing through")
+        else:
+            dock.set_summary(self.cmb_policy.currentText().lower())
+
     def _emit_changed(self):
+        self._sync_sections()
         self.changed.emit()
 
     def state(self) -> dict:
