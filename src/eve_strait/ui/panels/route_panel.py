@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..collapsible import Section
+from ..theme import pad
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
@@ -48,7 +49,7 @@ class RoutePanel(QWidget):
         self._uid = count(1)
         self._uid_map: dict[int, Waypoint] = {}
 
-        v = QVBoxLayout(self)
+        v = pad(QVBoxLayout(self))
 
         # -- search ---------------------------------------------------------
         sbox = QHBoxLayout()

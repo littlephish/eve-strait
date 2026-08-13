@@ -9,6 +9,7 @@ while closed.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from .theme import GAP, INDENT, TIGHT
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -25,8 +26,8 @@ class Section(QWidget):
     def __init__(self, title: str, expanded: bool = False):
         super().__init__()
         v = QVBoxLayout(self)
-        v.setContentsMargins(0, 2, 0, 2)
-        v.setSpacing(2)
+        v.setContentsMargins(0, TIGHT // 2, 0, TIGHT // 2)
+        v.setSpacing(TIGHT // 2)
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
@@ -52,7 +53,8 @@ class Section(QWidget):
         self.body = QFrame()
         self.body.setVisible(expanded)
         self._body_layout = QVBoxLayout(self.body)
-        self._body_layout.setContentsMargins(14, 0, 0, 4)
+        self._body_layout.setSpacing(GAP)
+        self._body_layout.setContentsMargins(INDENT, 0, 0, TIGHT)
         v.addWidget(self.body)
 
     def add(self, item):

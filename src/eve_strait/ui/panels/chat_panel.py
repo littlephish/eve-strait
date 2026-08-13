@@ -6,6 +6,8 @@ that never opts in has no AI surface at all.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+
+from ..theme import pad
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -35,8 +37,7 @@ class ChatPanel(QWidget):
 
     def __init__(self, provider_label: str):
         super().__init__()
-        v = QVBoxLayout(self)
-        v.setContentsMargins(6, 6, 6, 6)
+        v = pad(QVBoxLayout(self))
 
         self.transcript = QTextEdit()
         self.transcript.setReadOnly(True)

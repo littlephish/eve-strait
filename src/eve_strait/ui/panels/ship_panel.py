@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QWidget,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 
+from ..theme import pad
 from ...data.ships import SHIPS, SHIPS_BY_NAME, Ship, Skills
 from ...jump import mechanics
 
@@ -21,7 +22,11 @@ class ShipSkillsPanel(QWidget):
 
     def __init__(self):
         super().__init__()
-        form = QFormLayout(self)
+        form = pad(QFormLayout(self))
+        # "Jump Freighters (JF only)" against a narrow dock would otherwise
+        # squeeze the spin boxes to nothing; wrap the row instead.
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.ship_combo = QComboBox()
         for s in SHIPS:

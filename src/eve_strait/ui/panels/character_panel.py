@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from ...data import docking
 from ...data.ships import Ship
+from ..theme import GUTTER, pad
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
 _STATUS_ICON = {"ok": "✓", "risky": "⚠", "no docking": "✗"}
@@ -33,6 +34,8 @@ class CharacterPanel(QWidget):
 
     def __init__(self):
         super().__init__()
+        # No gutter here: the stack fills the panel and each page applies its
+        # own, so the two never double up when switching.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -49,7 +52,7 @@ class CharacterPanel(QWidget):
     # -- signed out ---------------------------------------------------------
     def _build_signed_out(self) -> QWidget:
         page = QWidget()
-        v = QVBoxLayout(page)
+        v = pad(QVBoxLayout(page))
         v.addStretch(1)
 
         title = QLabel("Not signed in")
@@ -105,8 +108,8 @@ class CharacterPanel(QWidget):
     # -- signed in ----------------------------------------------------------
     def _build_signed_in(self) -> QWidget:
         page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(0, 0, 0, 0)
+        # Was 0 all round, which put every label hard against the dock border.
+        v = pad(QVBoxLayout(page))
 
         self.lbl_active = QLabel("")
         self.lbl_active.setWordWrap(True)
