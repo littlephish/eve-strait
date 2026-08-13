@@ -93,6 +93,86 @@ def shrinkable(combo, chars: int = 10):
     return combo
 
 
+# -- the OS caption bar -------------------------------------------------------
+# Windows draws the title bar itself, outside anything Qt can style, so a dark
+# app still gets a light bar across the top of every window. DWM will recolour
+# it if asked. Attribute numbers from dwmapi.h; the colour ones need Windows 11
+# (build 22000+) and simply fail on anything older, which is why each call is
+# allowed to fail on its own rather than gating the lot.
+_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_DWMWA_BORDER_COLOR = 34
+_DWMWA_CAPTION_COLOR = 35
+_DWMWA_TEXT_COLOR = 36
+
+_styled_windows: set[int] = set()
+
+
+def _colorref(hexv: str) -> int:
+    """Win32 wants 0x00BBGGRR, which is the reverse of what CSS gave us."""
+    h = hexv.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return (b << 16) | (g << 8) | r
+
+
+def style_titlebar(window) -> bool:
+    """Recolour one window's OS caption bar to match the chrome.
+
+    Safe to call repeatedly and on any platform; returns whether anything was
+    actually applied.
+    """
+    import sys
+
+    if sys.platform != "win32" or get_chrome() == "native":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        hwnd = int(window.winId())
+        if not hwnd:
+            return False
+        dwm = ctypes.windll.dwmapi
+
+        def attr(which: int, value: int) -> bool:
+            v = ctypes.c_int(value)
+            return dwm.DwmSetWindowAttribute(
+                wintypes.HWND(hwnd), wintypes.DWORD(which),
+                ctypes.byref(v), ctypes.sizeof(v)) == 0
+
+        # Dark mode first: on Windows 10 it is the only one that lands, and it
+        # still gets the caption and the system menu out of light grey.
+        ok = attr(_DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+        # Then the exact colours, so the caption matches the dock titles rather
+        # than merely being dark. BG, because that is what QDockWidget::title
+        # uses and the two sit directly above one another.
+        ok |= attr(_DWMWA_CAPTION_COLOR, _colorref(BG))
+        ok |= attr(_DWMWA_TEXT_COLOR, _colorref(TEXT))
+        ok |= attr(_DWMWA_BORDER_COLOR, _colorref(BORDER))
+        return ok
+    except Exception:
+        # An unsupported build or a locked-down dwmapi is not worth failing a
+        # launch over; the window just keeps the system caption.
+        return False
+
+
+def _install_titlebar_hook(app):
+    """Catch dialogs too, without an event filter in the hot path.
+
+    A QApplication-wide event filter would run Python for every mouse move over
+    the map, which is the one place in this app that cannot afford it.
+    focusWindowChanged fires once when a window appears instead.
+    """
+    def on_focus(win):
+        if win is None:
+            return
+        key = int(win.winId()) if win.winId() else 0
+        if key and key not in _styled_windows:
+            _styled_windows.add(key)
+            style_titlebar(win)
+
+    app.focusWindowChanged.connect(on_focus)
+
+
 def _lum(hexv: str) -> float:
     h = hexv.lstrip("#")
     c = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
@@ -211,7 +291,9 @@ def apply_theme(app, mode: str | None = None):
         return app
 
     globals().update(_DARK_TOKENS)
-    return _apply_dark(app)
+    _apply_dark(app)
+    _install_titlebar_hook(app)
+    return app
 
 
 def _style_key(app) -> str:

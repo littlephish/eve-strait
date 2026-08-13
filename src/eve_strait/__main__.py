@@ -73,6 +73,11 @@ def main() -> int:
     try:
         window = MainWindow()
         window.show()
+        # After show(), because the caption bar belongs to a window handle that
+        # does not exist until then. Doing it here rather than waiting for the
+        # focus hook avoids a frame of light title bar on launch.
+        from .ui.theme import style_titlebar
+        style_titlebar(window)
     except Exception:
         detail = traceback.format_exc()
         _log("startup failed:\n" + detail)
