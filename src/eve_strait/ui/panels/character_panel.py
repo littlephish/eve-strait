@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ...data import docking
 from ...data.ships import Ship
-from ..theme import GUTTER, pad
+from ..theme import GUTTER, TEXT_MUTED, pad
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
 _STATUS_ICON = {"ok": "✓", "risky": "⚠", "no docking": "✗"}
@@ -77,6 +77,7 @@ class CharacterPanel(QWidget):
         v.addWidget(blurb)
 
         self.btn_login = QPushButton("Sign in with EVE Online")
+        self.btn_login.setObjectName("primary")
         self.btn_login.setMinimumHeight(38)
         bf = self.btn_login.font()
         bf.setBold(True)
@@ -100,7 +101,7 @@ class CharacterPanel(QWidget):
                       "using public data only.")
         foot.setWordWrap(True)
         foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        foot.setStyleSheet("color:#888; font-size:11px;")
+        foot.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
         v.addWidget(foot)
         v.addStretch(2)
         return page

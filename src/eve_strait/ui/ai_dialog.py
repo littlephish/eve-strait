@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+
+from .theme import TEXT_MUTED
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,7 +33,7 @@ from ..ai import providers
 
 def _muted(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("color:#888; font-size:11px;")
+    lbl.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
     lbl.setWordWrap(True)
     return lbl
 

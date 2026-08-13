@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 
-from ..theme import pad
+from ..theme import ACCENT, DANGER, OK, TEXT, TEXT_MUTED, pad
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -44,7 +44,7 @@ class ChatPanel(QWidget):
         v.addWidget(self.transcript, 1)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color:#888; font-size:11px;")
+        self.status.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
 
@@ -102,8 +102,8 @@ class ChatPanel(QWidget):
         self.set_busy(False)
 
     def _say(self, who: str, text: str):
-        colour = {"you": "#8fd130", "assistant": "#cfe3ff", "error": "#ff6b6b",
-                  "tools": "#7d8aa0", "system": "#888"}.get(who, "#cfe3ff")
+        colour = {"you": OK, "assistant": ACCENT, "error": DANGER,
+                  "tools": TEXT_MUTED, "system": TEXT_MUTED}.get(who, ACCENT)
         name = {"you": "You", "assistant": "Assistant", "error": "Error",
                 "tools": "ran", "system": ""}.get(who, who)
         body = _escape(text).replace("\n", "<br>")
@@ -111,7 +111,7 @@ class ChatPanel(QWidget):
         style = "font-size:11px;" if who in ("tools", "system") else ""
         self.transcript.append(
             f"<div style='color:{colour};{style}'>{label}"
-            f"<span style='color:#dfe7f5'>{body}</span></div>")
+            f"<span style='color:{TEXT}'>{body}</span></div>")
         bar = self.transcript.verticalScrollBar()
         bar.setValue(bar.maximum())
 

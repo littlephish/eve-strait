@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics
-from .theme import GAP, INDENT, TIGHT
+from .theme import GAP, INDENT, TEXT_MUTED, TIGHT
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -82,7 +82,7 @@ class Section(QWidget):
         head.addWidget(self.button)
 
         self.summary = _Summary()
-        self.summary.setStyleSheet("color:#8b97a8;")
+        self.summary.setStyleSheet(f"color:{TEXT_MUTED};")
         self.summary.setAlignment(Qt.AlignmentFlag.AlignRight
                                   | Qt.AlignmentFlag.AlignVCenter)
         head.addWidget(self.summary, 1)

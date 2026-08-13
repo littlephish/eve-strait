@@ -57,6 +57,10 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Eve-Strait")
     app.setOrganizationName("eve-strait")
+    # Before the window exists, so nothing paints in the stock light theme
+    # first and then flips.
+    from .ui.theme import apply_theme
+    apply_theme(app)
     icon = app_icon()
     if icon is not None:
         app.setWindowIcon(icon)

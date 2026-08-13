@@ -863,6 +863,17 @@ class MainWindow(QMainWindow):
             a.triggered.connect(slot)
             m.addAction(a)
 
+        m.addSeparator()
+        from .theme import get_chrome
+        self.act_native = QAction("Use native window chrome", self)
+        self.act_native.setCheckable(True)
+        self.act_native.setChecked(get_chrome() == "native")
+        self.act_native.setToolTip(
+            "Hand the panels back to your operating system's theme, including "
+            "any high-contrast or forced-colour settings you have set there.")
+        self.act_native.toggled.connect(self._set_chrome)
+        m.addAction(self.act_native)
+
         help_menu = self.menuBar().addMenu("&Help")
         act_upd = QAction("Check for updates...", self)
         act_upd.triggered.connect(lambda: self._check_updates(explicit=True))
@@ -1942,6 +1953,26 @@ class MainWindow(QMainWindow):
             cfg["client_id"] = dlg.client_id()
             config.save_config(cfg)
             QMessageBox.information(self, "Saved", "Client ID saved.")
+
+    def _set_chrome(self, native: bool):
+        """Saved, then applied on restart.
+
+        Switching live would only get half of it: the panels bake a few colours
+        into inline stylesheets when they are built, and those would keep their
+        dark values on a freshly light window - unreadable, and worse than not
+        having switched at all.
+        """
+        from .theme import set_chrome
+        set_chrome("native" if native else "dark")
+        QMessageBox.information(
+            self, "Window chrome",
+            ("Native chrome will be used when you restart Eve-Strait.\n\n"
+             "The panels will follow your operating system theme, including "
+             "any high-contrast or forced-colour settings."
+             if native else
+             "The dark theme will be used when you restart Eve-Strait.")
+            + "\n\nThe map keeps its own colours either way - it is a chart "
+              "rather than chrome.")
 
     def _set_scopes(self):
         text, ok = QInputDialog.getMultiLineText(

@@ -2,6 +2,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+
+from .theme import (
+    SEC_HIGH,
+    SEC_LOW,
+    SEC_NULL,
+    STANDING_DOWN,
+    STANDING_UP,
+    TEXT_MUTED,
+)
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -186,9 +195,9 @@ def standing_html(standing, label: str = "") -> str:
         return ("<span style='color:#888'>not in your character, corp or "
                 "alliance contacts</span>")
     if standing > 0:
-        return f"<b style='color:#1f3fb0'>+{standing:.1f}</b>{suffix}"
+        return f"<b style='color:{STANDING_UP}'>+{standing:.1f}</b>{suffix}"
     if standing < 0:
-        return f"<b style='color:#b01f1f'>{standing:.1f}</b>{suffix}"
+        return f"<b style='color:{STANDING_DOWN}'>{standing:.1f}</b>{suffix}"
     return f"<span style='color:#888'>0.0 (neutral)</span>{suffix}"
 
 
@@ -238,8 +247,8 @@ class SystemInfoDialog(QDialog):
         lay = QVBoxLayout(self)
         kind = ("high-sec" if system.security >= 0.5 else
                 "low-sec" if system.security > 0.0 else "null-sec")
-        sec_col = ("#2c9e4b" if system.security >= 0.5 else
-                   "#d08b23" if system.security > 0.0 else "#b01f1f")
+        sec_col = (SEC_HIGH if system.security >= 0.5 else
+                   SEC_LOW if system.security > 0.0 else SEC_NULL)
         lay.addWidget(_link_label(
             f"<div style='font-size:15px'><b>{system.name}</b> "
             f"<span style='color:{sec_col}'>({system.security:.2f}, {kind})</span>"
@@ -343,7 +352,7 @@ class SystemInfoDialog(QDialog):
         grid.setColumnStretch(1, 1)
         for r, (name, value) in enumerate(rows):
             lbl = QLabel(f"{name}:")
-            lbl.setStyleSheet("color:#888")
+            lbl.setStyleSheet(f"color:{TEXT_MUTED}")
             grid.addWidget(lbl, r, 0, Qt.AlignmentFlag.AlignTop)
             grid.addWidget(_link_label(value), r, 1)
         return grid
@@ -366,7 +375,7 @@ def _section(title: str) -> QLabel:
 
 def _muted(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("color:#888; font-size:11px;")
+    lbl.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
     lbl.setWordWrap(True)
     return lbl
 
@@ -472,7 +481,7 @@ class GateAssistDialog(QDialog):
             for r in runs:
                 span = (f" spanning <b>{r['span_ly']:.1f} ly</b>"
                         if r["span_ly"] >= 1.0 else "")
-                flag = ("  <b style='color:#b01f1f'>- mandatory: no jump route "
+                flag = (f"  <b style='color:{SEC_NULL}'>- mandatory: no jump route "
                         "avoids this</b>" if r["mandatory"] else "")
                 items.append(
                     f"<li><b>{r['from'].name} → {r['to'].name}</b> - "
@@ -715,7 +724,7 @@ class IntelSettingsDialog(QDialog):
 
         self.lbl_stats = QLabel("")
         self.lbl_stats.setWordWrap(True)
-        self.lbl_stats.setStyleSheet("color:#888")
+        self.lbl_stats.setStyleSheet(f"color:{TEXT_MUTED}")
         v.addWidget(self.lbl_stats)
 
         self.btn_purge = QPushButton("Delete stored history")

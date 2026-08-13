@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..collapsible import Section
-from ..theme import compressible, pad, shrinkable
+from ..theme import TEXT_MUTED, WARN, compressible, pad, shrinkable
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
@@ -88,7 +88,7 @@ class RoutePanel(QWidget):
         hint = QLabel("Type to search, or click the map, to add a waypoint. "
                       "Drag to reorder; right-click to remove. First = origin.")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#888")
+        hint.setStyleSheet(f"color:{TEXT_MUTED}")
         v.addWidget(hint)
 
         # -- waypoints ------------------------------------------------------
@@ -371,17 +371,17 @@ class RoutePanel(QWidget):
             self.lbl_holes.setVisible(False)
             return
         if not total:
-            msg, colour = "No EVE-Scout connections available.", "#c9a227"
+            msg, colour = "No EVE-Scout connections available.", WARN
         elif not passable:
             msg = (f"{total} wormhole{'s' if total != 1 else ''} scouted, "
                    f"none passable by a {hull}.")
-            colour = "#c9a227"
+            colour = WARN
         else:
             msg = (f"{passable} of {total} scouted wormholes fit a {hull}.")
-            colour = "#7a8494"
+            colour = TEXT_MUTED
         if stale:
             msg += "  Connections may have expired — refresh before flying."
-            colour = "#c9a227"
+            colour = WARN
         self.lbl_holes.setText(msg)
         self.lbl_holes.setStyleSheet(f"color: {colour};")
         self.lbl_holes.setVisible(True)

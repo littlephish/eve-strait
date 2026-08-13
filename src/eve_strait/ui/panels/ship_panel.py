@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from ..theme import pad
+from ..theme import ACCENT, pad
 from ...data.ships import SHIPS, SHIPS_BY_NAME, Ship, Skills
 from ...jump import mechanics
 
@@ -58,7 +58,7 @@ class ShipSkillsPanel(QWidget):
         self.lbl_iso = QLabel("-")
         self.lbl_bridge = QLabel("-")
         for lbl in (self.lbl_range, self.lbl_fuel, self.lbl_iso, self.lbl_bridge):
-            lbl.setStyleSheet("font-weight:bold;color:#2a7de1")
+            lbl.setStyleSheet(f"font-weight:bold;color:{ACCENT}")
         form.addRow("Max jump range", self.lbl_range)
         form.addRow("Fuel / light year", self.lbl_fuel)
         form.addRow("Isotope", self.lbl_iso)
