@@ -1543,6 +1543,7 @@ class MainWindow(QMainWindow):
         self.route.autoroute_requested.connect(self._auto_route)
         self.route.gate_assist_requested.connect(self._gate_assist)
         self.character.login_requested.connect(self._login)
+        self.character.scopes_requested.connect(self._set_scopes)
         self.character.load_structures_requested.connect(self._load_structures)
         self.character.add_system.connect(self.route.add_system)
         self.character.character_changed.connect(self._switch_character)

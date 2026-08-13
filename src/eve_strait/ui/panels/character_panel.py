@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -28,13 +29,88 @@ class CharacterPanel(QWidget):
     character_changed = Signal(int)          # character_id
     unlink_requested = Signal(int)           # character_id
     goto_location_requested = Signal()
+    scopes_requested = Signal()
 
     def __init__(self):
         super().__init__()
-        v = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        self.lbl_login = QLabel("-")
+        # Signed out and signed in are different jobs, so they get different
+        # panels rather than one panel with half its controls greyed out. The
+        # old layout showed an empty character combo above four buttons that
+        # could not do anything yet, which told a new user nothing about what
+        # signing in would give them.
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack)
+        self.stack.addWidget(self._build_signed_out())
+        self.stack.addWidget(self._build_signed_in())
+
+    # -- signed out ---------------------------------------------------------
+    def _build_signed_out(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.addStretch(1)
+
+        title = QLabel("Not signed in")
+        f = title.font()
+        f.setPointSize(f.pointSize() + 3)
+        f.setBold(True)
+        title.setFont(f)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(title)
+
+        # Say what it buys before asking for it.
+        blurb = QLabel(
+            "Sign in with EVE to unlock:"
+            "<ul style='margin-left:-20px'>"
+            "<li>your dockable structures and assets</li>"
+            "<li>where your characters are right now</li>"
+            "<li>standings, to route around hostiles</li>"
+            "<li>set destination in the game client</li>"
+            "</ul>")
+        blurb.setTextFormat(Qt.TextFormat.RichText)
+        blurb.setWordWrap(True)
+        v.addWidget(blurb)
+
+        self.btn_login = QPushButton("Sign in with EVE Online")
+        self.btn_login.setMinimumHeight(38)
+        bf = self.btn_login.font()
+        bf.setBold(True)
+        self.btn_login.setFont(bf)
+        self.btn_login.clicked.connect(self.login_requested)
+        v.addWidget(self.btn_login)
+
+        self.btn_scopes = QPushButton("Choose what to share…")
+        self.btn_scopes.setFlat(True)
+        self.btn_scopes.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_scopes.clicked.connect(self.scopes_requested)
+        v.addWidget(self.btn_scopes)
+
+        # Status line during the SSO round trip. MainWindow writes here.
+        self.lbl_login = QLabel("")
+        self.lbl_login.setWordWrap(True)
+        self.lbl_login.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.lbl_login)
+
+        foot = QLabel("The map and route planner work without this, "
+                      "using public data only.")
+        foot.setWordWrap(True)
+        foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        foot.setStyleSheet("color:#888; font-size:11px;")
+        v.addWidget(foot)
+        v.addStretch(2)
+        return page
+
+    # -- signed in ----------------------------------------------------------
+    def _build_signed_in(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+
+        self.lbl_active = QLabel("")
+        self.lbl_active.setWordWrap(True)
+        v.addWidget(self.lbl_active)
 
         # Character switcher: the active character drives assets, standings,
         # starbases and location.
@@ -50,9 +126,9 @@ class CharacterPanel(QWidget):
         v.addWidget(self.lbl_location)
 
         btn_row = QHBoxLayout()
-        self.btn_login = QPushButton("Add character")
-        self.btn_login.clicked.connect(self.login_requested)
-        btn_row.addWidget(self.btn_login)
+        self.btn_add = QPushButton("Add another…")
+        self.btn_add.clicked.connect(self.login_requested)
+        btn_row.addWidget(self.btn_add)
         self.btn_unlink = QPushButton("Unlink")
         self.btn_unlink.setToolTip("Remove the selected character from this app.")
         self.btn_unlink.clicked.connect(self._on_unlink)
@@ -75,19 +151,23 @@ class CharacterPanel(QWidget):
 
         v.addWidget(QLabel("Docked/asset locations (double-click to add):"))
         self.struct_list = QListWidget()
-        self.struct_list.setMaximumHeight(220)   # keep the list compact
         self.struct_list.itemDoubleClicked.connect(self._on_double)
-        v.addWidget(self.struct_list)
+        # Stretches instead of a fixed 220px cap: this is the one thing in the
+        # panel worth reading, so it should take the space the panel has.
+        v.addWidget(self.struct_list, 1)
 
         self._dockables: list = []
         self._filter = 0  # 0 none, 1 any dock, 2 safe only
+        return page
 
     # -- state --------------------------------------------------------------
     def set_login(self, name: str | None):
+        """Swap between the sign-in pitch and the signed-in controls."""
+        self.stack.setCurrentIndex(1 if name else 0)
         if name:
-            self.lbl_login.setText(f"Active: <b>{name}</b>")
+            self.lbl_active.setText(f"Active: <b>{name}</b>")
+            self.lbl_login.setText("")     # clear any stale SSO status
         else:
-            self.lbl_login.setText("No characters linked.")
             self.lbl_location.setText("")
         self.btn_unlink.setEnabled(bool(name))
         self.btn_here.setEnabled(bool(name))
