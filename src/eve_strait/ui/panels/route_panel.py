@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from itertools import count
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QStringListModel, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..collapsible import Section
-from ..theme import pad
+from ..theme import compressible, pad, shrinkable
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
@@ -37,6 +38,12 @@ _STATUS_ICON = {True: "✓", False: "✗"}
 
 
 class RoutePanel(QWidget):
+    _HOLES_TIP = ("Route through the public Thera and Turnur wormholes scouted "
+                  "by EVE-Scout.\n"
+                  "Holes too small for the selected hull are ignored.\n"
+                  "Connections are scanned by volunteers and expire within "
+                  "hours — check before you commit.")
+
     changed = Signal()
     autoroute_requested = Signal()
     gate_assist_requested = Signal()
@@ -56,27 +63,29 @@ class RoutePanel(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Find system by name...")
         self.search.returnPressed.connect(self._do_search)
+        self.search.textEdited.connect(self._on_search_text)
         b_find = QPushButton("Find")
         b_find.clicked.connect(self._do_search)
-        sbox.addWidget(self.search)
-        sbox.addWidget(b_find)
+        sbox.addWidget(self.search, 1)
+        sbox.addWidget(b_find, 0)
         v.addLayout(sbox)
 
-        self.search_results = QListWidget()
-        # Was pinned to 84px, about two and a half rows, which made picking
-        # from a list of similarly-named null systems a scrolling exercise.
-        # Now it is hidden until a search actually returns something and gets
-        # room to show a useful number of hits when it does.
-        self.search_results.setMaximumHeight(150)
-        self.search_results.setVisible(False)
-        self.search_results.itemDoubleClicked.connect(
-            lambda it: self._add_system(it.data(_ROLE_SYS)))
-        self.search_results.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu)
-        self.search_results.customContextMenuRequested.connect(self._search_menu)
-        v.addWidget(self.search_results)
+        # Results come up in a completer popup rather than a list inside the
+        # panel. An inline list has to appear and disappear as you type, and
+        # every time it does everything below it jumps -- the waypoints, the
+        # options, the plan. The popup floats above the panel, so nothing
+        # moves, and it costs no vertical space when it is not open.
+        self._completer_model = QStringListModel()
+        self.completer = QCompleter(self._completer_model, self)
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.completer.setCompletionMode(
+            QCompleter.CompletionMode.UnfilteredPopupCompletion)
+        self.completer.setMaxVisibleItems(12)
+        self.completer.activated[str].connect(self._on_completed)
+        self.search.setCompleter(self.completer)
 
-        hint = QLabel("Double-click a result or click the map to add a waypoint. "
+        hint = QLabel("Type to search, or click the map, to add a waypoint. "
                       "Drag to reorder; right-click to remove. First = origin.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888")
@@ -99,12 +108,17 @@ class RoutePanel(QWidget):
                            ("Remove", self._remove_selected), ("Clear", self._clear)):
             b = QPushButton(text)
             b.clicked.connect(slot)
-            row.addWidget(b)
-        row.addStretch(1)
-        self.b_auto = QPushButton("Auto-route origin → last")
-        self.b_auto.clicked.connect(self.autoroute_requested)
-        row.addWidget(self.b_auto)
+            row.addWidget(compressible(b, 40))
         v.addLayout(row)
+
+        # On its own row: five buttons abreast each demanded their full label
+        # width, which set the panel's minimum to 652px and pushed everything
+        # to the right of it off the dock.
+        self.b_auto = QPushButton("Auto-route")
+        self.b_auto.setToolTip("Fill in the systems needed between the first "
+                               "and last waypoint.")
+        self.b_auto.clicked.connect(self.autoroute_requested)
+        v.addWidget(compressible(self.b_auto, 80))
 
         self.busy = QProgressBar()
         self.busy.setRange(0, 0)          # indeterminate spinner
@@ -125,6 +139,7 @@ class RoutePanel(QWidget):
         # -- dock picker (change which dock) --------------------------------
         self.lbl_dock = QLabel("Dock:")
         self.cmb_pick = QComboBox()
+        shrinkable(self.cmb_pick)
         self.cmb_pick.currentIndexChanged.connect(self._on_pick)
         pick_row = QHBoxLayout()
         pick_row.addWidget(self.lbl_dock)
@@ -137,24 +152,27 @@ class RoutePanel(QWidget):
         self.cmb_policy = QComboBox()
         self.cmb_policy.addItems(
             ["No docking filter", "Require any docking", "Prefer safe docking only"])
+        shrinkable(self.cmb_policy)
         self.cmb_policy.currentIndexChanged.connect(self._emit_changed)
         opt.addWidget(self.cmb_policy, 1)
         sec_dock.add(opt)
 
-        self.chk_nodocks = QCheckBox("Just passing through (don't pick docks)")
+        self.chk_nodocks = QCheckBox("Just passing through")
         self.chk_nodocks.setToolTip(
             "For subcaps and freighters warping gate to gate. Waypoints stop "
             "naming a station, and the dock picker is disabled. The docking "
             "filter above still applies to routing.")
+        compressible(self.chk_nodocks)
         self.chk_nodocks.toggled.connect(self._on_nodocks_toggled)
         sec_dock.add(self.chk_nodocks)
 
-        self.chk_gates = QCheckBox("Allow gates to reduce the number of jumps")
+        self.chk_gates = QCheckBox("Allow gates")
         self.chk_gates.setChecked(True)
         self.chk_gates.setToolTip(
             "Use stargates wherever they save jumps - regional gates that span "
             "further than you can jump, and gating out of hi-sec to a jumpable "
             "system. Unchecked = jump drive only.")
+        compressible(self.chk_gates)
         self.chk_gates.toggled.connect(self._on_gates_toggled)
         sec_jumps.add(self.chk_gates)
 
@@ -165,11 +183,11 @@ class RoutePanel(QWidget):
         # jump is cheaper than a single gate hop, i.e. "gate only when it
         # genuinely buys something" -- which is the usual capital preference.
         for label, cost in (
-            ("Jump whenever possible", 0.3),
-            ("Prefer jumps - gate only when it saves several", 0.6),
+            ("Jump always", 0.3),
+            ("Prefer jumps", 0.6),
             ("Balanced", 1.5),
-            ("Prefer gates - save fuel & fatigue", 6.0),
-            ("Gate whenever possible", 30.0),
+            ("Prefer gates", 6.0),
+            ("Gate always", 30.0),
         ):
             self.cmb_balance.addItem(label, cost)
         self.cmb_balance.setCurrentIndex(1)
@@ -179,6 +197,7 @@ class RoutePanel(QWidget):
             "settings save fuel and fatigue but mean long gate chains.\n"
             "A regional gate that spans further than you can jump is taken at\n"
             "any setting, because no number of jumps replaces it.")
+        shrinkable(self.cmb_balance)
         self.cmb_balance.currentIndexChanged.connect(self._emit_changed)
         opt2.addWidget(self.cmb_balance, 1)
         sec_jumps.add(opt2)
@@ -188,19 +207,21 @@ class RoutePanel(QWidget):
         self.chk_ansiblex.setToolTip(
             "Route through your configured Ansiblex jump gates "
             "(File → Ansiblex jump gates…).")
+        compressible(self.chk_ansiblex)
         self.chk_ansiblex.toggled.connect(self._emit_changed)
         sec_jumps.add(self.chk_ansiblex)
 
         # Off by default: these are volunteer-scanned connections that expire
         # in hours, so opting in should be deliberate rather than something
         # that quietly reroutes a freighter through a hole that has collapsed.
-        self.chk_holes = QCheckBox("Use EVE-Scout wormholes (Thera / Turnur)")
+        self.chk_holes = QCheckBox("EVE-Scout wormholes")
         self.chk_holes.setChecked(False)
         self.chk_holes.setToolTip(
             "Route through the public Thera and Turnur wormholes scouted by "
             "EVE-Scout.\nHoles too small for the selected hull are ignored.\n"
             "Connections are scanned by volunteers and expire within hours — "
             "check before you commit.")
+        compressible(self.chk_holes)
         self.chk_holes.toggled.connect(self._emit_changed)
         sec_jumps.add(self.chk_holes)
         # Filled in by set_hole_status() once the connections are fetched.
@@ -211,8 +232,12 @@ class RoutePanel(QWidget):
 
         opt3 = QHBoxLayout()
         self.cmb_gate = QComboBox()
-        self.cmb_gate.addItems(["Fastest", "Safer (prefer high-sec)",
-                                "Less secure (prefer low/null)"])
+        self.cmb_gate.addItems(["Fastest", "Safer", "Less secure"])
+        self.cmb_gate.setToolTip(
+            "Fastest: fewest hops.\n"
+            "Safer: prefer high-sec.\n"
+            "Less secure: prefer low and null.")
+        shrinkable(self.cmb_gate)
         self.cmb_gate.currentIndexChanged.connect(self._emit_changed)
         self.cmb_gate.currentIndexChanged.connect(
             lambda _=0: self._sync_hole_toggle())
@@ -223,17 +248,18 @@ class RoutePanel(QWidget):
         sec_jumps.add(opt3)
         self._sync_hole_toggle()      # cmb_gate exists only from here on
 
-        self.chk_reactivation = QCheckBox(
-            "Minimize reactivation timer (wait out fatigue between jumps)")
+        self.chk_reactivation = QCheckBox("Minimize reactivation timer")
+        compressible(self.chk_reactivation)
         self.chk_reactivation.toggled.connect(self._emit_changed)
         sec_safety.add(self.chk_reactivation)
 
-        self.chk_hostile = QCheckBox(
-            "Exclude hostile-owned structures (bad standing)")
+        self.chk_hostile = QCheckBox("Exclude hostile structures")
+        compressible(self.chk_hostile)
         self.chk_hostile.toggled.connect(self._emit_changed)
         sec_safety.add(self.chk_hostile)
 
         self.chk_incursions = QCheckBox("Avoid incursion systems")
+        compressible(self.chk_incursions)
         self.chk_incursions.toggled.connect(self._emit_changed)
         sec_safety.add(self.chk_incursions)
 
@@ -242,6 +268,7 @@ class RoutePanel(QWidget):
             "Bias the route away from systems with player kills in the last "
             "hour. A preference, not a hard block: a route is never made "
             "impossible by it.")
+        compressible(self.chk_kills)
         self.chk_kills.toggled.connect(self._emit_changed)
         sec_safety.add(self.chk_kills)
 
@@ -263,24 +290,26 @@ class RoutePanel(QWidget):
         v.addWidget(self.totals)
 
         act_row = QHBoxLayout()
-        b_assist = QPushButton("Gate assist…")
+        b_assist = QPushButton("Gates…")
         b_assist.setToolTip("Compare a pure jump route against jump+gate, and show "
                             "where a short gate run replaces several jumps.")
         b_assist.clicked.connect(self.gate_assist_requested)
-        act_row.addWidget(b_assist)
-        b_rev = QPushButton("Reverse route")
+        act_row.addWidget(compressible(b_assist, 60))
+        b_rev = QPushButton("Reverse")
         b_rev.clicked.connect(self.reverse)
-        b_copy = QPushButton("Copy route to clipboard")
+        b_copy = QPushButton("Copy")
+        b_copy.setToolTip("Copy the route to the clipboard.")
+        b_rev.setToolTip("Fly the same waypoints in reverse.")
         b_copy.clicked.connect(self._copy_route)
-        act_row.addWidget(b_rev)
-        act_row.addWidget(b_copy)
+        act_row.addWidget(compressible(b_rev, 60))
+        act_row.addWidget(compressible(b_copy, 60))
         v.addLayout(act_row)
 
         self.b_saved = QPushButton("Saved routes")
         self.b_saved.setToolTip(
             "Store the current waypoints under a name and load them back later.")
         self.b_saved.clicked.connect(self._saved_menu)
-        v.addWidget(self.b_saved)
+        v.addWidget(compressible(self.b_saved, 80))
 
         self._sync_sections()
 
@@ -323,9 +352,12 @@ class RoutePanel(QWidget):
         """Show that Fastest has taken the choice out of the user's hands."""
         forced = self.gate_pref() == "fast"
         self.chk_holes.setEnabled(not forced)
-        self.chk_holes.setText(
-            "Use EVE-Scout wormholes (Thera / Turnur)"
-            + ("  — always on for Fastest" if forced else ""))
+        # Appending the reason to the label made it the widest thing in the
+        # panel, which set the panel's minimum width and pushed Find off the
+        # edge. The tooltip carries it instead.
+        self.chk_holes.setToolTip(
+            "Always on while Gates is set to Fastest."
+            if forced else self._HOLES_TIP)
 
     def set_hole_status(self, total: int, passable: int, hull: str,
                         stale: bool = False):
@@ -419,7 +451,6 @@ class RoutePanel(QWidget):
                 return
 
     def _add_system(self, system_id):
-        self.search_results.setVisible(False)
         uni = self.ctx.universe
         if not uni or system_id not in uni.systems:
             return
@@ -457,20 +488,6 @@ class RoutePanel(QWidget):
     def set_busy(self, busy: bool):
         self.busy.setVisible(busy)
         self.b_auto.setEnabled(not busy)
-
-    def _search_menu(self, pos):
-        item = self.search_results.itemAt(pos)
-        if not item:
-            return
-        sid = item.data(_ROLE_SYS)
-        menu = QMenu(self)
-        act_add = menu.addAction("Add as waypoint")
-        act_info = menu.addAction("Show system info")
-        chosen = menu.exec(self.search_results.mapToGlobal(pos))
-        if chosen == act_add:
-            self._add_system(sid)
-        elif chosen == act_info:
-            self.show_system_info(sid)
 
     def set_route(self, systems, modes):
         self.waypoints = [Waypoint(s) for s in systems]
@@ -902,20 +919,37 @@ class RoutePanel(QWidget):
 
     # ---- search -----------------------------------------------------------
     def _do_search(self):
+        """Offer matches in the popup instead of reflowing the panel."""
         uni = self.ctx.universe
         if not uni:
             return
-        self.search_results.clear()
-        for s in uni.search(self.search.text()):
-            it = QListWidgetItem(f"{s.name}  ({s.security:.1f})")
-            it.setData(_ROLE_SYS, s.id)
-            self.search_results.addItem(it)
-        # The list is hidden when there is nothing in it, so it has to be
-        # brought back here or searching silently stops working.
-        n = self.search_results.count()
-        self.search_results.setVisible(bool(n))
-        if not n:
+        hits = list(uni.search(self.search.text()))
+        if len(hits) == 1:
+            self._add_system(hits[0].id)      # unambiguous: just add it
+            return
+        if not hits:
             self.totals.setText(f"No system matches {self.search.text()!r}.")
+            return
+        self._completer_model.setStringList(
+            [f"{s.name}  ({s.security:.1f})" for s in hits])
+        self.completer.complete()
+
+    def _on_search_text(self, text: str):
+        """Keep the popup's list current as the user types."""
+        uni = self.ctx.universe
+        if uni is None or len(text) < 2:
+            return
+        self._completer_model.setStringList(
+            [f"{s.name}  ({s.security:.1f})" for s in uni.search(text)])
+
+    def _on_completed(self, text: str):
+        uni = self.ctx.universe
+        if uni is None:
+            return
+        s = uni.by_name(text.split("  (")[0])
+        if s is not None:
+            self._add_system(s.id)
+            self.search.clear()
 
     # ---- copy -------------------------------------------------------------
     def _copy_route(self):

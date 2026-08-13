@@ -26,3 +26,36 @@ def pad(layout, margin: int = GUTTER, spacing: int = GAP):
     layout.setContentsMargins(margin, margin, margin, margin)
     layout.setSpacing(spacing)
     return layout
+
+
+def shrinkable(combo, chars: int = 10):
+    """Stop a combo box from dictating the width of its panel.
+
+    A QComboBox sizes itself to its widest item and reports that as its
+    *minimum*, so one long entry pins the whole panel wider than the dock and
+    pushes everything to its right off the edge -- which is exactly what a
+    "Prefer jumps - gate only when it saves several" entry did to the Find
+    button. The popup still shows each item in full.
+    """
+    from PySide6.QtWidgets import QComboBox, QSizePolicy
+
+    combo.setSizeAdjustPolicy(
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(chars)
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding,
+                        combo.sizePolicy().verticalPolicy())
+    return combo
+
+
+def compressible(widget, floor: int = 60):
+    """Let a control shrink below the width of its own text.
+
+    QCheckBox and QLabel report their full text width as their *minimum*, so
+    one long label pins the whole panel wider than the dock and pushes
+    everything to its right off the edge. Setting an explicit minimum width
+    overrides that hint, so the layout may compress the control and the panel
+    can follow the dock. Keep the label short as well -- this stops a long one
+    breaking the layout, it does not make it readable.
+    """
+    widget.setMinimumWidth(floor)
+    return widget
