@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self.map_view: MapView | None = None
         self.dockables: list = []
         self.tokens: dict[int, auth.Token] = auth.load_all()
+        self.cyno_alts: list = []
         self.token: auth.Token | None = auth.load_saved()
         self.esi: EsiClient | None = None
         self.location_system_id: int | None = None
@@ -957,6 +958,10 @@ class MainWindow(QMainWindow):
         ("sov", "Sovereignty territory", False,
          "Fill null-sec space by who holds it. Off by default: it is the "
          "heaviest layer to draw."),
+        ("cyno_alts", "My cyno alts", True,
+         "Ring and name the systems where one of your own characters is "
+         "sitting in a cyno-fitted ship. Populated by Scan my characters, "
+         "in the character panel."),
         ("heat", "Heat map", True, "The metric shading chosen below."),
     )
 
@@ -1556,6 +1561,7 @@ class MainWindow(QMainWindow):
         self.character.login_requested.connect(self._login)
         self.character.scopes_requested.connect(self._set_scopes)
         self.character.load_structures_requested.connect(self._load_structures)
+        self.character.scan_cyno_requested.connect(self._scan_cyno_alts)
         self.character.add_system.connect(self.route.add_system)
         self.character.character_changed.connect(self._switch_character)
         self.character.unlink_requested.connect(self._unlink_character)
@@ -2199,6 +2205,44 @@ class MainWindow(QMainWindow):
         self.character.set_location("")
         self._refresh_character_list()
         self._render_character()
+
+    def _scan_cyno_alts(self):
+        """Roll-call of which linked characters can light a cyno, and where."""
+        if not self.tokens:
+            QMessageBox.information(self, "Cyno alts", "Link a character first.")
+            return
+        if not self.universe or not self.universe.cyno_modules:
+            QMessageBox.information(
+                self, "Cyno alts",
+                "The type data has not finished loading yet. Try again in a "
+                "moment.")
+            return
+        from ..esi import client as _client
+        self.character.set_cyno_scanning(True)
+        cid = config.get_client_id()
+        mods = self.universe.cyno_modules
+        tokens = dict(self.tokens)
+        w = Worker(lambda progress=None: _client.scan_cyno_alts(
+            tokens, cid, mods, progress))
+        w.finished_ok.connect(self._on_cyno_alts)
+        w.failed.connect(lambda m: (self.character.set_cyno_scanning(False),
+                                    QMessageBox.warning(self, "Cyno alts", m)))
+        self._run(w)
+
+    def _on_cyno_alts(self, result):
+        alts, notes = result
+        self.cyno_alts = alts
+        self.character.set_cyno_scanning(False)
+        self.character.set_cyno_alts(alts, notes, self._system_name)
+        if self.map_view:
+            self.map_view.set_cyno_alts(alts)
+
+    def _system_name(self, system_id: int) -> str:
+        if self.universe:
+            s = self.universe.systems.get(int(system_id))
+            if s:
+                return s.name
+        return str(system_id)
 
     def _load_structures(self):
         if not self.token:

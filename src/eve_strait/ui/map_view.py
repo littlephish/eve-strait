@@ -57,6 +57,11 @@ _SEC_COLORS = {
 }
 _NULL_COLOR = QColor("#8E1F1F")      # below 0.0
 
+# Violet: cyan is already "you are here", amber is a note, red is a kill or an
+# avoided system. The dashed ring and the character's name carry the meaning;
+# the colour only separates this layer from the other rings.
+CYNO_COLOUR = "#c77dff"
+
 
 def _sec_color(sec: float) -> QColor:
     """Colour for a security status, matching the in-game map scale."""
@@ -104,7 +109,7 @@ class MapView(QGraphicsView):
         self._overlay_on = {"gates": True, "bridges": True, "regions": True,
                             "kills": False, "avoid": True, "location": True,
                             "notes": True, "heat": True, "sov": False,
-                            "holes": False}
+                            "holes": False, "cyno_alts": True}
         self._sov_items: list = []
         self._dots: dict[int, QGraphicsEllipseItem] = {}
         self._sec_brushes: dict[int, QBrush] = {}
@@ -263,6 +268,45 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(ring)
             self._here_items.append(ring)
         self._apply_visibility("location")
+
+    def set_cyno_alts(self, alts):
+        """Mark the systems where one of your own characters can light a cyno.
+
+        Labelled with the character name rather than left as a bare coloured
+        ring: the whole question this answers is *which* alt is where, and a
+        colour on its own cannot say that -- nor survive being looked at by
+        someone who does not separate green from cyan.
+        """
+        # Only the rings are top-level; each name is a child of its ring, so
+        # removing the ring takes the label with it and the label's offset is
+        # in screen pixels rather than scene units -- a ring that ignores
+        # transformations measures its own children in pixels, which is the
+        # only way to keep a label a fixed distance away at every zoom.
+        for item in getattr(self, "_cyno_rings", ()):
+            self.scene_obj.removeItem(item)
+        self._cyno_rings = []
+        self._cyno_items = []
+        for alt in alts or ():
+            p = self._pos.get(alt.system_id)
+            if p is None:
+                continue
+            ring = QGraphicsEllipseItem(-11.0, -11.0, 22.0, 22.0)
+            ring.setPos(p)
+            ring.setPen(QPen(QColor(CYNO_COLOUR), 2.0, Qt.PenStyle.DashLine))
+            ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            ring.setFlag(_IGNORE_XF, True)
+            ring.setZValue(6)
+            ring.setToolTip(f"{alt.character_name} - {alt.summary()}")
+            self.scene_obj.addItem(ring)
+            self._cyno_rings.append(ring)
+            self._cyno_items.append(ring)
+
+            tag = QGraphicsSimpleTextItem(alt.character_name, ring)
+            tag.setBrush(QBrush(QColor(CYNO_COLOUR)))
+            tag.setPos(13.0, -6.0)
+            tag.setToolTip(f"{alt.character_name} - {alt.summary()}")
+            self._cyno_items.append(tag)
+        self._apply_visibility("cyno_alts")
 
     # Margin between the outermost systems and the box the territory fills.
     # Without it the boundary runs through the systems on the rim and their
@@ -827,6 +871,7 @@ class MapView(QGraphicsView):
             "notes": getattr(self, "_note_items", ()),
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
+            "cyno_alts": getattr(self, "_cyno_items", ()),
         }.get(name, ())
 
     def _apply_visibility(self, name: str):

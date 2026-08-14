@@ -69,6 +69,7 @@ class Universe:
         self.stations: dict[int, Station] = {}
         self.system_stations: dict[int, list[Station]] = {}
         self.station_type_names: dict[int, str] = {}
+        self.cyno_modules: dict[int, str] = {}
         self._grid: dict[tuple[int, int, int], list[System]] = {}
         self._build_grid()
 
@@ -180,6 +181,7 @@ class Universe:
         type_names = _load_station_type_names(config.INV_TYPES_PATH)
         stations = _parse_stations(config.STA_STATIONS_PATH, type_names)
         self.station_type_names = type_names
+        self.cyno_modules = _load_cyno_modules(config.INV_TYPES_PATH)
         self.stations = stations
         by_sys: dict[int, list[Station]] = {}
         for st in stations.values():
@@ -342,6 +344,13 @@ def download_sde(progress=None) -> None:
         progress("Map data ready.")
 
 
+# The fittable cyno modules all live in one group, which is a far better
+# filter than matching the name: "Cynosural" also matches blueprints, beacons,
+# jammers, the skill book and a dozen unpublished leftovers. Reading the group
+# also means a module CCP adds later is picked up without a code change.
+CYNO_MODULE_GROUP = 658
+
+
 def _load_station_type_names(path) -> dict[int, str]:
     """typeID -> typeName for station types (groupID 15)."""
     names: dict[int, str] = {}
@@ -354,6 +363,21 @@ def _load_station_type_names(path) -> dict[int, str]:
             except (KeyError, ValueError):
                 continue
     return names
+
+
+def _load_cyno_modules(path) -> dict[int, str]:
+    """typeID -> typeName for every fittable cynosural field generator."""
+    mods: dict[int, str] = {}
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            try:
+                if (int(row["groupID"]) == CYNO_MODULE_GROUP
+                        and row.get("published") == "1"):
+                    mods[int(row["typeID"])] = row["typeName"]
+            except (KeyError, ValueError):
+                continue
+    return mods
 
 
 def _parse_stations(path, type_names: dict[int, str]) -> dict[int, Station]:

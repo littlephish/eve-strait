@@ -306,6 +306,16 @@ class EsiClient:
         cid = self.token.character_id
         return self._get(f"/characters/{cid}/location/").json()
 
+    def ship(self) -> dict:
+        """The ship this character is in right now.
+
+        Needs esi-location.read_ship.v1. Returns ship_type_id, ship_item_id and
+        ship_name; the item id is what fitted modules point at in the asset
+        list, which is how a cyno is found.
+        """
+        cid = self.token.character_id
+        return self._get(f"/characters/{cid}/ship/").json()
+
     def online(self) -> dict:
         """Login state for this character (esi-location.read_online.v1)."""
         cid = self.token.character_id
@@ -592,3 +602,42 @@ class EsiClient:
                         owner_id=data.get("owner_id", 0)))
         results.sort(key=lambda d: d.name)
         return results
+
+
+def scan_cyno_alts(tokens, client_id: str, cyno_modules: dict[int, str],
+                   progress=None) -> tuple[list, list[str]]:
+    """Check every linked character for a fitted cyno.
+
+    Returns (alts, notes). Notes carry the per-character reasons a scan came
+    back empty -- a missing scope, a 403, an expired token -- because "no cyno
+    alts found" and "could not look" mean very different things to someone
+    deciding whether they have a way home.
+    """
+    from ..data import cyno
+
+    alts, notes = [], []
+    for cid, token in sorted(tokens.items()):
+        name = getattr(token, "character_name", str(cid))
+        if progress:
+            progress(f"Checking {name}…")
+        try:
+            c = EsiClient(token, client_id)
+            location = c.location()
+            ship = c.ship()
+            assets = c.assets()
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status == 403:
+                notes.append(f"{name}: denied (403) - this character was "
+                             "linked before the ship or asset scope was "
+                             "granted. Sign in again to include it.")
+            else:
+                notes.append(f"{name}: {exc}")
+            continue
+        except Exception as exc:                        # noqa: BLE001
+            notes.append(f"{name}: {exc}")
+            continue
+        alt = cyno.alt_from(cid, name, location, ship, assets, cyno_modules)
+        if alt is not None:
+            alts.append(alt)
+    return alts, notes

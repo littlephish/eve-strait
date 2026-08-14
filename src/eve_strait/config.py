@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 APP_NAME = "eve-strait"
 
@@ -73,6 +74,7 @@ SCOPES = [
     "esi-assets.read_assets.v1",
     "esi-universe.read_structures.v1",
     "esi-location.read_location.v1",
+    "esi-location.read_ship.v1",
     "esi-ui.write_waypoint.v1",
     "esi-search.search_structures.v1",
     "esi-characters.read_contacts.v1",
@@ -81,6 +83,97 @@ SCOPES = [
     "esi-corporations.read_structures.v1",
     "esi-corporations.read_starbases.v1",
 ]
+
+
+class ScopeInfo(NamedTuple):
+    """One scope, described by what it turns on rather than by its name."""
+    scope: str
+    title: str        # the feature it buys, in the app's own terms
+    detail: str       # what is read or written to provide it
+    risk: str = ""    # what someone learns if they see it; "" = nothing
+    required: bool = False
+
+
+# Grouped by the question a player is actually asking - "what does this let the
+# app do, and what does it tell anyone about me". The risk lines are the point:
+# the feedback that prompted this was that people are fine with most of these
+# and specifically wary of the ones that amount to live intel, so the dialog has
+# to say which is which instead of listing eleven identical-looking strings.
+SCOPE_GROUPS: list[tuple[str, str, list[ScopeInfo]]] = [
+    ("Always", "Needed to sign in at all.", [
+        ScopeInfo("publicData",
+                  "Sign in",
+                  "Confirms which character you are. Nothing else.",
+                  required=True),
+    ]),
+    ("Your stations and structures",
+     "How the planner knows where you can actually dock.", [
+        ScopeInfo("esi-assets.read_assets.v1",
+                  "Where your assets are",
+                  "Reads your asset list to find stations and citadels you "
+                  "keep things in.",
+                  "This is your full asset list - everything you own and "
+                  "where. The most revealing scope here."),
+        ScopeInfo("esi-universe.read_structures.v1",
+                  "Name private citadels",
+                  "Turns structure IDs into names and systems. Without it, "
+                  "player structures show as bare numbers.",
+                  "Reveals which private structures you have access to."),
+        ScopeInfo("esi-search.search_structures.v1",
+                  "Find Ansiblex gates",
+                  "Searches structures you can already see, to fill in jump "
+                  "bridges by name."),
+    ]),
+    ("Live position", "", [
+        ScopeInfo("esi-location.read_location.v1",
+                  "Use your current system as the origin",
+                  "Reads the system your character is in right now.",
+                  "Real-time location. Read while you are docked or in space, "
+                  "and it is current to the second."),
+        ScopeInfo("esi-location.read_ship.v1",
+                  "Find your cyno alts",
+                  "Reads which ship each character is sitting in, so the app "
+                  "can tell you which of them has a cyno fitted and where it "
+                  "is parked. Needs the asset scope above as well, since that "
+                  "is what says which modules are fitted.",
+                  "The ship you are flying, by name and hull."),
+        ScopeInfo("esi-ui.write_waypoint.v1",
+                  "Set the route in your game client",
+                  "Writes waypoints to your in-game autopilot. The only scope "
+                  "here that writes anything.",
+                  "Can change your autopilot destination. It cannot fly, "
+                  "dock, trade or fit anything."),
+    ]),
+    ("Standings", "Used to route around people who dislike you.", [
+        ScopeInfo("esi-characters.read_contacts.v1",
+                  "Your personal contacts",
+                  "Reads your own contact list and standings."),
+        ScopeInfo("esi-corporations.read_contacts.v1",
+                  "Your corporation's contacts",
+                  "Reads your corp's contact list."),
+        ScopeInfo("esi-alliances.read_contacts.v1",
+                  "Your alliance's contacts",
+                  "Reads your alliance's contact list."),
+    ]),
+    ("Corporation assets",
+     "Both need an in-game role as well as the scope. Without the role ESI "
+     "returns 403 and the app carries on without them.", [
+        ScopeInfo("esi-corporations.read_structures.v1",
+                  "Corp structures you can dock in",
+                  "Reads your corporation's structure list. Needs the Station "
+                  "Manager role.",
+                  "Your corp's full structure list, including locations."),
+        ScopeInfo("esi-corporations.read_starbases.v1",
+                  "Corp starbases to park a capital at",
+                  "Reads your corporation's POS list. Needs the Director "
+                  "role.",
+                  "Your corp's full starbase list, including locations."),
+    ]),
+]
+
+
+def scope_catalogue() -> list[ScopeInfo]:
+    return [s for _, _, group in SCOPE_GROUPS for s in group]
 
 # Fuzzwork Static Data Export dumps.
 SDE_CSV_URL = "https://www.fuzzwork.co.uk/dump/latest/csv/mapSolarSystems.csv"

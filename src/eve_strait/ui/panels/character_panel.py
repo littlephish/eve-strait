@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from ...data import docking
 from ...data.ships import Ship
+from ..collapsible import Section
 from ..theme import GUTTER, TEXT_MUTED, pad
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
@@ -31,6 +32,7 @@ class CharacterPanel(QWidget):
     unlink_requested = Signal(int)           # character_id
     goto_location_requested = Signal()
     scopes_requested = Signal()
+    scan_cyno_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -160,9 +162,58 @@ class CharacterPanel(QWidget):
         # panel worth reading, so it should take the space the panel has.
         v.addWidget(self.struct_list, 1)
 
+        # -- cyno alts ------------------------------------------------------
+        # Sits with the characters because that is what it is: a roll-call of
+        # which of your own alts is parked in something that can light you in.
+        self.sec_cyno = Section("Cyno alts")
+        self.btn_cyno = QPushButton("Scan my characters")
+        self.btn_cyno.setToolTip(
+            "Checks every linked character for a cynosural field generator "
+            "fitted to the ship they are currently in.")
+        self.btn_cyno.clicked.connect(self.scan_cyno_requested)
+        self.sec_cyno.add(self.btn_cyno)
+        self.cyno_list = QListWidget()
+        self.cyno_list.setToolTip("Double-click to add that system as a waypoint.")
+        self.cyno_list.itemDoubleClicked.connect(self._on_double)
+        self.sec_cyno.add(self.cyno_list)
+        self.lbl_cyno = QLabel("")
+        self.lbl_cyno.setWordWrap(True)
+        self.lbl_cyno.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        self.sec_cyno.add(self.lbl_cyno)
+        v.addWidget(self.sec_cyno)
+
         self._dockables: list = []
         self._filter = 0  # 0 none, 1 any dock, 2 safe only
         return page
+
+    # -- cyno alts ----------------------------------------------------------
+    def set_cyno_scanning(self, busy: bool):
+        self.btn_cyno.setEnabled(not busy)
+        self.btn_cyno.setText("Scanning…" if busy else "Scan my characters")
+
+    def set_cyno_alts(self, alts, notes, system_name_of):
+        """alts: [CynoAlt]; notes: reasons a character could not be checked."""
+        self.cyno_list.clear()
+        for a in sorted(alts, key=lambda x: x.character_name):
+            it = QListWidgetItem(
+                f"{a.character_name} - {system_name_of(a.system_id)}"
+                f"  ({a.summary()})")
+            it.setData(_ROLE_SYS, a.system_id)
+            self.cyno_list.addItem(it)
+        if not alts:
+            self.cyno_list.addItem("No linked character is in a cyno-fitted ship.")
+
+        # The caveats belong next to the answer, not in a manual. Assets are
+        # cached by ESI for about an hour, so this can lag reality, and a
+        # fitted cyno is not the same thing as a lit one.
+        bits = [f"{len(alts)} found." if alts else ""]
+        bits.append("Fitted modules come from your asset list, which ESI "
+                    "caches for about an hour, so a cyno fitted just now may "
+                    "not show yet. Being in the ship is not the same as "
+                    "having the cyno lit.")
+        bits.extend(notes)
+        self.sec_cyno.set_summary(f"{len(alts)} ready" if alts else "none found")
+        self.lbl_cyno.setText(" ".join(b for b in bits if b))
 
     # -- state --------------------------------------------------------------
     def set_login(self, name: str | None):
