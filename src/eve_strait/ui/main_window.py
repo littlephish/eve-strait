@@ -847,15 +847,11 @@ class MainWindow(QMainWindow):
     # -- construction -------------------------------------------------------
     def _build_menu(self):
         m = self.menuBar().addMenu("&File")
+        # Eight separate modals used to live here, one per menu item, so
+        # changing two related things meant two trips through the menu and
+        # nothing was findable unless you already knew it was there.
         for text, slot in (
-            ("Set EVE Client ID...", self._set_client_id),
-            ("Set ESI scopes...", self._set_scopes),
-            ("Ansiblex jump gates...", self._edit_bridges),
-            ("Wanderer map...", self._edit_wanderer),
-            ("Docking rights...", self._edit_docking_rights),
-            ("Avoided systems...", self._edit_avoided),
-            ("Intel refresh & history...", self._edit_intel_settings),
-            ("AI assistant...", self._edit_ai_settings),
+            ("Settings...", self._open_settings),
             ("Reload map data", self._reload_map),
             ("Log out", self._logout),
             ("Quit", self.close),
@@ -863,17 +859,6 @@ class MainWindow(QMainWindow):
             a = QAction(text, self)
             a.triggered.connect(slot)
             m.addAction(a)
-
-        m.addSeparator()
-        from .theme import get_chrome
-        self.act_native = QAction("Use native window chrome", self)
-        self.act_native.setCheckable(True)
-        self.act_native.setChecked(get_chrome() == "native")
-        self.act_native.setToolTip(
-            "Hand the panels back to your operating system's theme, including "
-            "any high-contrast or forced-colour settings you have set there.")
-        self.act_native.toggled.connect(self._set_chrome)
-        m.addAction(self.act_native)
 
         help_menu = self.menuBar().addMenu("&Help")
         act_upd = QAction("Check for updates...", self)
@@ -1559,7 +1544,10 @@ class MainWindow(QMainWindow):
         self.route.autoroute_requested.connect(self._auto_route)
         self.route.gate_assist_requested.connect(self._gate_assist)
         self.character.login_requested.connect(self._login)
-        self.character.scopes_requested.connect(self._set_scopes)
+        # Straight to the page it means, rather than to a settings window the
+        # user then has to search.
+        self.character.scopes_requested.connect(
+            lambda: self._open_settings("Permissions"))
         self.character.load_structures_requested.connect(self._load_structures)
         self.character.scan_cyno_requested.connect(self._scan_cyno_alts)
         self.character.add_system.connect(self.route.add_system)
@@ -1959,6 +1947,188 @@ class MainWindow(QMainWindow):
             cfg["client_id"] = dlg.client_id()
             config.save_config(cfg)
             QMessageBox.information(self, "Saved", "Client ID saved.")
+
+    def _open_settings(self, start_tab: str | None = None):
+        """One window for everything that used to be its own menu entry.
+
+        The pages are the existing dialogs reparented into tabs, so each still
+        reports what the user chose through the same accessors it always had,
+        and the apply steps below are the same code that used to run behind
+        each dialog's own OK button.
+        """
+        from ..esi import intel_store
+        from .ai_dialog import AiSettingsDialog
+        from .dialogs import (
+            AnsiblexDialog,
+            AvoidDialog,
+            DockingRightsDialog,
+            EsiSetupDialog,
+            IntelSettingsDialog,
+            WandererDialog,
+        )
+        from .settings import AppearancePage, ScopesPage, SettingsDialog
+
+        dlg = SettingsDialog(self, start_tab)
+
+        esi_page = dlg.add_page("EVE account", EsiSetupDialog(
+            dlg, config.get_client_id() or "", config.REDIRECT_URI,
+            config.get_scopes()), scroll=True)
+        scopes_page = dlg.add_page("Permissions", ScopesPage(dlg), scroll=True)
+
+        avoid_names = sorted(
+            self.universe.systems[i].name for i in self.avoided_ids
+            if i in self.universe.systems) if self.universe else \
+            config.get_avoided()
+        avoid_page = dlg.add_page("Avoided systems", AvoidDialog(dlg, avoid_names))
+
+        bridge_page = dlg.add_page("Ansiblex", AnsiblexDialog(
+            dlg, config.get_bridges()))
+        bridge_page.btn_esi.clicked.connect(
+            lambda: self._load_ansiblex_esi(bridge_page))
+        bridge_page.btn_search.clicked.connect(
+            lambda: self._search_ansiblex(bridge_page))
+        bridge_page.search_field.returnPressed.connect(
+            lambda: self._search_ansiblex(bridge_page))
+
+        wanderer_page = dlg.add_page("Wanderer", WandererDialog(
+            dlg, config.get_wanderer_url(), config.get_wanderer_map(),
+            config.get_wanderer_token()))
+
+        rights_page = dlg.add_page("Docking rights", DockingRightsDialog(
+            dlg, config.get_docking_rights()))
+
+        intel_page = dlg.add_page("Intel", IntelSettingsDialog(
+            dlg, config.get_intel_refresh_minutes()))
+        intel_page.set_history_days(config.get_intel_history_days())
+        intel_page.set_stats(intel_store.stats())
+
+        def purge():
+            if QMessageBox.question(
+                    dlg, "Delete history",
+                    "Delete all stored intel history? This cannot be undone."
+            ) == QMessageBox.StandardButton.Yes:
+                intel_store.purge()
+                intel_page.set_stats(intel_store.stats())
+
+        intel_page.btn_purge.clicked.connect(purge)
+
+        ai_page = dlg.add_page("Assistant", AiSettingsDialog(dlg), scroll=True)
+        appearance = dlg.add_page("Appearance", AppearancePage(dlg))
+
+        if not dlg.exec():
+            return
+
+        # One summary at the end. Applying nine pages one at a time the way
+        # each dialog used to would queue up a stack of message boxes.
+        notes: list[str] = []
+        for step, page in ((self._apply_client_id, esi_page),
+                           (self._apply_scopes, scopes_page),
+                           (self._apply_avoided, avoid_page),
+                           (self._apply_bridges, bridge_page),
+                           (self._apply_wanderer, wanderer_page),
+                           (self._apply_docking_rights, rights_page),
+                           (self._apply_intel, intel_page),
+                           (self._apply_ai, ai_page),
+                           (self._apply_appearance, appearance)):
+            try:
+                step(page, notes)
+            except Exception as exc:                      # noqa: BLE001
+                # One bad page must not abandon the other eight half-applied.
+                notes.append(f"{step.__name__[7:]}: {exc}")
+        if notes:
+            QMessageBox.information(self, "Settings", "\n".join(notes))
+
+    # -- one apply per page, each the code its own dialog used to run -------
+    def _apply_client_id(self, page, notes):
+        cid = page.client_id()
+        if cid and cid != (config.get_client_id() or ""):
+            cfg = config.load_config()
+            cfg["client_id"] = cid
+            config.save_config(cfg)
+            notes.append("Client ID saved.")
+
+    def _apply_scopes(self, page, notes):
+        wanted = page.scopes()
+        if wanted != config.get_scopes():
+            config.set_scopes(wanted)
+            notes.append(f"Requesting {len(wanted)} scope(s). Sign in again "
+                         "for that to take effect.")
+
+    def _apply_avoided(self, page, notes):
+        if not self.universe:
+            return
+        ids, bad = set(), []
+        for n in page.names():
+            s = self.universe.by_name(n)
+            (ids.add(s.id) if s else bad.append(n))
+        if ids == self.avoided_ids and not bad:
+            return
+        self.avoided_ids = ids
+        config.set_avoided([self.universe.systems[i].name for i in ids])
+        if self.map_view:
+            self.map_view.set_avoided(ids)
+        msg = f"Avoiding {len(ids)} system(s)."
+        if bad:
+            msg += " Unknown: " + ", ".join(bad[:6])
+        notes.append(msg)
+
+    def _apply_bridges(self, page, notes):
+        pairs = page.pairs()
+        if not self.universe:
+            return
+        resolved = self.universe.set_bridges(pairs)
+        bad = len(pairs) - len(resolved)
+        config.set_bridges(resolved)
+        if self.map_view:
+            self.map_view.refresh_bridges()
+        msg = f"{len(resolved)} Ansiblex link(s) active."
+        if bad:
+            msg += f" {bad} line(s) ignored - unknown system name."
+        notes.append(msg)
+        self._recalc()
+
+    def _apply_wanderer(self, page, notes):
+        values = list(page.values())
+        if values != [config.get_wanderer_url(), config.get_wanderer_map(),
+                      config.get_wanderer_token()]:
+            config.set_wanderer(*values)
+            # Settings changed, so any cached map is for the wrong instance.
+            self._wanderer_data = {}
+            self._fetch_wanderer(force=True)
+            notes.append("Wanderer settings saved; refreshing the map.")
+
+    def _apply_docking_rights(self, page, notes):
+        names = page.names()
+        if names == config.get_docking_rights():
+            return
+        config.set_docking_rights(names)
+        self._resolve_docking_rights(
+            names, lambda unknown: self.statusBar().showMessage(
+                f"{len(names) - len(unknown)} of {len(names)} docking-rights "
+                "name(s) resolved.", 8000))
+        notes.append(f"{len(names)} docking-rights name(s) saved; resolving.")
+
+    def _apply_intel(self, page, notes):
+        config.set_intel_refresh_minutes(page.minutes())
+        config.set_intel_history_days(page.history_days())
+        self._start_intel_timer()
+        if page.refresh_now():
+            self.refresh_intel()
+
+    def _apply_ai(self, page, notes):
+        for name in ("apply", "save", "commit"):
+            fn = getattr(page, name, None)
+            if callable(fn):
+                fn()
+                return
+
+    def _apply_appearance(self, page, notes):
+        from .theme import get_chrome, set_chrome
+        mode = "native" if page.native() else "dark"
+        if mode != get_chrome():
+            set_chrome(mode)
+            notes.append(f"{mode.capitalize()} chrome will be used when you "
+                         "restart Eve-Strait.")
 
     def _set_chrome(self, native: bool):
         """Saved, then applied on restart.
