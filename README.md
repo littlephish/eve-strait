@@ -10,8 +10,8 @@ actually dock.
 ![Eve-Strait planning an Ark jump from Jita to M-OEE8, with the 10 ly jump range drawn on the New Eden map](docs/screenshot.png)
 
 *Planning an Ark jump freighter run out of Jita: the blue circle is the 10 ly reach at
-JDC 5, the route panel shows fuel and the reactivation timer per leg, and the left panel
-lists the structures that character can actually dock at.*
+JDC 5, and the route panel shows fuel and the reactivation timer for the leg. Sign in and
+the left panel fills with the stations and structures that character can actually dock at.*
 
 ## Run
 
