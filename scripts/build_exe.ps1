@@ -64,6 +64,10 @@ try {
         $mode `
         --enable-plugin=pyside6 `
         --include-package=eve_strait `
+        --include-package=anthropic `
+        --include-package=openai `
+        --include-package-data=anthropic `
+        --include-package-data=openai `
         --windows-console-mode=disable `
         --assume-yes-for-downloads `
         --company-name="Eve-Strait" `
