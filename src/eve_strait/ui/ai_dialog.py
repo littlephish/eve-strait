@@ -176,8 +176,7 @@ class AiSettingsDialog(QDialog):
         config.set_ai_provider(provider)
         # An env-var key is echoed into the field; don't write it to disk.
         import os
-        env_name = {"claude": "ANTHROPIC_API_KEY",
-                    "openai": "OPENAI_API_KEY"}[provider]
+        env_name = providers.env_var(provider)
         typed = self.txt_key.text().strip()
         if typed != (os.environ.get(env_name) or ""):
             config.set_ai_key(provider, typed)

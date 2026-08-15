@@ -362,9 +362,11 @@ def get_ai_key(provider: str) -> str:
 
     Env var wins, so a key can be supplied without ever writing it to disk.
     """
-    env = os.environ.get(
-        {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
-        .get(provider, ""))
+    # The variable name lives with the provider definition, so adding a
+    # provider does not mean remembering to update a map over here.
+    from .ai import providers
+    _env_name = providers.env_var(provider)
+    env = os.environ.get(_env_name) if _env_name else ""
     if env:
         return env
     return (load_config().get("ai_keys") or {}).get(provider, "")
@@ -396,7 +398,8 @@ def set_ai_model(provider: str, model: str) -> None:
 def ai_configured() -> bool:
     """Whether any provider has a key. The chat panel does not exist until
     this is true, so an unconfigured install has no AI surface at all."""
-    return any(get_ai_key(p) for p in ("claude", "openai"))
+    from .ai import providers
+    return any(get_ai_key(p) for p in providers.names())
 
 
 def get_mcp_enabled() -> bool:
