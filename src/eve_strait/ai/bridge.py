@@ -29,7 +29,7 @@ import os
 import secrets
 import sys
 import threading
-from multiprocessing.connection import Client, Listener
+from multiprocessing.connection import AuthenticationError, Client, Listener
 
 from .. import config
 
@@ -192,6 +192,21 @@ def call(tool_name: str, args: dict) -> str:
         raise NotRunning(
             "Eve-Strait is not running, so I cannot change the map you are "
             "looking at. Start Eve-Strait and try again.") from exc
+    except AuthenticationError as exc:
+        # AuthenticationError is not an OSError, so it fell through the clause
+        # above uncaught and leaked "digest sent was rejected" to whoever
+        # called us -- meaningless to a caller expecting "is it running or
+        # not". The pipe name is per-OS-user only, not per-install, so this is
+        # reachable whenever a second eve-strait process (a different profile,
+        # a dev checkout beside an installed build) is bound to the same
+        # address with a different bridge-token: the connection succeeds at
+        # the transport level and fails the HMAC challenge instead, which is
+        # a different failure than "nothing is listening".
+        raise NotRunning(
+            "Something else answered on Eve-Strait's IPC pipe but did not "
+            "recognise this install's key, so this could not be verified as "
+            "the same Eve-Strait. If another copy of Eve-Strait is running "
+            "under this Windows account, close it and try again.") from exc
     try:
         conn.send({"tool": tool_name, "args": args})
         if not conn.poll(TIMEOUT):
