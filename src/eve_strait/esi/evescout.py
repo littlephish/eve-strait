@@ -151,8 +151,51 @@ def connections(rows, systems) -> list[dict]:
             "size": r.get("max_ship_size") or "unknown",
             "wh_type": r.get("wh_type"),
             "hours": r.get("remaining_hours"),
+            # When a volunteer first put this signature in, and when anyone
+            # last touched it. Remaining hours says how long the hole has left;
+            # these say how much to trust that number, which is a different
+            # question and the one you want before committing a capital.
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
         })
     return out
+
+
+def age_hours(stamp: str | None) -> float | None:
+    """Hours since an EVE-Scout timestamp, or None if it cannot be read."""
+    if not stamp:
+        return None
+    import datetime as _dt
+
+    text = str(stamp).strip().replace("Z", "+00:00")
+    try:
+        when = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dt.UTC)
+    return (_dt.datetime.now(_dt.UTC) - when).total_seconds() / 3600.0
+
+
+def describe_age(stamp: str | None) -> str:
+    """"14 minutes ago" / "3.2 hours ago", or a plain unknown."""
+    hours = age_hours(stamp)
+    if hours is None:
+        return "unknown"
+    if hours < 0:
+        return "just now"
+    if hours < 1:
+        return f"{int(round(hours * 60))} minutes ago"
+    if hours < 48:
+        return f"{hours:.1f} hours ago"
+    return f"{hours / 24:.1f} days ago"
+
+
+def hulls_that_fit(max_t: int) -> list[str]:
+    """Which hull classes can pass a hole of this per-jump mass limit."""
+    return [name for name, mass in sorted(MASS_BY_HULL_T.items(),
+                                          key=lambda kv: kv[1])
+            if max_t and mass <= max_t]
 
 
 def graph(conns, turnur_id: int | None):

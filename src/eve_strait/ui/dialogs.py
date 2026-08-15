@@ -851,3 +851,99 @@ class StationInfoDialog(QDialog):
                 256, Qt.TransformationMode.SmoothTransformation))
         else:
             self.img.setText("(no image)")
+
+
+class WormholeDialog(QDialog):
+    """What a scouted wormhole in this system actually is.
+
+    The map only rings the system, which says a hole exists and nothing about
+    whether your hull fits through it. The number that decides that is the
+    per-jump mass limit, and it comes from the wormhole type rather than the
+    size label -- EVE-Scout calls M164 and V898 "xlarge" while both cap a jump
+    at 375,000 t, so a jump freighter believing the label bounces off.
+
+    Age is shown as prominently as remaining life. Remaining life says how long
+    the hole has left; age says how much to trust that figure, and they are
+    different questions.
+    """
+
+    def __init__(self, parent, system_name: str, holes: list[dict]):
+        super().__init__(parent)
+        from ..esi import evescout
+
+        self.setWindowTitle(f"Wormholes - {system_name}")
+        self.resize(560, 420)
+        v = QVBoxLayout(self)
+
+        if not holes:
+            v.addWidget(_link_label(
+                f"<b>{system_name}</b> has no scouted EVE-Scout connection."))
+        for i, hole in enumerate(holes):
+            if i:
+                line = QLabel()
+                line.setFrameShape(QLabel.Shape.HLine)
+                v.addWidget(line)
+
+            wh_type = hole.get("wh_type") or "K162"
+            max_t = evescout.max_jump_t(wh_type, hole.get("size"))
+            known = bool(evescout.WH_MAX_JUMP_T.get(wh_type or ""))
+            hours = hole.get("hours")
+
+            v.addWidget(_section(f"{system_name} \u2194 {hole.get('hub')}"))
+
+            rows = [
+                ("Destination", str(hole.get("hub") or "?")),
+                ("Signature here", str(hole.get("far_sig") or "?")),
+                (f"Signature in {hole.get('hub')}", str(hole.get("hub_sig") or "?")),
+                ("Wormhole type", wh_type),
+                ("Mass per jump",
+                 f"{max_t:,} t" + ("" if known else "  (from the size label)")),
+                ("Size reported", str(hole.get("size") or "unknown")),
+                ("Life remaining",
+                 f"{hours:.1f} hours" if isinstance(hours, (int, float))
+                 else "unknown"),
+                ("First reported", evescout.describe_age(hole.get("created_at"))),
+                ("Last updated", evescout.describe_age(hole.get("updated_at"))),
+            ]
+            grid = QGridLayout()
+            for r, (key, value) in enumerate(rows):
+                k = QLabel(key + ":")
+                k.setStyleSheet(f"color:{TEXT_MUTED}")
+                grid.addWidget(k, r, 0, Qt.AlignmentFlag.AlignRight
+                               | Qt.AlignmentFlag.AlignTop)
+                val = QLabel(value)
+                val.setWordWrap(True)
+                grid.addWidget(val, r, 1)
+            grid.setColumnStretch(1, 1)
+            v.addLayout(grid)
+
+            fits = evescout.hulls_that_fit(max_t)
+            if fits:
+                text = "Fits: " + ", ".join(fits)
+            else:
+                text = "Nothing this app plans for fits through it."
+            hull = QLabel(text)
+            hull.setWordWrap(True)
+            v.addWidget(hull)
+
+            if not known:
+                warn = QLabel(
+                    "\u26a0  This type is not in the mass table, so the figure "
+                    "above is the smallest the reported size can mean. Treat "
+                    "it as a floor, not a measurement.")
+                warn.setWordWrap(True)
+                warn.setStyleSheet(f"color:{SEC_LOW}")
+                v.addWidget(warn)
+
+        v.addStretch(1)
+        note = QLabel("Scouted by EVE-Scout volunteers. Connections collapse "
+                      "without warning \u2014 check the signature before you "
+                      "commit anything you cannot afford to lose.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        v.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        v.addWidget(buttons)

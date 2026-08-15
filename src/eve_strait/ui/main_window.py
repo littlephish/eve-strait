@@ -1777,6 +1777,14 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         act_add = menu.addAction("Add as waypoint")
         act_sysinfo = menu.addAction("Show system info")
+        # Only offered where there is one: an always-present entry that
+        # usually opens an empty dialog teaches people to ignore it.
+        holes = self.holes_in(sid)
+        act_hole = None
+        if holes:
+            act_hole = menu.addAction(
+                f"Wormhole information ({len(holes)})" if len(holes) > 1
+                else "Wormhole information")
         act_info = menu.addAction("Show station info")
         act_wp, wp_actions = self._add_waypoint_menu(menu)
         act_avoid = menu.addAction(
@@ -1790,6 +1798,8 @@ class MainWindow(QMainWindow):
         chosen = menu.exec(QCursor.pos())
         if chosen == act_add:
             self.route.add_system(sid)
+        elif act_hole is not None and chosen == act_hole:
+            self.show_wormhole_info(sid)
         elif chosen == act_sysinfo:
             self.route.show_system_info(sid)
         elif chosen == act_info:
@@ -1802,6 +1812,21 @@ class MainWindow(QMainWindow):
             self.toggle_avoid(sid)
         elif act_remove is not None and chosen == act_remove:
             self.route.remove_system(sid)
+
+    def holes_in(self, system_id: int) -> list[dict]:
+        """Scouted EVE-Scout connections with one end in this system."""
+        from ..esi import evescout
+        if not self.universe:
+            return []
+        rows = (self._hole_data or {}).get("rows") or []
+        return [c for c in evescout.connections(rows, self.universe.systems)
+                if c.get("system_id") == system_id]
+
+    def show_wormhole_info(self, system_id: int):
+        from .dialogs import WormholeDialog
+        system = self.universe.systems.get(system_id) if self.universe else None
+        WormholeDialog(self, system.name if system else str(system_id),
+                       self.holes_in(system_id)).exec()
 
     def add_waypoint_menu(self, menu):
         """Public alias used by the route panel's context menu."""
