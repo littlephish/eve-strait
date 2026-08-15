@@ -2164,7 +2164,7 @@ class MainWindow(QMainWindow):
     # -- ESI ----------------------------------------------------------------
     def _set_client_id(self):
         from .dialogs import EsiSetupDialog
-        dlg = EsiSetupDialog(self, config.get_client_id() or "",
+        dlg = EsiSetupDialog(self, config.get_custom_client_id(),
                              config.REDIRECT_URI, config.get_scopes())
         if dlg.exec() and dlg.client_id():
             cfg = config.load_config()
@@ -2195,7 +2195,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, start_tab)
 
         esi_page = dlg.add_page("EVE account", EsiSetupDialog(
-            dlg, config.get_client_id() or "", config.REDIRECT_URI,
+            dlg, config.get_custom_client_id(), config.REDIRECT_URI,
             config.get_scopes()), scroll=True)
         scopes_page = dlg.add_page("Permissions", ScopesPage(dlg), scroll=True)
 
@@ -2265,7 +2265,7 @@ class MainWindow(QMainWindow):
     # -- one apply per page, each the code its own dialog used to run -------
     def _apply_client_id(self, page, notes):
         cid = page.client_id()
-        if cid and cid != (config.get_client_id() or ""):
+        if cid and cid != config.get_custom_client_id():
             cfg = config.load_config()
             cfg["client_id"] = cid
             config.save_config(cfg)

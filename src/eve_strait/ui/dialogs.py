@@ -94,12 +94,15 @@ class EsiSetupDialog(QDialog):
 
         v.addWidget(QLabel("<b>Client ID</b>"))
         self.field = QLineEdit(client_id)
-        self.field.setPlaceholderText("paste your application's Client ID here")
+        self.field.setPlaceholderText(
+            "blank = using the built-in default; paste your own to use a "
+            "different application")
         v.addWidget(self.field)
 
         v.addWidget(_link_label(
             "<i>No secret key is needed - this app uses OAuth2 PKCE, so only the "
-            "Client ID is stored.</i>"))
+            "Client ID is stored. Leave this blank to keep using the built-in "
+            "default application.</i>"))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)

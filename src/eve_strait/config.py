@@ -208,8 +208,31 @@ def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
+# A default so the app works the moment you sign in, without every user
+# first creating their own EVE application. Not a secret: this app uses
+# OAuth2 PKCE specifically so no client secret is ever needed, and a Client
+# ID is meant to be public -- EVE's own SSO design assumes it ends up in
+# client-side code. Overridable in Settings; get_client_id() below is the
+# only thing that should ever see this value. The Settings field itself
+# reads get_custom_client_id() instead, which leaves it blank rather than
+# display the default -- Settings should show what you configured, not the
+# fallback quietly working behind it.
+DEFAULT_CLIENT_ID = "ece9f8ae563f4a22b148d719749dc29d"
+
+
 def get_client_id() -> str | None:
-    return os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id")
+    return (os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id")
+            or DEFAULT_CLIENT_ID)
+
+
+def get_custom_client_id() -> str:
+    """The user's own override, if any -- never the built-in default.
+
+    For anything that decides what to SHOW (the Settings field) or what
+    counts as "did this change" (whether to save a new one). get_client_id()
+    is for anything that needs a value to actually sign in with.
+    """
+    return os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id") or ""
 
 
 def get_default_docks() -> dict:
