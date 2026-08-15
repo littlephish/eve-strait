@@ -27,8 +27,15 @@ class Agent:
     # -- configuration ------------------------------------------------------
     @staticmethod
     def configured() -> bool:
-        """True when a provider has a key. Gates the whole feature."""
-        return bool(config.get_ai_key(config.get_ai_provider()))
+        """True when a provider has a key AND the panel is switched on.
+
+        The two are independent settings on purpose: turning the panel off
+        must not require deleting a key someone may want to switch back on
+        later, and it must not silently start working again the next time a
+        key happens to be present.
+        """
+        return (config.get_ai_chat_enabled()
+                and bool(config.get_ai_key(config.get_ai_provider())))
 
     @staticmethod
     def provider_info() -> dict:

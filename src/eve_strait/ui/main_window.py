@@ -2263,11 +2263,22 @@ class MainWindow(QMainWindow):
         had_chat = self.chat_dock is not None
         self._sync_bridge()
         self._sync_chat_panel()
-        if self.chat_dock is not None and not had_chat:
-            notes.append("Assistant panel opened on the right.")
-        elif self.chat_dock is None and config.get_ai_key(config.get_ai_provider()):
-            notes.append("Key saved, but the assistant package for this "
-                         "provider is not installed.")
+        has_chat = self.chat_dock is not None
+        if has_chat and not had_chat:
+            notes.append("Assistant panel opened at the bottom.")
+        elif had_chat and not has_chat and not config.get_ai_chat_enabled():
+            # An explicit action (the user just turned the panel off), not a
+            # surprise, but it deserves the same one-line confirmation the
+            # "opened" case gets rather than vanishing silently.
+            notes.append("Assistant panel closed.")
+        elif (not has_chat and config.get_ai_chat_enabled()
+              and config.get_ai_key(config.get_ai_provider())):
+            # Enabled, with a key, and still not showing: that combination
+            # can only mean the provider's package failed to import, since
+            # every other reason funnels through the two branches above.
+            notes.append("Key saved and the panel is enabled, but the "
+                         "assistant package for this provider is not "
+                         "installed.")
 
     def _apply_appearance(self, page, notes):
         from .theme import get_chrome, set_chrome

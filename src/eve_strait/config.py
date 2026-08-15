@@ -402,6 +402,24 @@ def ai_configured() -> bool:
     return any(get_ai_key(p) for p in providers.names())
 
 
+def get_ai_chat_enabled() -> bool:
+    """Whether the in-app chat panel is allowed to exist at all.
+
+    Separate from having a key: a key answers "could this work", this
+    answers "should it show up". Someone who pasted a key once to try the
+    assistant and decided against it should not have to delete the key
+    itself just to make the panel go away, and shouldn't need to remember to
+    re-paste it later either.
+    """
+    return bool(load_config().get("ai_chat_enabled", True))
+
+
+def set_ai_chat_enabled(on: bool) -> None:
+    cfg = load_config()
+    cfg["ai_chat_enabled"] = bool(on)
+    save_config(cfg)
+
+
 def get_mcp_enabled() -> bool:
     """MCP server opt-in. Off by default and checked by the server itself,
     so an accidental launch refuses to serve rather than exposing tools."""

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from .. import config
@@ -62,7 +63,18 @@ class AiSettingsDialog(QDialog):
 
         # -- in-app chat ----------------------------------------------------
         box = QGroupBox("In-app chat")
-        form = QFormLayout(box)
+        bv = QVBoxLayout(box)
+        self.chk_chat = QCheckBox("Show the chat panel")
+        self.chk_chat.setToolTip(
+            "Independent of the key below. Turn this off to close the panel "
+            "without losing a key you may want to switch back on later; the "
+            "panel will not reappear on its own if a key happens to be set.")
+        bv.addWidget(self.chk_chat)
+
+        form_frame = QWidget()
+        form = QFormLayout(form_frame)
+        form.setContentsMargins(0, 0, 0, 0)
+        bv.addWidget(form_frame)
         self.cmb_provider = QComboBox()
         for key, info in providers.PROVIDERS.items():
             self.cmb_provider.addItem(info["label"], key)
@@ -84,9 +96,10 @@ class AiSettingsDialog(QDialog):
         form.addRow("", _muted(
             "A Claude Pro/Max or ChatGPT Plus/Pro subscription does NOT "
             "include API access; API usage is billed separately per token. "
-            "The key can also come from the ANTHROPIC_API_KEY or "
-            "OPENAI_API_KEY environment variable, which keeps it off disk. "
-            "The chat panel stays hidden until a key is set."))
+            "The key can also come from an environment variable matching "
+            "the provider (ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "OPENROUTER_API_KEY), which keeps it off disk. The chat panel "
+            "stays hidden until both this is on and a key is set."))
         lay.addWidget(box)
 
         # -- MCP ------------------------------------------------------------
@@ -142,6 +155,7 @@ class AiSettingsDialog(QDialog):
 
     # ------------------------------------------------------------------
     def _load(self):
+        self.chk_chat.setChecked(config.get_ai_chat_enabled())
         provider = config.get_ai_provider()
         i = self.cmb_provider.findData(provider)
         self.cmb_provider.setCurrentIndex(max(0, i))
@@ -172,6 +186,7 @@ class AiSettingsDialog(QDialog):
         self.lbl_copied.setText("Copied.")
 
     def save(self):
+        config.set_ai_chat_enabled(self.chk_chat.isChecked())
         provider = self.cmb_provider.currentData()
         config.set_ai_provider(provider)
         # An env-var key is echoed into the field; don't write it to disk.
