@@ -2214,7 +2214,19 @@ class MainWindow(QMainWindow):
             fn = getattr(page, name, None)
             if callable(fn):
                 fn()
-                return
+                break
+        # The settings window replaced _edit_ai_settings, which used to call
+        # this right after dlg.save(). Losing that meant a key saved here
+        # persisted to disk but the chat dock never appeared - nothing told
+        # the user why, because there was nothing left to tell them with.
+        had_chat = self.chat_dock is not None
+        self._sync_bridge()
+        self._sync_chat_panel()
+        if self.chat_dock is not None and not had_chat:
+            notes.append("Assistant panel opened on the right.")
+        elif self.chat_dock is None and config.get_ai_key(config.get_ai_provider()):
+            notes.append("Key saved, but the assistant package for this "
+                         "provider is not installed.")
 
     def _apply_appearance(self, page, notes):
         from .theme import get_chrome, set_chrome
