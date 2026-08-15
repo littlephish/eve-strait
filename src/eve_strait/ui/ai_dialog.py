@@ -152,18 +152,23 @@ class AiSettingsDialog(QDialog):
         self.btn_copy_gpt = QPushButton("Copy ChatGPT / Codex config")
         self.btn_copy_gpt.clicked.connect(self._copy_chatgpt_config)
         row.addWidget(self.btn_copy_gpt)
+        self.btn_copy_gemini = QPushButton("Copy Gemini CLI config")
+        self.btn_copy_gemini.clicked.connect(self._copy_gemini_config)
+        row.addWidget(self.btn_copy_gemini)
         mv.addLayout(row)
         self.lbl_copied = _muted("")
         mv.addWidget(self.lbl_copied)
         mv.addWidget(_muted(
-            "It is the same server either way, just a different client and a "
+            "It is the same server every time, just a different client and a "
             "different config file. Claude Desktop reads JSON from "
             "claude_desktop_config.json; ChatGPT Desktop and Codex CLI share "
             "one TOML file at ~/.codex/config.toml (Settings → MCP "
-            "servers in ChatGPT Desktop can add it directly instead). "
-            "Restart whichever client after saving. Every tool call the "
-            "server serves is appended to mcp-audit.log beside your "
-            "settings, regardless of which client asked."))
+            "servers in ChatGPT Desktop can add it directly instead); Gemini "
+            "CLI reads JSON from ~/.gemini/settings.json, which holds its "
+            "other settings too, so merge the mcpServers block in rather "
+            "than replacing the file. Restart whichever client after saving. "
+            "Every tool call the server serves is appended to mcp-audit.log "
+            "beside your settings, regardless of which client asked."))
         lay.addWidget(mcp)
 
         box_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
@@ -200,7 +205,7 @@ class AiSettingsDialog(QDialog):
     def _refresh_state(self):
         on = self.chk_mcp.isChecked()
         for w in (self.chk_writes, self.chk_private,
-                 self.btn_copy, self.btn_copy_gpt):
+                 self.btn_copy, self.btn_copy_gpt, self.btn_copy_gemini):
             w.setEnabled(on)
 
     def _copy_claude_config(self):
@@ -211,6 +216,10 @@ class AiSettingsDialog(QDialog):
         QGuiApplication.clipboard().setText(chatgpt_desktop_snippet())
         self.lbl_copied.setText(
             "Copied the ChatGPT Desktop / Codex CLI (TOML) config.")
+
+    def _copy_gemini_config(self):
+        QGuiApplication.clipboard().setText(gemini_cli_snippet())
+        self.lbl_copied.setText("Copied the Gemini CLI (JSON) config.")
 
     def save(self):
         # The in-app chat box above is disabled and not settable from here
@@ -259,6 +268,27 @@ def chatgpt_desktop_snippet() -> str:
     if cwd:
         lines.append(f'cwd = "{_toml_str(cwd)}"')
     return "\n".join(lines)
+
+
+def gemini_cli_snippet() -> str:
+    """The mcpServers entry for Gemini CLI's ~/.gemini/settings.json.
+
+    Same key and shape as Claude Desktop's file, so this is nearly the same
+    JSON -- it is kept separate anyway because the destination differs and
+    because `trust` has no Claude equivalent. Gemini CLI's settings.json holds
+    unrelated settings too, so this is a block to merge rather than a file to
+    overwrite; the label under the buttons says so.
+
+    `trust: false` is spelled out rather than left to the default. It is what
+    keeps Gemini CLI confirming each tool call, and this server's whole
+    posture is that the client asks before it acts.
+    """
+    command, args, cwd = _mcp_command()
+    entry = {"command": command, "args": args}
+    if cwd:
+        entry["cwd"] = cwd
+    entry["trust"] = False
+    return json.dumps({"mcpServers": {"eve-strait": entry}}, indent=2)
 
 
 def _toml_str(value: str) -> str:
