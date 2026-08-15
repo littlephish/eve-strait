@@ -298,8 +298,9 @@ class RoutePanel(QWidget):
         act_row.addWidget(compressible(b_assist, 60))
         b_rev = QPushButton("Reverse")
         b_rev.clicked.connect(self.reverse)
-        self.b_copy = b_copy = QPushButton("Copy")
-        b_copy.setToolTip("Copy the route to the clipboard.")
+        self.b_copy = b_copy = QPushButton("Copy/Paste")
+        b_copy.setToolTip("Copy the route as text or as a Dotlan link, or "
+                          "load a route from a Dotlan link.")
         b_rev.setToolTip("Fly the same waypoints in reverse.")
         b_copy.clicked.connect(self._copy_menu)
         act_row.addWidget(compressible(b_rev, 60))
