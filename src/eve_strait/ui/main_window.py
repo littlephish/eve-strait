@@ -685,6 +685,18 @@ class MainWindow(QMainWindow):
 
         self._resolve_docking_rights(names, report)
 
+    def route_image(self):
+        """A framed picture of the current route, captioned with its summary."""
+        if not self.map_view or not self.route.waypoints:
+            return None
+        names = [w.system.name for w in self.route.waypoints]
+        ends = f"{names[0]} → {names[-1]}" if len(names) > 1 else names[0]
+        via = f" ({len(names)} waypoints)" if len(names) > 2 else ""
+        summary = self.route.totals.text().split(" · ⚠")[0]
+        caption = f"{ends}{via} · {self.ship_name()} · {summary}"
+        return self.map_view.route_image([w.system.id for w in self.route.waypoints],
+                                         caption)
+
     # -- Dotlan interchange -------------------------------------------------
     def ship_name(self) -> str:
         ship = self.ship.current_ship()

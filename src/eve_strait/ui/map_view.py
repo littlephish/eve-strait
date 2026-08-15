@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..data.universe import System, Universe
+from .theme import TEXT
 
 _IGNORE_XF = QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
 
@@ -55,6 +56,7 @@ _SEC_COLORS = {
     1: "#E8471C",    # 0.1  red-orange
     0: "#D42B2B",    # 0.0  red
 }
+
 _NULL_COLOR = QColor("#8E1F1F")      # below 0.0
 
 # Violet: cyan is already "you are here", amber is a note, red is a kill or an
@@ -1182,6 +1184,82 @@ class MapView(QGraphicsView):
         painter.drawText(QPointF(x0, y_bottom - h - 3), "1.0")
         painter.drawText(QPointF(x0 + 10 * sw - 8, y_bottom - h - 3), "0.0")
         painter.drawText(QPointF(x + 1, y_bottom - h - 3), "null")
+
+    def route_image(self, system_ids, caption: str = ""):
+        """A picture of the route, framed on it, for pasting into chat.
+
+        Frames the view on the route and grabs the viewport rather than
+        rendering the scene at some chosen resolution. Almost every item on
+        this map sets ItemIgnoresTransformations so that dots and labels stay
+        a constant size at any zoom, and those items size themselves against
+        the painter's scale -- rendering the scene into an arbitrary image
+        would leave the star field correct and every label and ring the wrong
+        size. Grabbing the viewport goes through the same paint path as the
+        screen, so the picture is what was actually seen.
+
+        The view is put back where it was afterwards.
+        """
+        pts = [self._pos[i] for i in system_ids if i in self._pos]
+        if not pts:
+            return None
+
+        # Built from min/max rather than by uniting per-point rectangles:
+        # QRectF(p, p) has zero width and height, and QRectF.united() discards
+        # null rectangles, so that approach collapses to nothing and fitInView
+        # silently does not move.
+        xs = [p.x() for p in pts]
+        ys = [p.y() for p in pts]
+        rect = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        # Padding is proportional, with only a floor as an absolute. Scene
+        # units are not light years -- the whole of New Eden spans about 410 of
+        # them -- so a fixed margin of any readable size swamps a route: 25
+        # units is 6% of the entire map, which left a Jita-Amarr run zoomed
+        # barely at all.
+        span = max(rect.width(), rect.height(), 10.0)
+        pad = span * 0.30
+        rect = rect.adjusted(-pad, -pad, pad, pad)
+
+        old_transform = self.transform()
+        old_centre = self.mapToScene(self.viewport().rect().center())
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self.viewport().repaint()
+        shot = self.grab()
+        self.setTransform(old_transform)
+        self.centerOn(old_centre)
+        self.viewport().repaint()
+
+        if caption:
+            self._caption(shot, caption)
+        return shot
+
+    def _caption(self, pixmap, text: str):
+        """A footer strip, so a pasted image says what it is without a message."""
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # The painter works in logical units while width()/height() report
+        # physical pixels, and on a 1.5x display those differ by a third --
+        # using the physical size put the whole band 400px below the canvas,
+        # where it drew nothing at all.
+        dpr = pixmap.devicePixelRatio() or 1.0
+        pix_w, pix_h = pixmap.width() / dpr, pixmap.height() / dpr
+
+        font = QFont(self.font())
+        font.setPointSizeF(max(9.0, pix_h / 62.0))
+        painter.setFont(font)
+
+        metrics = painter.fontMetrics()
+        pad = 10
+        height = metrics.height() + pad * 2
+        band = QRectF(0, pix_h - height, pix_w, height)
+        painter.fillRect(band, QColor(11, 14, 20, 219))
+        painter.setPen(QPen(QColor(TEXT)))
+        painter.drawText(
+            band.adjusted(pad, 0, -pad, 0),
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
+            metrics.elidedText(text, Qt.TextElideMode.ElideRight,
+                               int(pix_w - pad * 2)))
+        painter.end()
 
     def center_on_system(self, sys: System):
         self.centerOn(self._pos[sys.id])

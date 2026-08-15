@@ -969,6 +969,8 @@ class RoutePanel(QWidget):
         act_text.setEnabled(bool(self.waypoints))
         act_link = menu.addAction("Copy Dotlan link")
         act_link.setEnabled(bool(self.waypoints))
+        act_img = menu.addAction("Copy route image")
+        act_img.setEnabled(bool(self.waypoints))
         menu.addSeparator()
         act_paste = menu.addAction("Paste Dotlan link…")
 
@@ -977,8 +979,20 @@ class RoutePanel(QWidget):
             self._copy_route()
         elif chosen is act_link:
             self._copy_dotlan()
+        elif chosen is act_img:
+            self._copy_image()
         elif chosen is act_paste:
             self._paste_dotlan()
+
+    def _copy_image(self):
+        """A picture of the route on the map, framed and captioned."""
+        image = self.ctx.route_image()
+        if image is None:
+            self.totals.setText("Nothing to draw yet.")
+            return
+        QGuiApplication.clipboard().setPixmap(image)
+        self.totals.setText(f"Copied a {image.width()}x{image.height()} route "
+                            "image to the clipboard.")
 
     def _copy_dotlan(self):
         from ...data import dotlan
