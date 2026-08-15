@@ -36,7 +36,26 @@ import time
 
 from .. import config
 
-PROTOCOL = "2024-11-05"
+# Protocol revisions we speak, newest first. These are all "legacy" revisions
+# in the 2026-07-28 sense: ones that open with an `initialize` handshake.
+#
+# For a tools-only stdio server the differences between them are additive
+# (icons, tasks, elicitation, auth) and touch nothing this server sends, so
+# supporting three is a matter of not lying about which one we answered on.
+#
+# 2026-07-28 is deliberately absent. It is not another version string: it
+# drops the handshake, carries the version in per-request `_meta`, and
+# requires a `server/discover` RPC. Claiming it without implementing that
+# would break the clients it is meant to serve. A modern client probing this
+# process gets -32601 for `server/discover`, which the spec's stdio
+# backward-compatibility rules define as "legacy server" -- so it falls back
+# to `initialize` on its own and everything below applies.
+SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26")
+
+# What we answer with when the client asks for something we don't speak. The
+# spec's legacy rule is "respond with another version you support"; the client
+# then disconnects if it can't live with it.
+PROTOCOL = SUPPORTED_PROTOCOLS[0]
 
 # Tools that need the running Qt app. Served by forwarding to the open window
 # over the bridge rather than executed in this process.
@@ -204,8 +223,18 @@ def serve() -> int:
         method, req_id = req.get("method"), req.get("id")
 
         if method == "initialize":
+            # Echo the client's revision when we speak it, rather than always
+            # answering with our own. Different clients open with different
+            # versions; answering with a version nobody asked for is a
+            # legitimate reason for a strict client to hang up.
+            requested = (req.get("params") or {}).get("protocolVersion")
+            answered = requested if requested in SUPPORTED_PROTOCOLS else PROTOCOL
+            if answered != requested:
+                _audit(f"initialize: client asked for {requested!r}, "
+                       f"answered {answered} (supported: "
+                       f"{', '.join(SUPPORTED_PROTOCOLS)})")
             _reply(req_id, {
-                "protocolVersion": PROTOCOL,
+                "protocolVersion": answered,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "eve-strait", "version": _version()},
             })
