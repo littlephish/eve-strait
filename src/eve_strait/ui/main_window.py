@@ -50,6 +50,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Eve-Strait")
         self.resize(1500, 950)
 
+        # Qt gives the bottom corners to the left/right dock areas by default,
+        # which would let the character and route columns pinch a bottom dock
+        # down to whatever gap is left between them. Reassigning both corners
+        # to the bottom area is what makes a bottom dock run truly edge to
+        # edge -- under the side columns, not just between them.
+        self.setCorner(Qt.Corner.BottomLeftCorner,
+                       Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner,
+                       Qt.DockWidgetArea.BottomDockWidgetArea)
+
         self.universe: Universe | None = None
         self.map_view: MapView | None = None
         self.dockables: list = []
@@ -1146,7 +1156,14 @@ class MainWindow(QMainWindow):
         self.chat_dock = QDockWidget("Assistant", self)
         self.chat_dock.setObjectName("dock_chat")
         self.chat_dock.setWidget(self.chat)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
+        self.chat_dock.setMinimumWidth(0)
+        self.chat_dock.setMinimumHeight(0)
+        # Not hooked into _on_dock_moved like the other docks: that handler
+        # resizes the side docks back to 380px whenever it runs, and it does
+        # not track chat_dock at all (it is not in self._docks), so wiring it
+        # up would only reset the side panels' widths every time the
+        # assistant opens or closes, for no benefit to the assistant itself.
+        self._dock_chat_at_bottom()
         self.statusBar().showMessage(f"AI assistant enabled ({label}).", 6000)
 
     def _sync_bridge(self):
@@ -1549,6 +1566,10 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.map_dock)
             self.splitDockWidget(self.map_dock, self._dock_route,
                                  Qt.Orientation.Horizontal)
+            if self.chat_dock is not None:
+                self.chat_dock.setFloating(False)
+                self.chat_dock.show()
+                self._dock_chat_at_bottom()
         finally:
             self._rebalancing = False
         self._apply_default_layout()
@@ -1570,6 +1591,26 @@ class MainWindow(QMainWindow):
                 return
             widths = [820 if d is self.map_dock else 360 for d in docks]
             self.resizeDocks(docks, widths, Qt.Orientation.Horizontal)
+
+        apply()
+        QTimer.singleShot(0, apply)
+
+    def _dock_chat_at_bottom(self):
+        """Place the assistant as a short strip across the full width.
+
+        Bottom rather than a third column: the chat panel is read top to
+        bottom and the map and route panels are read left to right, so a
+        column fight over width was the wrong shape for it from the start.
+        Short by default because a question-and-answer exchange does not need
+        much height, but not fixed -- resizeDocks sets a starting size the
+        splitter handle can still be dragged away from.
+        """
+        from PySide6.QtCore import QTimer
+
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.chat_dock)
+
+        def apply():
+            self.resizeDocks([self.chat_dock], [170], Qt.Orientation.Vertical)
 
         apply()
         QTimer.singleShot(0, apply)
