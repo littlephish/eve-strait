@@ -8,8 +8,9 @@ once and each provider adapts the shape at the edge.
 Descriptions are deliberately prescriptive about **when** to call a tool, not
 just what it does. That is what drives a model to reach for the right one.
 
-Nothing here touches Qt. Every function takes the MainWindow as ``app`` and is
-called from the UI thread via a queued call, because it mutates panels.
+Every function takes the MainWindow as ``app`` and is called from the UI
+thread via a queued call, because it mutates panels. Almost nothing here
+touches Qt directly -- auto_route is the one exception, and it says why.
 """
 from __future__ import annotations
 
@@ -253,9 +254,64 @@ def set_options(app, prefer: str = "", allow_gates: bool | None = None,
 
 
 def auto_route(app) -> str:
-    """Bridge between the existing waypoints, then report the plan."""
-    app.auto_route()
-    return "Auto-route started. Call get_route in a moment for the result."
+    """Bridge between the existing waypoints, then report the plan.
+
+    Calls _auto_route(), not auto_route() -- MainWindow has no public
+    method by that name, only the underscored one, and nothing had ever
+    called it through the bridge until now to catch that. _auto_route is
+    also the entry point on purpose rather than the private _do_auto_route
+    it eventually delegates to: it runs the high-sec-destination guard and
+    the docking-aware station-data load first, and skipping straight to
+    _do_auto_route would silently skip both.
+
+    The high-sec guard is duplicated here, ahead of the call, because
+    _auto_route's own version of it is a real, blocking QMessageBox.warning()
+    -- exactly right for a click from the UI, but reached through the
+    bridge's synchronous marshal it would pop a modal on the user's screen
+    and hang this tool call for up to the bridge's own timeout waiting for a
+    click nobody watching this conversation can give it. Answering here
+    instead, before ever reaching that call, is what keeps this a normal
+    tool response rather than a stuck dialog.
+    """
+    if len(app.route.waypoints) >= 2:
+        from ..data import docking
+        dest = app.route.waypoints[-1].system
+        ship = app.ship.current_ship()
+        if dest.security >= 0.5 and not docking.can_use_highsec_gates(ship):
+            return (f"Can't auto-route: {dest.name} is high-sec. Capitals "
+                    "cannot enter high-sec (no high-sec gates, and jump "
+                    "drives can't activate into high-sec). Only jump "
+                    "freighters can gate the final high-sec leg -- pick a "
+                    "low/null staging system instead, or switch to a jump "
+                    "freighter with set_ship.")
+
+    # _auto_route() starts a background Worker and returns immediately, which
+    # is right for a click -- the UI has its own spinner and stays responsive.
+    # Called through the bridge's own nested QEventLoop marshal, "started,
+    # check back later" turned out not to be reliable: the Worker's
+    # finished_ok arrives strictly after that nested loop has already quit
+    # and handed control back to the bridge thread, and nothing then pumps
+    # the main thread's queue to actually deliver it -- confirmed by direct
+    # comparison, the exact same call landed correctly when made directly and
+    # never landed at all through the bridge with a several-second wait after.
+    # route.busy is already the real, existing signal for "still computing"
+    # (shown right before the Worker starts, hidden in both its finished and
+    # failed callbacks), so poll that instead of guessing at a fixed delay --
+    # pumping events here is also what actually lets the queued signal be
+    # delivered at all, which a bare time.sleep would not do.
+    from PySide6.QtCore import QCoreApplication
+    import time as _time
+
+    app._auto_route()
+    deadline = _time.time() + 20.0
+    QCoreApplication.processEvents()
+    while app.route.busy.isVisible() and _time.time() < deadline:
+        QCoreApplication.processEvents()
+        _time.sleep(0.05)
+    if app.route.busy.isVisible():
+        return ("Auto-route is still computing after 20s. Call get_route "
+                "shortly to check on it.")
+    return get_route(app)
 
 
 def set_system_note(app, name: str, note: str) -> str:
