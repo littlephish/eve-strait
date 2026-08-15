@@ -707,8 +707,15 @@ class RoutePanel(QWidget):
         for i, wp in enumerate(self.waypoints):
             uid = next(self._uid)
             self._uid_map[uid] = wp
-            eff = self._effective(wp) if self.pick_docks() else None
-            if not self.pick_docks():
+            # "Passing through" means intermediate stops don't need to be
+            # dockable -- you're gating/jumping past them, not landing. It was
+            # never meant to say the same about the LAST one, which is where
+            # you are actually going and may still want a specific station
+            # (for autopilot, for the auto-waypoint feature, or just to know
+            # where to land) even while nothing in between needs to dock.
+            show_dock = self.pick_docks() or i == len(self.waypoints) - 1
+            eff = self._effective(wp) if show_dock else None
+            if not show_dock:
                 suffix = ""
             else:
                 suffix = f"  -  {eff.name}" if eff else self._empty_suffix(wp)
@@ -906,7 +913,8 @@ class RoutePanel(QWidget):
         row = self.wp_list.currentRow()
         self.cmb_pick.blockSignals(True)
         self.cmb_pick.clear()
-        if not self.pick_docks():
+        is_last = row == len(self.waypoints) - 1 and row >= 0
+        if not self.pick_docks() and not is_last:
             self.lbl_dock.setText("Dock: (passing through)")
             self.cmb_pick.setEnabled(False)
             self.cmb_pick.blockSignals(False)
@@ -919,7 +927,9 @@ class RoutePanel(QWidget):
         wp = self.waypoints[row]
         self.ctx.ensure_public_structures(wp.system)
         opts = self._docks(wp.system.id)
-        self.lbl_dock.setText(f"Dock at {wp.system.name}:")
+        final_note = " (final, while passing through)" if (
+            is_last and not self.pick_docks()) else ""
+        self.lbl_dock.setText(f"Dock at {wp.system.name}{final_note}:")
         self.cmb_pick.setEnabled(True)
         self.cmb_pick.addItem("Auto (best available)", None)
         for o in opts:
@@ -1128,7 +1138,9 @@ class RoutePanel(QWidget):
         safety.set_summary(f"avoiding {', '.join(on)}" if on else "no filters")
 
         if not self.pick_docks():
-            dock.set_summary("passing through")
+            final = self._effective(self.waypoints[-1]) if self.waypoints else None
+            dock.set_summary(f"passing through - final: {final.name}" if final
+                             else "passing through")
         else:
             dock.set_summary(self.cmb_policy.currentText().lower())
 
