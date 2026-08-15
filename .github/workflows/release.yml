@@ -58,11 +58,22 @@ jobs:
           python -m pip install PySide6 requests nuitka zstandard ordered-set
           python -m pip install .
 
+      # Keyed on uv.lock, not pyproject.toml: the "Stamp the version" step
+      # above rewrites pyproject.toml's version field before this runs, which
+      # means every single tagged release hashed to a different key and this
+      # cache was never actually being reused release to release -- only
+      # ever a same-run coincidence via restore-keys' prefix fallback, and
+      # each release was quietly saving its own multi-GB copy of the cache
+      # under a key nothing would ever ask for again, which is exactly the
+      # kind of thing that fills the repo's cache quota and starts evicting
+      # the entries that do matter. uv.lock is never written to during this
+      # workflow (pip install ., not uv sync), so its hash is stable across
+      # releases that do not actually change a dependency.
       - name: Cache Nuitka compilation cache
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/Nuitka/Nuitka/Cache
-          key: nuitka-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          key: nuitka-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: nuitka-${{ runner.os }}-
 
       # --standalone, never --onefile: a self-extracting single exe unpacks to
