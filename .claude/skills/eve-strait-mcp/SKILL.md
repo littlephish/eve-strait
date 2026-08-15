@@ -126,14 +126,24 @@ Turnur is invisible to this tool set even though the desktop UI understands
 it. Say so if asked to route through J-space via MCP — don't imply the tool
 covers it.
 
-## Wiring up Claude Desktop
+## Wiring up an MCP client
 
-Point it at the **built exe**, not a bundled Python copy — this project
-deliberately keeps MCP config pointed at `eve-strait.exe --mcp` so it matches
-whatever the user actually has installed, rather than a dev checkout that
-can drift out of sync.
+The server is client-agnostic — same process, same three JSON-RPC methods,
+same tool catalogue — so "which AI" is entirely a matter of which config file
+it gets pasted into. Point it at the **built exe**, not a bundled Python
+copy, so config matches whatever the user actually has installed rather than
+a dev checkout that can drift out of sync.
 
-`claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`):
+Both snippets below are generated in-app rather than hand-typed: **Settings
+→ Assistant → MCP server (drive Eve-Strait from Claude Desktop)** has one
+button per client (`_mcp_command()` in `ai_dialog.py` is the single place
+that decides the exe path vs. dev-checkout command, so the two snippets
+cannot disagree about which install they mean). Copy from there in
+preference to retyping the examples here by hand.
+
+### Claude Desktop
+
+JSON, at `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`):
 ```json
 {
   "mcpServers": {
@@ -154,6 +164,29 @@ it after any change to `tools.py` or `mcp_server.py`:
 ```bash
 uv run python scripts/build_mcpb.py
 ```
+
+### ChatGPT Desktop / Codex CLI
+
+TOML, not JSON, and shared across both clients at one file:
+`~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows):
+```toml
+[mcp_servers.eve-strait]
+command = "C:\\Path\\To\\eve-strait.exe"
+args = ["--mcp"]
+```
+Or, in the ChatGPT Desktop UI: **Settings → MCP servers → Add server →
+STDIO**, paste the command, save, restart. Confirmed against the current
+docs at learn.chatgpt.com before writing this down, since MCP client support
+here is newer and more likely to have moved since: as of this writing, the
+**web** version of ChatGPT only accepts remote HTTPS endpoints — a local
+`--mcp` process is stdio-only and needs the desktop app, or a bridge like
+`mcp-remote`, to reach it at all.
+
+Watch the `\\` escaping if editing the TOML by hand: a bare `C:\eve-strait`
+in a TOML basic string reads the `\e` as an invalid escape sequence rather
+than a literal backslash. The in-app generator (`chatgpt_desktop_snippet()`
+/ `_toml_str()`) handles this; verified by round-tripping its output through
+Python's `tomllib` before this was written down, not merely inspected by eye.
 
 ## To see it drive a live window
 

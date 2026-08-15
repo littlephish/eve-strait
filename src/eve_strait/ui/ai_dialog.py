@@ -134,15 +134,23 @@ class AiSettingsDialog(QDialog):
 
         row = QHBoxLayout()
         self.btn_copy = QPushButton("Copy Claude Desktop config")
-        self.btn_copy.clicked.connect(self._copy_config)
+        self.btn_copy.clicked.connect(self._copy_claude_config)
         row.addWidget(self.btn_copy)
-        self.lbl_copied = _muted("")
-        row.addWidget(self.lbl_copied, 1)
+        self.btn_copy_gpt = QPushButton("Copy ChatGPT / Codex config")
+        self.btn_copy_gpt.clicked.connect(self._copy_chatgpt_config)
+        row.addWidget(self.btn_copy_gpt)
         mv.addLayout(row)
+        self.lbl_copied = _muted("")
+        mv.addWidget(self.lbl_copied)
         mv.addWidget(_muted(
-            "Paste that into claude_desktop_config.json, then restart Claude "
-            "Desktop. Every tool call the server serves is appended to "
-            "mcp-audit.log beside your settings."))
+            "It is the same server either way, just a different client and a "
+            "different config file. Claude Desktop reads JSON from "
+            "claude_desktop_config.json; ChatGPT Desktop and Codex CLI share "
+            "one TOML file at ~/.codex/config.toml (Settings → MCP "
+            "servers in ChatGPT Desktop can add it directly instead). "
+            "Restart whichever client after saving. Every tool call the "
+            "server serves is appended to mcp-audit.log beside your "
+            "settings, regardless of which client asked."))
         lay.addWidget(mcp)
 
         box_btn = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
@@ -178,12 +186,18 @@ class AiSettingsDialog(QDialog):
 
     def _refresh_state(self):
         on = self.chk_mcp.isChecked()
-        for w in (self.chk_writes, self.chk_private, self.btn_copy):
+        for w in (self.chk_writes, self.chk_private,
+                 self.btn_copy, self.btn_copy_gpt):
             w.setEnabled(on)
 
-    def _copy_config(self):
+    def _copy_claude_config(self):
         QGuiApplication.clipboard().setText(claude_desktop_snippet())
-        self.lbl_copied.setText("Copied.")
+        self.lbl_copied.setText("Copied the Claude Desktop (JSON) config.")
+
+    def _copy_chatgpt_config(self):
+        QGuiApplication.clipboard().setText(chatgpt_desktop_snippet())
+        self.lbl_copied.setText(
+            "Copied the ChatGPT Desktop / Codex CLI (TOML) config.")
 
     def save(self):
         config.set_ai_chat_enabled(self.chk_chat.isChecked())
@@ -201,13 +215,46 @@ class AiSettingsDialog(QDialog):
         config.set_mcp_allow_private(self.chk_private.isChecked())
 
 
+def _mcp_command() -> tuple[str, list[str], str | None]:
+    """(command, args, cwd) to launch this same install as --mcp.
+
+    One function for both destinations, so a built exe vs. a dev checkout is
+    decided in exactly one place rather than risking the two snippets
+    disagreeing about which this install actually is.
+    """
+    if getattr(sys, "frozen", False) or globals().get("__compiled__"):
+        return str(Path(sys.executable).resolve()), ["--mcp"], None
+    return (sys.executable, ["-m", "eve_strait", "--mcp"],
+            str(Path(__file__).resolve().parents[3]))
+
+
 def claude_desktop_snippet() -> str:
     """The mcpServers entry to paste into Claude Desktop's config."""
-    if getattr(sys, "frozen", False) or globals().get("__compiled__"):
-        exe = str(Path(sys.executable).resolve())
-        entry = {"command": exe, "args": ["--mcp"]}
-    else:
-        entry = {"command": sys.executable,
-                 "args": ["-m", "eve_strait", "--mcp"],
-                 "cwd": str(Path(__file__).resolve().parents[3])}
+    command, args, cwd = _mcp_command()
+    entry = {"command": command, "args": args}
+    if cwd:
+        entry["cwd"] = cwd
     return json.dumps({"mcpServers": {"eve-strait": entry}}, indent=2)
+
+
+def chatgpt_desktop_snippet() -> str:
+    """The [mcp_servers.eve-strait] block for ChatGPT Desktop / Codex CLI.
+
+    Same server, same --mcp launch, different client and a different config
+    format: ChatGPT Desktop and Codex CLI share ~/.codex/config.toml (TOML,
+    not JSON) rather than Claude Desktop's claude_desktop_config.json. Codex's
+    own key for the working directory is `cwd`, same name as Claude's.
+    """
+    command, args, cwd = _mcp_command()
+    lines = ["[mcp_servers.eve-strait]",
+             f'command = "{_toml_str(command)}"',
+             "args = [" + ", ".join(f'"{_toml_str(a)}"' for a in args) + "]"]
+    if cwd:
+        lines.append(f'cwd = "{_toml_str(cwd)}"')
+    return "\n".join(lines)
+
+
+def _toml_str(value: str) -> str:
+    """Escape a value for a TOML basic string. Windows paths need this: a
+    bare backslash in "C:\\eve-strait.exe" would otherwise read as an escape."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
