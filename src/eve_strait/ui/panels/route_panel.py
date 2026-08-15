@@ -47,6 +47,7 @@ class RoutePanel(QWidget):
     changed = Signal()
     autoroute_requested = Signal()
     gate_assist_requested = Signal()
+    dotlan_imported = Signal(object)     # data.dotlan.DotlanRoute
 
     def __init__(self, ctx):
         super().__init__()
@@ -297,10 +298,10 @@ class RoutePanel(QWidget):
         act_row.addWidget(compressible(b_assist, 60))
         b_rev = QPushButton("Reverse")
         b_rev.clicked.connect(self.reverse)
-        b_copy = QPushButton("Copy")
+        self.b_copy = b_copy = QPushButton("Copy")
         b_copy.setToolTip("Copy the route to the clipboard.")
         b_rev.setToolTip("Fly the same waypoints in reverse.")
-        b_copy.clicked.connect(self._copy_route)
+        b_copy.clicked.connect(self._copy_menu)
         act_row.addWidget(compressible(b_rev, 60))
         act_row.addWidget(compressible(b_copy, 60))
         v.addLayout(act_row)
@@ -529,6 +530,10 @@ class RoutePanel(QWidget):
             self._rebuild()
             self.wp_list.setCurrentRow(r + 1)
             self._emit_changed()
+
+    def clear_waypoints(self):
+        """Public name for the same thing, for callers outside this panel."""
+        self._clear()
 
     def _clear(self):
         self.waypoints.clear()
@@ -952,6 +957,53 @@ class RoutePanel(QWidget):
             self.search.clear()
 
     # ---- copy -------------------------------------------------------------
+    def _copy_menu(self):
+        """Share the route as text or as a Dotlan link, or read one back.
+
+        A Dotlan link is worth more than any format of ours: it opens in a
+        browser for people who do not run this app, which is most of a corp.
+        """
+        menu = QMenu(self)
+        act_text = menu.addAction("Copy as text")
+        act_text.setEnabled(bool(self.waypoints))
+        act_link = menu.addAction("Copy Dotlan link")
+        act_link.setEnabled(bool(self.waypoints))
+        menu.addSeparator()
+        act_paste = menu.addAction("Paste Dotlan link…")
+
+        chosen = menu.exec(self.b_copy.mapToGlobal(self.b_copy.rect().bottomLeft()))
+        if chosen is act_text:
+            self._copy_route()
+        elif chosen is act_link:
+            self._copy_dotlan()
+        elif chosen is act_paste:
+            self._paste_dotlan()
+
+    def _copy_dotlan(self):
+        from ...data import dotlan
+
+        url = dotlan.build_url(self.ctx.ship_name(), *self.ctx.jump_skills(),
+                               [w.system.name for w in self.waypoints])
+        QGuiApplication.clipboard().setText(url)
+        self.totals.setText(f"Copied a Dotlan link for "
+                            f"{len(self.waypoints)} system(s).")
+
+    def _paste_dotlan(self):
+        from ...data import dotlan
+
+        clip = QGuiApplication.clipboard().text().strip()
+        text, ok = QInputDialog.getText(
+            self, "Paste Dotlan link",
+            "Paste a Dotlan jump link:", QLineEdit.EchoMode.Normal,
+            clip if "/jump/" in clip else "")
+        if not ok:
+            return
+        route = dotlan.parse_url(text)
+        if route is None:
+            self.totals.setText("That is not a Dotlan jump link.")
+            return
+        self.dotlan_imported.emit(route)
+
     def _copy_route(self):
         lines = []
         for i, wp in enumerate(self.waypoints):

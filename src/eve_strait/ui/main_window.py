@@ -685,6 +685,62 @@ class MainWindow(QMainWindow):
 
         self._resolve_docking_rights(names, report)
 
+    # -- Dotlan interchange -------------------------------------------------
+    def ship_name(self) -> str:
+        ship = self.ship.current_ship()
+        return getattr(ship, "name", "") if ship else ""
+
+    def jump_skills(self):
+        """JDC, JFC, JF - the three Dotlan encodes, in the order it writes them.
+
+        Jump Drive Operation is deliberately not here: Dotlan's jump options do
+        not carry it, because it moves capacitor rather than range or fuel.
+        """
+        return (self.ship.sp_jdc.value(), self.ship.sp_jfc.value(),
+                self.ship.sp_jf.value())
+
+    def _on_dotlan_imported(self, route):
+        """Load a pasted Dotlan link: ship, skills and waypoints."""
+        if self.universe is None:
+            QMessageBox.information(self, "Dotlan link",
+                                    "The map is still loading. Try again in a "
+                                    "moment.")
+            return
+        notes = []
+
+        if route.ship:
+            idx = self.ship.ship_combo.findText(route.ship,
+                                                Qt.MatchFlag.MatchStartsWith)
+            if idx >= 0:
+                self.ship.ship_combo.setCurrentIndex(idx)
+            else:
+                # Dotlan knows hulls this app does not model, so say which
+                # rather than silently planning with the wrong ship.
+                notes.append(f"Ship {route.ship!r} is not one this app knows; "
+                             f"kept {self.ship_name()!r}.")
+
+        for value, spin in ((route.jdc, self.ship.sp_jdc),
+                            (route.jfc, self.ship.sp_jfc),
+                            (route.jf, self.ship.sp_jf)):
+            if value is not None:
+                spin.setValue(value)
+
+        found, missing = [], []
+        for name in route.systems:
+            s = self.universe.by_name(name)
+            (found.append(s) if s else missing.append(name))
+        if found:
+            self.route.clear_waypoints()
+            for s in found:
+                self.route.add_system(s.id)
+        if missing:
+            notes.append("Unknown system(s): " + ", ".join(missing[:6]))
+
+        msg = f"Loaded {len(found)} waypoint(s) from the Dotlan link."
+        if notes:
+            msg += "\n\n" + "\n".join(notes)
+        QMessageBox.information(self, "Dotlan link", msg)
+
     def hostile_threshold(self) -> float:
         return 0.0  # standing below this counts as hostile
 
@@ -1541,6 +1597,7 @@ class MainWindow(QMainWindow):
     def _wire(self):
         self.ship.changed.connect(self._on_ship_changed)
         self.route.changed.connect(self._on_route_changed)
+        self.route.dotlan_imported.connect(self._on_dotlan_imported)
         self.route.autoroute_requested.connect(self._auto_route)
         self.route.gate_assist_requested.connect(self._gate_assist)
         self.character.login_requested.connect(self._login)
