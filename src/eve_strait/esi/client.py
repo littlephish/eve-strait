@@ -8,6 +8,7 @@ import requests
 
 from .. import config
 from . import auth
+from .auth import check_response
 
 
 @dataclass
@@ -51,7 +52,7 @@ def sovereignty(progress=None) -> dict:
         progress("Loading sovereignty map...")
     try:
         resp = requests.get(f"{config.ESI_BASE}/sovereignty/map/", timeout=45)
-        resp.raise_for_status()
+        check_response(resp)
         rows = resp.json()
     except (requests.RequestException, ValueError):
         return {"owners": {}, "names": {}}
@@ -92,7 +93,7 @@ def system_activity(progress=None) -> dict:
         progress("Loading recent kill activity...")
     try:
         r = requests.get(f"{config.ESI_BASE}/universe/system_kills/", timeout=45)
-        r.raise_for_status()
+        check_response(r)
         out["expires"] = r.headers.get("expires", "")
         for row in r.json():
             sid = row.get("system_id")
@@ -106,7 +107,7 @@ def system_activity(progress=None) -> dict:
         return out
     try:
         r = requests.get(f"{config.ESI_BASE}/universe/system_jumps/", timeout=45)
-        r.raise_for_status()
+        check_response(r)
         for row in r.json():
             sid = row.get("system_id")
             if sid:
@@ -137,7 +138,7 @@ def sovereignty_defense(progress=None) -> dict:
     out: dict[int, dict] = {}
     try:
         r = requests.get(f"{config.ESI_BASE}/sovereignty/structures/", timeout=45)
-        r.raise_for_status()
+        check_response(r)
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out
@@ -169,7 +170,7 @@ def industry_indices(progress=None) -> dict:
     out: dict[int, dict] = {}
     try:
         r = requests.get(f"{config.ESI_BASE}/industry/systems/", timeout=45)
-        r.raise_for_status()
+        check_response(r)
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out
@@ -186,7 +187,7 @@ def incursions() -> set[int]:
     """Set of solar system IDs currently affected by an Incursion. Public."""
     try:
         resp = requests.get(f"{config.ESI_BASE}/incursions/", timeout=20)
-        resp.raise_for_status()
+        check_response(resp)
         out: set[int] = set()
         for inc in resp.json():
             out.update(inc.get("infested_solar_systems", []))
@@ -207,7 +208,7 @@ def resolve_ids(names: list[str]) -> dict:
     try:
         resp = requests.post(f"{config.ESI_BASE}/universe/ids/",
                              json=names, timeout=30)
-        resp.raise_for_status()
+        check_response(resp)
         data = resp.json()
     except (requests.RequestException, ValueError):
         return {"ids": {}, "unknown": names}
@@ -226,7 +227,7 @@ def resolve_names(ids: list[int]) -> dict[int, str]:
     try:
         resp = requests.post(f"{config.ESI_BASE}/universe/names/",
                              json=ids, timeout=20)
-        resp.raise_for_status()
+        check_response(resp)
         return {row["id"]: row["name"] for row in resp.json()}
     except (requests.RequestException, KeyError, ValueError):
         return {}
@@ -277,7 +278,7 @@ class EsiClient:
             self.token = auth.refresh(self.token, self.client_id)
             auth.save(self.token)
             resp = self.session.get(url, headers=self._headers(), params=params, timeout=30)
-        resp.raise_for_status()
+        check_response(resp, self.client_id)
         return resp
 
     # -- assets -------------------------------------------------------------
@@ -339,7 +340,7 @@ class EsiClient:
             self.token = auth.refresh(self.token, self.client_id)
             auth.save(self.token)
             resp = self.session.post(url, headers=self._headers(), params=params, timeout=30)
-        resp.raise_for_status()
+        check_response(resp, self.client_id)
 
     def structure(self, structure_id: int) -> dict | None:
         try:

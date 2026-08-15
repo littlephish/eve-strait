@@ -17,6 +17,46 @@ import requests
 from .. import config
 
 
+class RateLimited(RuntimeError):
+    """CCP is throttling this application's requests right now (420/429)."""
+
+
+def check_response(resp: requests.Response, client_id: str = "") -> requests.Response:
+    """Like resp.raise_for_status(), but names the one failure mode worth a
+    different message.
+
+    A 420/429 means THIS APPLICATION's own budget is spent, not anything the
+    calling user personally did -- and for the shared default Client ID this
+    app ships with (see config.DEFAULT_CLIENT_ID), "this application" can
+    mean many people's combined usage landing on one shared application. ESI
+    itself keys its modern rate limits per (application, character), so one
+    busy stranger cannot exhaust another user's allowance this way -- but the
+    older 420 error-limit's own keying is not clearly documented, and CCP can
+    suspend a shared application outright if its aggregate behaviour looks
+    abusive, which breaks it for everyone at once with no way to tell from
+    inside the app whether that is what happened. Either way the fix from
+    here is the same: a personal application has its own, separate budget.
+
+    Everything else still raises the normal requests.HTTPError, with ESI's
+    own error body attached, exactly as raise_for_status() always did.
+    """
+    if resp.status_code in (420, 429):
+        shared = bool(client_id) and client_id == config.DEFAULT_CLIENT_ID
+        hint = (
+            " This app ships with a shared default application so signing in "
+            "works immediately; if it is busy, create your own free one in "
+            "Settings > EVE account (a couple of minutes, no review needed) "
+            "for your own separate allowance."
+            if shared else
+            " Wait a bit before retrying."
+        )
+        raise RateLimited(
+            f"EVE is rate-limiting requests right now (HTTP {resp.status_code})."
+            + hint)
+    resp.raise_for_status()
+    return resp
+
+
 @dataclass
 class Token:
     access_token: str
@@ -144,7 +184,7 @@ def login(client_id: str, scopes: list[str] | None = None,
                  "Host": config.SSO_ISSUER},
         timeout=30,
     )
-    resp.raise_for_status()
+    check_response(resp, client_id)
     return _token_from_response(resp.json(), client_id)
 
 
@@ -160,7 +200,7 @@ def refresh(token: Token, client_id: str) -> Token:
                  "Host": config.SSO_ISSUER},
         timeout=30,
     )
-    resp.raise_for_status()
+    check_response(resp, client_id)
     return _token_from_response(resp.json(), client_id)
 
 
