@@ -40,11 +40,13 @@
 #
 # Nuitka's own module-compile cache (~/AppData/Local/Nuitka/Nuitka/Cache) was
 # never affected by any of this -- it always lived outside %TEMP% and outside
-# this script's reach. If a rebuild still feels slow after this change, that
-# is the more likely remaining cost: Nuitka re-walks the venv's entire
-# site-packages tree for dependency detection on every run regardless of
-# caching, and that tree grew by nine packages when anthropic and openai
-# became real dependencies.
+# this script's reach.
+#
+# anthropic and openai (and the ~19 packages under them) were removed again
+# after this: the in-app chat feature they existed for made direct API calls
+# to Claude and OpenAI, which this app no longer does -- Claude and ChatGPT
+# now only ever reach this app through the MCP server, which needs neither
+# SDK. That dependency tree was also most of what made a cold build slow.
 
 param(
     [switch]$OneFile,
@@ -117,10 +119,6 @@ try {
         $mode `
         --enable-plugin=pyside6 `
         --include-package=eve_strait `
-        --include-package=anthropic `
-        --include-package=openai `
-        --include-package-data=anthropic `
-        --include-package-data=openai `
         --windows-console-mode=disable `
         --assume-yes-for-downloads `
         --company-name="Eve-Strait" `

@@ -61,8 +61,21 @@ class AiSettingsDialog(QDialog):
             "else it looks up. Treat that the way you would treat posting it "
             "in a public channel."))
 
-        # -- in-app chat ----------------------------------------------------
-        box = QGroupBox("In-app chat")
+        # -- in-app chat (disabled) ------------------------------------------
+        # Fields kept rather than removed, so a config from before this was
+        # disabled is still visible here -- but this made direct API calls to
+        # Claude and OpenAI, which cost real per-token billing and pulled in
+        # ~20 packages (anthropic, openai and everything under them) just to
+        # place those calls. Claude and ChatGPT now only ever reach this app
+        # through the MCP server below, which needs neither SDK and runs on
+        # whatever subscription you already have -- no key, no billing.
+        box = QGroupBox("In-app chat (disabled -- use MCP below instead)")
+        box.setEnabled(False)
+        box.setToolTip(
+            "Direct API chat is disabled in this build to avoid the API SDK "
+            "dependencies and their per-token billing. The MCP server below "
+            "does the same job through Claude Desktop or ChatGPT Desktop's "
+            "own subscription instead.")
         bv = QVBoxLayout(box)
         self.chk_chat = QCheckBox("Show the chat panel")
         self.chk_chat.setToolTip(
@@ -200,16 +213,10 @@ class AiSettingsDialog(QDialog):
             "Copied the ChatGPT Desktop / Codex CLI (TOML) config.")
 
     def save(self):
-        config.set_ai_chat_enabled(self.chk_chat.isChecked())
-        provider = self.cmb_provider.currentData()
-        config.set_ai_provider(provider)
-        # An env-var key is echoed into the field; don't write it to disk.
-        import os
-        env_name = providers.env_var(provider)
-        typed = self.txt_key.text().strip()
-        if typed != (os.environ.get(env_name) or ""):
-            config.set_ai_key(provider, typed)
-        config.set_ai_model(provider, self.cmb_model.currentText().strip())
+        # The in-app chat box above is disabled and not settable from here
+        # any more -- nothing in it to write back. Whatever was saved before
+        # this was disabled is left untouched on disk rather than rewritten
+        # with the same (inert) values on every save.
         config.set_mcp_enabled(self.chk_mcp.isChecked())
         config.set_mcp_allow_writes(self.chk_writes.isChecked())
         config.set_mcp_allow_private(self.chk_private.isChecked())

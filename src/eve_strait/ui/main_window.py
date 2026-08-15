@@ -78,7 +78,6 @@ class MainWindow(QMainWindow):
         self.cyno_activity = zkill.sweep_systems(self._cyno_sweep)
         self._cyno_worker = None
         self._cyno_stop = False
-        # Built only when a provider key exists; see _sync_chat_panel.
         # Key for the auto-waypoint's fire-once guard: (route systems tuple,
         # trigger system id). None means "nothing has fired yet".
         self._auto_waypoint_fired_for = None
@@ -118,7 +117,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._wire()
         self._built = True
-        self._sync_chat_panel()      # no-op unless a provider key is set
+        self._sync_chat_panel()      # always a no-op now; see its docstring
         self._sync_bridge()          # no-op unless the MCP server is enabled
 
         self._refresh_character_list()
@@ -1189,41 +1188,20 @@ class MainWindow(QMainWindow):
     def _sync_chat_panel(self):
         """Create or tear down the chat dock to match the configuration.
 
-        The panel does not exist at all until a key is set, so an install that
-        never opts in has no AI surface to stumble into.
+        Unconditionally disabled: this made direct API calls to Claude and
+        OpenAI, which is exactly the ~20-package dependency tree (anthropic,
+        openai and everything under them) that got removed. Not gated on
+        Agent.configured() any more -- that still reads a key someone may
+        have saved before this was disabled, and letting that through would
+        try to build a chat panel whose provider call immediately fails with
+        MissingDependency, since the SDK it needs is no longer installed.
+        Claude and ChatGPT reach this app through the MCP server now.
         """
-        from ..ai.agent import Agent
-        if not Agent.configured():
-            if self.chat_dock is not None:
-                self.removeDockWidget(self.chat_dock)
-                self.chat_dock.deleteLater()
-                self.chat_dock = self.chat = self.agent = None
-                self.statusBar().showMessage("AI assistant disabled.", 5000)
-            return
-
-        label = Agent.provider_info()["label"]
         if self.chat_dock is not None:
-            self.chat.set_status(f"Now using {label}.")
-            self.agent.reset()
-            return
-
-        from .panels.chat_panel import ChatPanel
-        self.agent = Agent(self)
-        self.chat = ChatPanel(label)
-        self.chat.asked.connect(self._ask_ai)
-        self.chat.reset_requested.connect(lambda: self.agent.reset())
-        self.chat_dock = QDockWidget("Assistant", self)
-        self.chat_dock.setObjectName("dock_chat")
-        self.chat_dock.setWidget(self.chat)
-        self.chat_dock.setMinimumWidth(0)
-        self.chat_dock.setMinimumHeight(0)
-        # Not hooked into _on_dock_moved like the other docks: that handler
-        # resizes the side docks back to 380px whenever it runs, and it does
-        # not track chat_dock at all (it is not in self._docks), so wiring it
-        # up would only reset the side panels' widths every time the
-        # assistant opens or closes, for no benefit to the assistant itself.
-        self._dock_chat_at_bottom()
-        self.statusBar().showMessage(f"AI assistant enabled ({label}).", 6000)
+            self.removeDockWidget(self.chat_dock)
+            self.chat_dock.deleteLater()
+            self.chat_dock = self.chat = self.agent = None
+            self.statusBar().showMessage("AI assistant disabled.", 5000)
 
     def _sync_bridge(self):
         """Listen for the MCP process, but only while MCP is enabled.
@@ -2340,34 +2318,20 @@ class MainWindow(QMainWindow):
             self.refresh_intel()
 
     def _apply_ai(self, page, notes):
+        """MCP settings only now -- the in-app chat box on this page is
+        disabled and page.save() no longer writes anything for it. No note
+        logic here any more either: with the chat dock permanently unbuilt
+        (see _sync_chat_panel), every case that used to distinguish "opened"
+        from "closed" from "should have opened but the package was missing"
+        collapses to the same, permanent, unreachable-condition no-op.
+        """
         for name in ("apply", "save", "commit"):
             fn = getattr(page, name, None)
             if callable(fn):
                 fn()
                 break
-        # The settings window replaced _edit_ai_settings, which used to call
-        # this right after dlg.save(). Losing that meant a key saved here
-        # persisted to disk but the chat dock never appeared - nothing told
-        # the user why, because there was nothing left to tell them with.
-        had_chat = self.chat_dock is not None
         self._sync_bridge()
         self._sync_chat_panel()
-        has_chat = self.chat_dock is not None
-        if has_chat and not had_chat:
-            notes.append("Assistant panel opened at the bottom.")
-        elif had_chat and not has_chat and not config.get_ai_chat_enabled():
-            # An explicit action (the user just turned the panel off), not a
-            # surprise, but it deserves the same one-line confirmation the
-            # "opened" case gets rather than vanishing silently.
-            notes.append("Assistant panel closed.")
-        elif (not has_chat and config.get_ai_chat_enabled()
-              and config.get_ai_key(config.get_ai_provider())):
-            # Enabled, with a key, and still not showing: that combination
-            # can only mean the provider's package failed to import, since
-            # every other reason funnels through the two branches above.
-            notes.append("Key saved and the panel is enabled, but the "
-                         "assistant package for this provider is not "
-                         "installed.")
 
     def _apply_appearance(self, page, notes):
         from .theme import get_chrome, set_chrome
