@@ -11,7 +11,9 @@ from ..data.universe import System, Universe
 @dataclass
 class DockOption:
     name: str
-    type_id: int
+    type_id: int     # the STRUCTURE/STATION KIND (e.g. "Astrahus") -- shared
+                     # by every instance of it in the game, not unique to
+                     # this one. Never usable as an ESI destination_id.
     kind: str        # "station" or "structure"
     can_dock: bool
     safe: bool
@@ -21,6 +23,10 @@ class DockOption:
     relation: str = ""              # "your corporation" / "your alliance" / ...
     has_rights: bool = False        # configured docking rights with the owner
     can_tether: bool = False        # too big to dock, but can tether here
+    location_id: int = 0            # THIS instance's id -- station_id or
+                                    # structure location_id, and the only one
+                                    # of the two ESI's autopilot waypoint
+                                    # endpoint actually accepts.
 
     @property
     def is_own(self) -> bool:
@@ -86,7 +92,8 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
     for st in universe.system_stations.get(system_id, []):
         chk = docking.check_npc_station(ship, st.type_name, st.max_volume)
         opts.append(DockOption(st.name, st.type_id, "station",
-                               chk.can_dock, chk.safe, chk.note))
+                               chk.can_dock, chk.safe, chk.note,
+                               location_id=st.id))
     for d in dockables:
         if getattr(d, "solar_system_id", 0) == system_id and d.kind == "structure":
             chk = docking.check_structure_tether(ship, d.type_id, d.name,
@@ -115,7 +122,8 @@ def docks_for_system(universe: Universe, dockables: list, ship: Ship,
             opts.append(DockOption(d.name, d.type_id, "structure",
                                    chk.can_dock, safe, note, owner_id=owner,
                                    standing=standing, relation=label,
-                                   has_rights=rights, can_tether=tether))
+                                   has_rights=rights, can_tether=tether,
+                                   location_id=d.location_id))
     if starbases:
         # A corp POS shield: not docking, but a capital can sit safely inside.
         opts.append(DockOption(

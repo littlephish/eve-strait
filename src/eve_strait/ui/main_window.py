@@ -79,6 +79,9 @@ class MainWindow(QMainWindow):
         self._cyno_worker = None
         self._cyno_stop = False
         # Built only when a provider key exists; see _sync_chat_panel.
+        # Key for the auto-waypoint's fire-once guard: (route systems tuple,
+        # trigger system id). None means "nothing has fired yet".
+        self._auto_waypoint_fired_for = None
         # Waypoints restore once, on the very first universe load. _on_universe
         # also fires on a manual "Reload map data", which must never stomp on
         # a route someone is actively editing.
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
             self._fetch_contacts()
             self._fetch_starbases()
             self._fetch_location()
+            self._sync_location_tracking()
         self._fetch_incursions()
         self.refresh_intel()
         self._start_intel_timer()
@@ -376,6 +380,7 @@ class MainWindow(QMainWindow):
         self._fetch_contacts()
         self._fetch_starbases()
         self._fetch_location()
+        self._sync_location_tracking()
         self._render_character()
         self.route.refresh()
         self.statusBar().showMessage(f"Switched to {token.character_name}.", 4000)
@@ -402,6 +407,7 @@ class MainWindow(QMainWindow):
             self.esi = None
             self.dockables = []
             self.character.set_dockables([])
+        self._sync_location_tracking()
         self._refresh_character_list()
         self._render_character()
 
@@ -433,6 +439,7 @@ class MainWindow(QMainWindow):
             + (f", {region}" if region else ""))
         if self.map_view:
             self.map_view.set_current_location(sid)
+        self._maybe_fire_auto_waypoint(sid)
 
     def _use_location_as_origin(self):
         """Put the character's current system at the head of the route."""
@@ -456,6 +463,54 @@ class MainWindow(QMainWindow):
         """Re-poll every activity source: kills, traffic, ADM, industry."""
         self._fetch_activity()
         self._fetch_defense()
+
+    # Live location is only worth polling ESI for while something actually
+    # wants it -- right now that is only the auto-waypoint feature. 15s: the
+    # endpoint itself is server-side cached for a few seconds, so anything
+    # much shorter would just be spending calls on a value that has not
+    # changed, and anything much longer risks the trigger system being
+    # noticed late.
+    LOCATION_POLL_MS = 15_000
+
+    def _sync_location_tracking(self):
+        """Poll location on a timer only while the auto-waypoint feature
+        could actually use it: armed, and a character to poll for."""
+        from PySide6.QtCore import QTimer
+        want = self.route.chk_auto_waypoint.isChecked() and bool(self.token)
+        if want:
+            if getattr(self, "_location_timer", None) is None:
+                self._location_timer = QTimer(self)
+                self._location_timer.timeout.connect(self._fetch_location)
+            if not self._location_timer.isActive():
+                self._location_timer.start(self.LOCATION_POLL_MS)
+                self._fetch_location()  # don't wait a full interval to arm
+        elif getattr(self, "_location_timer", None) is not None:
+            self._location_timer.stop()
+
+    def _maybe_fire_auto_waypoint(self, current_system_id: int):
+        """Called from _on_location every time it updates. Fires the in-game
+        waypoint at most once per distinct route -- the key includes every
+        waypoint, so any route edit re-arms it rather than leaving a stale
+        firing decision in place."""
+        if not self.route.chk_auto_waypoint.isChecked():
+            return
+        target = self.route.auto_waypoint_target()
+        if target is None:
+            return
+        trigger, dest, dock_location_id = target
+        if current_system_id != trigger.id:
+            return
+        key = (tuple(s.id for s in self.route.systems()), trigger.id)
+        if getattr(self, "_auto_waypoint_fired_for", None) == key:
+            return
+        self._auto_waypoint_fired_for = key
+        if dock_location_id:
+            self.set_ingame_waypoint(dock_location_id, clear_other_waypoints=True,
+                                     label=dest.name, silent=True)
+        else:
+            self.set_ingame_waypoint(dest.id, clear_other_waypoints=True, silent=True)
+        self.statusBar().showMessage(
+            f"Reached {trigger.name} - in-game destination set to {dest.name}.", 8000)
 
     def _start_intel_timer(self):
         """Re-poll on the configured interval. 0 minutes means never."""
@@ -1786,6 +1841,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self._render_character()
         self._recalc()
+        self._sync_location_tracking()
 
     def _recalc(self):
         if not self.universe or not self.map_view:
@@ -1904,24 +1960,47 @@ class MainWindow(QMainWindow):
         """Characters that can receive an in-game waypoint."""
         return sorted((cid, t.character_name) for cid, t in self.tokens.items())
 
-    def set_ingame_waypoint(self, system_id: int, character_id: int | None = None):
-        """Send a destination to one character's client (defaults to active)."""
+    def set_ingame_waypoint(self, system_id: int, character_id: int | None = None,
+                            clear_other_waypoints: bool = False,
+                            label: str | None = None, silent: bool = False):
+        """Send a destination to one character's client (defaults to active).
+
+        ``system_id`` is what ESI calls destination_id, which despite the
+        name also accepts a station or structure id -- so a dock's
+        location_id works here exactly the same as a bare system. ``label``
+        overrides the display name, needed for exactly that case: a dock id
+        cannot be looked up in universe.systems, which only knows systems.
+
+        ``silent`` skips the "no character linked" modal in favour of a
+        status-bar line -- for the automatic trigger, where popping a dialog
+        with nobody watching to dismiss it would be worse than saying
+        nothing happened.
+        """
         token = self.tokens.get(character_id) if character_id else self.token
         if not token:
-            QMessageBox.information(
-                self, "In-game waypoint",
-                "Link a character first (needs the esi-ui.write_waypoint.v1 scope).")
+            if silent:
+                self.statusBar().showMessage(
+                    "Auto-waypoint: no character linked, nothing sent.", 6000)
+            else:
+                QMessageBox.information(
+                    self, "In-game waypoint",
+                    "Link a character first (needs the esi-ui.write_waypoint.v1 scope).")
             return
         client = (self.esi if (self.token and token.character_id == self.token.character_id)
                   else EsiClient(token, config.get_client_id()))
         if client is None:
             client = EsiClient(token, config.get_client_id())
-        name = self.universe.systems[system_id].name if self.universe else system_id
-        name = f"{name} ({token.character_name})"
-        w = Worker(client.set_waypoint, system_id)
+        if label is None:
+            label = self.universe.systems[system_id].name if (
+                self.universe and system_id in self.universe.systems) else str(system_id)
+        label = f"{label} ({token.character_name})"
+        w = Worker(client.set_waypoint, system_id,
+                  clear_other_waypoints=clear_other_waypoints)
         w.finished_ok.connect(
-            lambda _: self.statusBar().showMessage(f"Set in-game destination: {name}", 5000))
-        w.failed.connect(lambda m: QMessageBox.warning(self, "In-game waypoint", m))
+            lambda _: self.statusBar().showMessage(f"Set in-game destination: {label}", 5000))
+        w.failed.connect(lambda m: (self.statusBar().showMessage(
+            f"In-game waypoint failed: {m}", 8000) if silent else
+            QMessageBox.warning(self, "In-game waypoint", m)))
         self._run(w)
 
     # -- auto-route ---------------------------------------------------------
@@ -2508,6 +2587,7 @@ class MainWindow(QMainWindow):
         self._fetch_contacts()
         self._fetch_starbases()
         self._fetch_location()
+        self._sync_location_tracking()
 
     def _on_login_fail(self, msg: str):
         self.character.btn_login.setEnabled(True)
@@ -2541,6 +2621,7 @@ class MainWindow(QMainWindow):
         self.location_system_id = None
         self.character.set_dockables([])
         self.character.set_location("")
+        self._sync_location_tracking()
         self._refresh_character_list()
         self._render_character()
 

@@ -242,12 +242,37 @@ class RoutePanel(QWidget):
         self.cmb_gate.currentIndexChanged.connect(self._emit_changed)
         self.cmb_gate.currentIndexChanged.connect(
             lambda _=0: self._sync_hole_toggle())
-        self.b_auto = QPushButton("Auto-route origin → last")
-        self.b_auto.clicked.connect(self.autoroute_requested)
+        # NOT a second Auto-route button: self.b_auto already exists (the one
+        # actually in the layout, above, next to the waypoint list) and this
+        # used to silently reassign the name to an orphaned QPushButton that
+        # was never added anywhere. It stayed clickable-looking nowhere and,
+        # worse, meant set_busy()'s self.b_auto.setEnabled() below was toggling
+        # that invisible button instead of the real one -- so the visible
+        # Auto-route button never actually disabled while a route computed.
         opt3.addWidget(QLabel("Gates:"))
         opt3.addWidget(self.cmb_gate, 1)
         sec_jumps.add(opt3)
         self._sync_hole_toggle()      # cmb_gate exists only from here on
+
+        self.chk_auto_waypoint = QCheckBox("Auto-set in-game waypoint after my last jump")
+        self.chk_auto_waypoint.setToolTip(
+            "For a JF or capital finishing a route on gates: the moment your "
+            "tracked location reaches the system where your last jump, "
+            "bridge or wormhole hop lands, this sets the in-game autopilot "
+            "destination to the final waypoint (its chosen dock, if one is "
+            "set) so the rest of the trip flies itself. Needs a linked "
+            "character with the esi-ui.write_waypoint.v1 scope. Fires once "
+            "per route.")
+        compressible(self.chk_auto_waypoint)
+        self.chk_auto_waypoint.toggled.connect(self._emit_changed)
+        self.chk_auto_waypoint.toggled.connect(self._sync_auto_waypoint_label)
+        sec_jumps.add(self.chk_auto_waypoint)
+
+        self.lbl_auto_waypoint = QLabel("")
+        self.lbl_auto_waypoint.setWordWrap(True)
+        self.lbl_auto_waypoint.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        self.lbl_auto_waypoint.setVisible(False)
+        sec_jumps.add(self.lbl_auto_waypoint)
 
         self.chk_reactivation = QCheckBox("Minimize reactivation timer")
         compressible(self.chk_reactivation)
@@ -314,6 +339,51 @@ class RoutePanel(QWidget):
         v.addWidget(compressible(self.b_saved, 80))
 
         self._sync_sections()
+
+    # ---- auto in-game waypoint ---------------------------------------------
+    def auto_waypoint_target(self):
+        """Where to send the in-game autopilot, and when to send it.
+
+        Only "gate" legs are things the in-game autopilot actually flies --
+        "jump", "bridge" and "hole" all need a manual action first (jump
+        activation, portal, flying the hole). So the moment worth waiting for
+        is landing on the far side of the LAST such manual leg, provided
+        everything after it really is gate-only the rest of the way: that is
+        exactly the point where there is nothing left to do but let the
+        client's own autopilot carry on to the end.
+
+        Returns None if there is no such moment -- fewer than two waypoints,
+        no manual leg at all (already gates the whole way, so autopilot could
+        have been set from the start), or a manual leg that is not followed
+        by an unbroken run of gates (nothing to hand off to).
+
+        Otherwise returns (trigger_system, dest_system, dest_location_id):
+        dest_location_id is the chosen dock's own id (station_id or
+        structure location_id -- the only one ESI's waypoint endpoint
+        actually accepts) when the final waypoint has one, else 0 to fall
+        back to the bare destination system.
+        """
+        modes = self.route_modes
+        if len(self.waypoints) < 2 or not modes:
+            return None
+        last_manual = None
+        for i, m in enumerate(modes):
+            if m != "gate":
+                last_manual = i
+        if last_manual is None:
+            return None                      # already gates the whole way
+        if any(m != "gate" for m in modes[last_manual + 1:]):
+            return None                      # a manual leg follows -- not a clean handoff
+        trigger = self.waypoints[last_manual + 1].system
+        dest_wp = self.waypoints[-1]
+        if trigger.id == dest_wp.system.id:
+            return None                      # jump lands you there directly;
+                                             # no gate handoff to arm for
+        dest_location_id = 0
+        dock = effective_dock(dest_wp, self._docks(dest_wp.system.id))
+        if dock is not None and dock.can_dock and dock.location_id:
+            dest_location_id = dock.location_id
+        return trigger, dest_wp.system, dest_location_id
 
     # ---- exposed getters --------------------------------------------------
     def systems(self):
@@ -1064,7 +1134,27 @@ class RoutePanel(QWidget):
 
     def _emit_changed(self):
         self._sync_sections()
+        self._sync_auto_waypoint_label()
         self.changed.emit()
+
+    def _sync_auto_waypoint_label(self):
+        """Say plainly whether this is armed and for what, rather than let a
+        checkbox that quietly does nothing on the current route look the
+        same as one that is about to write to the game client."""
+        lbl = self.lbl_auto_waypoint
+        if not self.chk_auto_waypoint.isChecked():
+            lbl.setVisible(False)
+            return
+        target = self.auto_waypoint_target()
+        lbl.setVisible(True)
+        if target is None:
+            lbl.setText("Not armed - this route has no jump/bridge/hole "
+                        "followed by gates to hand off to.")
+            return
+        trigger, dest, dock_id = target
+        via = " (chosen dock)" if dock_id else ""
+        lbl.setText(f"Armed: on reaching {trigger.name}, sets in-game "
+                    f"destination to {dest.name}{via}.")
 
     def state(self) -> dict:
         return {
@@ -1079,6 +1169,7 @@ class RoutePanel(QWidget):
             "avoid_incursions": self.chk_incursions.isChecked(),
             "avoid_kills": self.chk_kills.isChecked(),
             "no_docks": self.chk_nodocks.isChecked(),
+            "auto_ingame_waypoint": self.chk_auto_waypoint.isChecked(),
             # System names, the same durable choice the explicit "Saved
             # routes" feature already makes: a name survives an SDE refresh
             # and stays readable in config.json, an id does not. This is what
@@ -1143,5 +1234,6 @@ class RoutePanel(QWidget):
         self.chk_incursions.setChecked(bool(s.get("avoid_incursions", False)))
         self.chk_kills.setChecked(bool(s.get("avoid_kills", False)))
         self.chk_nodocks.setChecked(bool(s.get("no_docks", False)))
+        self.chk_auto_waypoint.setChecked(bool(s.get("auto_ingame_waypoint", False)))
         for w in widgets:
             w.blockSignals(False)
