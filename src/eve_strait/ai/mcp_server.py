@@ -173,10 +173,20 @@ def serve() -> int:
     if not config.get_mcp_enabled():
         # Refuse loudly on stderr (Claude Desktop shows it) and exit. Do not
         # speak the protocol at all, so there is nothing to interrogate.
+        #
+        # The config path is named explicitly because this process's
+        # environment is whatever the MCP client chose to launch it with, not
+        # necessarily the interactive shell a human toggled the setting from.
+        # Two different config.json files answering "disabled" and "enabled"
+        # is indistinguishable from a bug unless the path itself is visible
+        # in the one place this process can actually be seen: the client log.
         sys.stderr.write(
             "Eve-Strait: the MCP server is disabled.\n"
+            f"Checked: {config.CONFIG_PATH}\n"
             "Enable it in Eve-Strait under Settings -> Assistant -> "
-            "MCP server, then restart this connection.\n")
+            "MCP server, then restart this connection. If that file's "
+            "mcp_enabled is already true, this process is reading a "
+            "different Eve-Strait install than the one you configured.\n")
         return 2
 
     _audit(f"server start (writes={config.get_mcp_allow_writes()}, "

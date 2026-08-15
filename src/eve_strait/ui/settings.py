@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QLabel,
+    QMessageBox,
     QScrollArea,
     QTabWidget,
     QVBoxLayout,
@@ -46,9 +47,40 @@ class SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
+        # Not wired straight to reject(): Escape and the titlebar X both
+        # funnel into reject() too by Qt's own default handling, with no way
+        # to tell them apart from a deliberate Cancel click at that point. A
+        # flag set only by this button lets reject() warn on the accidental
+        # paths and stay silent on the one that is not.
+        self.buttons.rejected.connect(self._cancel_clicked)
         v.addWidget(self.buttons)
         self._start_tab = start_tab
+        self._explicit_cancel = False
+
+    def _cancel_clicked(self):
+        self._explicit_cancel = True
+        self.reject()
+
+    def reject(self):
+        """Escape and the titlebar X land here too, not just Cancel.
+
+        This dialog used to be eight separate ones, each holding at most one
+        setting's worth of unsaved typing. One accidental Escape now risks
+        nine tabs of changes at once, silently, which is a materially bigger
+        loss than the old design ever risked -- worth one confirmation click
+        to avoid. A deliberate Cancel click still just cancels.
+        """
+        if not self._explicit_cancel:
+            choice = QMessageBox.question(
+                self, "Discard changes?",
+                "Closing without OK discards anything changed on every tab, "
+                "not just the one you were looking at.\n\nDiscard?",
+                QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if choice != QMessageBox.StandardButton.Discard:
+                return
+        super().reject()
 
     def add_page(self, title: str, widget: QWidget, scroll: bool = False):
         """Add a tab. A QDialog is accepted and stripped of its own buttons."""
