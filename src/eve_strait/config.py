@@ -74,7 +74,7 @@ SCOPES = [
     "esi-assets.read_assets.v1",
     "esi-universe.read_structures.v1",
     "esi-location.read_location.v1",
-    "esi-location.read_ship.v1",
+    "esi-location.read_ship_type.v1",
     "esi-ui.write_waypoint.v1",
     "esi-search.search_structures.v1",
     "esi-characters.read_contacts.v1",
@@ -130,7 +130,7 @@ SCOPE_GROUPS: list[tuple[str, str, list[ScopeInfo]]] = [
                   "Reads the system your character is in right now.",
                   "Real-time location. Read while you are docked or in space, "
                   "and it is current to the second."),
-        ScopeInfo("esi-location.read_ship.v1",
+        ScopeInfo("esi-location.read_ship_type.v1",
                   "Find your cyno alts",
                   "Reads which ship each character is sitting in, so the app "
                   "can tell you which of them has a cyno fitted and where it "

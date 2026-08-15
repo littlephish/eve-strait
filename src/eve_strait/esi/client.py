@@ -309,7 +309,7 @@ class EsiClient:
     def ship(self) -> dict:
         """The ship this character is in right now.
 
-        Needs esi-location.read_ship.v1. Returns ship_type_id, ship_item_id and
+        Needs esi-location.read_ship_type.v1. Returns ship_type_id, ship_item_id and
         ship_name; the item id is what fitted modules point at in the asset
         list, which is how a cyno is found.
         """
