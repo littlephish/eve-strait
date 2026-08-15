@@ -231,8 +231,17 @@ def get_custom_client_id() -> str:
     For anything that decides what to SHOW (the Settings field) or what
     counts as "did this change" (whether to save a new one). get_client_id()
     is for anything that needs a value to actually sign in with.
+
+    The final "was that actually the default" check is deliberate belt and
+    suspenders, not redundant with the callers already passing this instead
+    of get_client_id(): if the default ever ends up saved to config.json as
+    though it were a real override -- an old build that pre-filled the field
+    with it before this existed, someone hand-editing the file, anything --
+    this is the one place that guarantees it still reads back as unset rather
+    than quietly starting to show the default as if the user had chosen it.
     """
-    return os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id") or ""
+    v = os.environ.get("EVE_CLIENT_ID") or load_config().get("client_id") or ""
+    return "" if v == DEFAULT_CLIENT_ID else v
 
 
 def get_default_docks() -> dict:
