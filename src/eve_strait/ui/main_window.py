@@ -1114,7 +1114,7 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage(
                     f"No {label.lower()} data yet. It arrives with the next "
-                    "intel refresh (File -> Intel refresh & history).", 8000)
+                    "intel refresh (Settings -> Intel).", 8000)
         self.map_view.set_heat(values, label)
 
     # -- AI assistant -------------------------------------------------------
@@ -2511,7 +2511,7 @@ class MainWindow(QMainWindow):
         elif "invalid_scope" in msg:
             extra = ("\n\nA requested scope isn't granted to your app. Enable the "
                      "scopes (not 'Authentication Only'), confirm the Client ID "
-                     "matches, then File → Set ESI scopes… and retry.")
+                     "matches, then Settings → Permissions and retry.")
         QMessageBox.warning(self, "Login failed", msg + extra)
 
     def _logout(self):

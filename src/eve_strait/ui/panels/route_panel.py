@@ -207,7 +207,7 @@ class RoutePanel(QWidget):
         self.chk_ansiblex.setChecked(True)
         self.chk_ansiblex.setToolTip(
             "Route through your configured Ansiblex jump gates "
-            "(File → Ansiblex jump gates…).")
+            "(Settings → Ansiblex).")
         compressible(self.chk_ansiblex)
         self.chk_ansiblex.toggled.connect(self._emit_changed)
         sec_jumps.add(self.chk_ansiblex)

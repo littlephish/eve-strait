@@ -175,7 +175,8 @@ def serve() -> int:
         # speak the protocol at all, so there is nothing to interrogate.
         sys.stderr.write(
             "Eve-Strait: the MCP server is disabled.\n"
-            "Enable it in Eve-Strait under File -> AI assistant.\n")
+            "Enable it in Eve-Strait under Settings -> Assistant -> "
+            "MCP server, then restart this connection.\n")
         return 2
 
     _audit(f"server start (writes={config.get_mcp_allow_writes()}, "
