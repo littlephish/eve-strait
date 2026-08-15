@@ -1079,9 +1079,48 @@ class RoutePanel(QWidget):
             "avoid_incursions": self.chk_incursions.isChecked(),
             "avoid_kills": self.chk_kills.isChecked(),
             "no_docks": self.chk_nodocks.isChecked(),
+            # System names, the same durable choice the explicit "Saved
+            # routes" feature already makes: a name survives an SDE refresh
+            # and stays readable in config.json, an id does not. This is what
+            # was missing before -- every option above was already
+            # autosaved, the waypoints themselves never were, session
+            # autosave or a tool call over the MCP bridge alike.
+            "waypoints": [wp.system.name for wp in self.waypoints],
+            "route_modes": list(self.route_modes),
         }
 
+    def restore_waypoints(self, s: dict):
+        """Rebuild the waypoint list on startup, once the map exists.
+
+        Deliberately separate from restore(): that method runs during
+        __init__, before self.ctx.universe exists, and a waypoint needs the
+        universe to resolve a system name against. Call this once, after the
+        first universe load -- not on a later "Reload map data", which must
+        not stomp on a route someone is actively editing.
+        """
+        uni = self.ctx.universe
+        names = s.get("waypoints") or []
+        if not uni or not names:
+            return
+        found, missing = [], []
+        for n in names:
+            sys_ = uni.by_name(n)
+            (found if sys_ else missing).append(sys_ or n)
+        for sys_ in found:
+            self._add_system(sys_.id)
+        modes = s.get("route_modes") or []
+        if len(modes) == max(0, len(self.waypoints) - 1):
+            self.route_modes = list(modes)
+            self._rebuild()
+        if missing:
+            self.ctx.statusBar().showMessage(
+                f"Restored route: {len(found)} of {len(names)} waypoint(s) - "
+                "unknown: " + ", ".join(str(m) for m in missing[:6]), 8000)
+
     def restore(self, s: dict):
+        # Options only. "waypoints"/"route_modes" in the same dict are for
+        # restore_waypoints() -- this runs during __init__, before
+        # self.ctx.universe exists to resolve a system name against.
         widgets = (self.cmb_policy, self.chk_gates, self.cmb_balance, self.chk_ansiblex,
                    self.chk_holes, self.cmb_gate, self.chk_reactivation,
                    self.chk_hostile, self.chk_incursions)

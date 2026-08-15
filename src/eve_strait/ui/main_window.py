@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
         self._cyno_worker = None
         self._cyno_stop = False
         # Built only when a provider key exists; see _sync_chat_panel.
+        # Waypoints restore once, on the very first universe load. _on_universe
+        # also fires on a manual "Reload map data", which must never stomp on
+        # a route someone is actively editing.
+        self._restored_waypoints_once = False
         self.chat_dock = None
         self.chat = None
         self.agent = None
@@ -1712,6 +1716,12 @@ class MainWindow(QMainWindow):
 
     def _on_universe(self, universe: Universe):
         self.universe = universe
+        if not self._restored_waypoints_once:
+            # Only here, not in _load_settings(): that runs during __init__,
+            # before there is a universe to resolve a waypoint's system name
+            # against.
+            self._restored_waypoints_once = True
+            self.route.restore_waypoints(config.get_settings().get("route", {}))
         self.map_view = MapView(universe)
         self.map_view.system_clicked.connect(self._on_map_click)
         self.map_view.system_context.connect(self._map_context)
