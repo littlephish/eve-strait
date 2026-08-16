@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import threading
 import time
@@ -224,16 +225,45 @@ def _token_from_response(data: dict, client_id: str) -> Token:
 # -- multi-character token store -------------------------------------------
 # tokens.json: {"active": <character_id>, "characters": {"<id>": {...token...}}}
 # The old single-character token.json is migrated in on first load.
+#
+# Two locks, because SSO rotates refresh tokens for native/PKCE clients: a
+# refresh may hand back a new refresh_token and retires the one it was given.
+# Two threads refreshing the same character cannot therefore both win. The
+# loser presents a token SSO has already retired, gets invalid_grant, and
+# unlinks a character that was working seconds earlier -- costing the user a
+# full re-login for no reason they can see.
+#
+# That is reachable today: scan_cyno_alts() builds an EsiClient per character
+# while MainWindow holds another for the active one, each with its own copy of
+# the same Token, and both run on Worker threads.
+#
+# _STORE_LOCK guards every read-modify-write of tokens.json. _write_store
+# rewrites the whole file, so without it two threads saving different
+# characters can drop one of them entirely.
+#
+# _CHAR_LOCKS[cid] is held across the network round trip so refreshes for one
+# character serialise, while other characters still refresh in parallel. It is
+# a plain Lock and never taken while _STORE_LOCK is held, so the two cannot
+# deadlock against each other.
+_STORE_LOCK = threading.RLock()
+_CHAR_LOCKS: dict[int, threading.Lock] = {}
+
+
+def _char_lock(character_id: int) -> threading.Lock:
+    with _STORE_LOCK:
+        return _CHAR_LOCKS.setdefault(character_id, threading.Lock())
+
 
 def _read_store() -> dict:
-    if config.TOKENS_PATH.exists():
-        try:
-            data = json.loads(config.TOKENS_PATH.read_text("utf-8"))
-            if isinstance(data, dict) and "characters" in data:
-                return data
-        except (json.JSONDecodeError, OSError):
-            pass
-    return _migrate_legacy_token()
+    with _STORE_LOCK:
+        if config.TOKENS_PATH.exists():
+            try:
+                data = json.loads(config.TOKENS_PATH.read_text("utf-8"))
+                if isinstance(data, dict) and "characters" in data:
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+        return _migrate_legacy_token()
 
 
 def _migrate_legacy_token() -> dict:
@@ -252,10 +282,24 @@ def _migrate_legacy_token() -> dict:
 
 
 def _write_store(store: dict) -> None:
-    try:
-        config.TOKENS_PATH.write_text(json.dumps(store, indent=2), "utf-8")
-    except OSError:
-        pass
+    """Replace tokens.json atomically.
+
+    Write-then-rename rather than writing in place: this file is the only
+    record of every linked character, and a crash or a full disk partway
+    through a plain write truncates it. Losing an access token is free -- it
+    is a refresh away -- but losing the refresh tokens means logging every
+    character in again by hand.
+    """
+    with _STORE_LOCK:
+        tmp = config.TOKENS_PATH.with_name(config.TOKENS_PATH.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(store, indent=2), "utf-8")
+            os.replace(tmp, config.TOKENS_PATH)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def load_all() -> dict[int, Token]:
@@ -286,28 +330,58 @@ def load_saved() -> Token | None:
 
 def save(token: Token, make_active: bool = True) -> None:
     """Add or replace one character's token."""
-    store = _read_store()
-    store.setdefault("characters", {})[str(token.character_id)] = token.to_dict()
-    if make_active or store.get("active") is None:
-        store["active"] = token.character_id
-    _write_store(store)
+    with _STORE_LOCK:
+        store = _read_store()
+        store.setdefault("characters", {})[str(token.character_id)] = token.to_dict()
+        if make_active or store.get("active") is None:
+            store["active"] = token.character_id
+        _write_store(store)
+
+
+def refresh_stored(token: Token, client_id: str) -> Token:
+    """Refresh one character's token once, and persist the rotation.
+
+    The only refresh path callers should use. Doing it by hand -- refresh()
+    then save() -- races with any other thread holding a copy of the same
+    Token, and the loser of that race is left presenting a refresh token SSO
+    has already retired.
+
+    Two threads arriving together are collapsed rather than both hitting SSO:
+    the second one waits, then finds a token in the store whose refresh_token
+    differs from the one it came in with, which means the first thread already
+    rotated it. That newer token is returned as-is.
+
+    Saved with make_active=False deliberately. Refreshing a background
+    character -- a cyno alt being scanned, say -- must not promote it to the
+    active one behind the user's back.
+    """
+    cid = token.character_id
+    with _char_lock(cid):
+        current = load_all().get(cid) or token
+        if current.refresh_token != token.refresh_token and not current.expired:
+            return current
+        fresh = refresh(current, client_id)
+        save(fresh, make_active=False)
+        return fresh
 
 
 def set_active(character_id: int) -> None:
-    store = _read_store()
-    if str(character_id) in (store.get("characters") or {}):
-        store["active"] = character_id
-        _write_store(store)
+    with _STORE_LOCK:
+        store = _read_store()
+        if str(character_id) in (store.get("characters") or {}):
+            store["active"] = character_id
+            _write_store(store)
 
 
 def remove(character_id: int) -> None:
     """Unlink one character."""
-    store = _read_store()
-    store.get("characters", {}).pop(str(character_id), None)
-    if store.get("active") == character_id:
-        chars = store.get("characters") or {}
-        store["active"] = int(next(iter(chars))) if chars else None
-    _write_store(store)
+    with _STORE_LOCK:
+        store = _read_store()
+        store.get("characters", {}).pop(str(character_id), None)
+        if store.get("active") == character_id:
+            chars = store.get("characters") or {}
+            store["active"] = int(next(iter(chars))) if chars else None
+        _write_store(store)
 
 
 def logout() -> None:

@@ -263,9 +263,12 @@ class EsiClient:
 
     # -- auth plumbing ------------------------------------------------------
     def _ensure_token(self):
+        # refresh_stored(), not refresh() + save(): several EsiClients can
+        # hold copies of the same character's Token (MainWindow keeps one for
+        # the active character while scan_cyno_alts builds one per character),
+        # and SSO retires a refresh token as it rotates it.
         if self.token.expired:
-            self.token = auth.refresh(self.token, self.client_id)
-            auth.save(self.token)
+            self.token = auth.refresh_stored(self.token, self.client_id)
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.token.access_token}"}
@@ -275,8 +278,7 @@ class EsiClient:
         url = f"{config.ESI_BASE}{path}"
         resp = self.session.get(url, headers=self._headers(), params=params, timeout=30)
         if resp.status_code == 401:
-            self.token = auth.refresh(self.token, self.client_id)
-            auth.save(self.token)
+            self.token = auth.refresh_stored(self.token, self.client_id)
             resp = self.session.get(url, headers=self._headers(), params=params, timeout=30)
         check_response(resp, self.client_id)
         return resp
@@ -337,8 +339,7 @@ class EsiClient:
         }
         resp = self.session.post(url, headers=self._headers(), params=params, timeout=30)
         if resp.status_code == 401:
-            self.token = auth.refresh(self.token, self.client_id)
-            auth.save(self.token)
+            self.token = auth.refresh_stored(self.token, self.client_id)
             resp = self.session.post(url, headers=self._headers(), params=params, timeout=30)
         check_response(resp, self.client_id)
 
