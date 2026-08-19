@@ -82,8 +82,25 @@ singleton with three collaborators behind one facade.
 ### HttpCache
 
 sqlite at `CACHE_DIR/esi_cache.sqlite`. Rows keyed by
-`(method, url, sorted params, character_id)`. Stores body, ETag, `fetched_at`,
-`expires_at`. Character-keyed so two linked alts never read each other's assets.
+`(method, url, sorted params, cache identity)`. Stores body, ETag, `fetched_at`,
+`expires_at`, and the response headers.
+
+**Cache identity** is the character ID for private data, so two linked alts
+never read each other's assets — and `None` for routes whose response is the
+same no matter who asks (`/universe/stations/{id}/`, sovereignty, kills, jumps,
+industry, incursions, and `/universe/structures/{id}/`). Sharing those matters
+because a bulk load across N characters would otherwise re-resolve identical
+station and structure names N times, which is the same tight loop that produced
+the dockables 429 in the first place.
+
+`/universe/structures/{id}/` is shared despite being ACL-gated: the response
+describes the structure, not the requester, and only successes are ever cached
+because a 403 raises before the cache is written. Its only caller looks up
+structures from the character's own asset list, so any character reaching the
+lookup already had access.
+
+Rate-limit buckets stay keyed per character regardless — those really are
+per-character even when the cached body is not.
 
 sqlite rather than JSON files because station and structure resolution can reach
 thousands of entries; a file per entry would litter the cache directory. It is
@@ -246,6 +263,32 @@ work adds a small `pytest` suite covering:
 
 Tests run against fake response objects: pure logic, no network, no Qt. This
 adds a dev dependency and a CI step.
+
+## Addendum: bulk dockables (2026-08-19)
+
+Found while testing this branch. Dockable structures are fetched one character
+at a time by an explicit button press. `_switch_character` already reloads the
+cached list on every dropdown change and `load_dockables()` reads the files
+correctly — but nothing ever fills more than one character's cache per press.
+On the development machine, 7 of 12 linked characters had never been fetched,
+so switching to them showed nothing, which is indistinguishable from a broken
+load.
+
+Decision: add a "Load for all linked characters" context action on the existing
+button, walking every linked token and writing each character's cache. The
+primary click keeps its current single-character meaning; bulk work should be
+chosen, not stumbled into.
+
+Routing semantics do not change. `self.dockables` still holds only the active
+character's list, because docking access in EVE is per-character and a
+structure in character B's asset list says nothing about whether character A
+may dock there. Merging all characters into one routing list would need a
+`character_id` on `Dockable` and per-entry attribution in the UI; that is a
+larger change and is not attempted here.
+
+This is only affordable because of the shared cache identity described above:
+the first character resolves the station and structure names, and the remaining
+eleven read them from sqlite.
 
 ## Non-goals
 

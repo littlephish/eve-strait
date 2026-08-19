@@ -2029,3 +2029,402 @@ git commit -m "docs: record observed ESI rate limits and cache behaviour"
 - [ ] A second dockables refresh resolves station names from sqlite, not the network.
 - [ ] Location polling runs no faster than every 30s.
 - [ ] The app still starts and routes with no ESI login at all.
+
+---
+
+## Addendum: bulk dockables (added 2026-08-19)
+
+Found while testing the branch: dockable structures are fetched one character
+at a time by an explicit button press, and the cache is only read back for the
+active character on switch. With 12 linked characters, 7 had never been
+fetched, so switching to them showed nothing — indistinguishable from a broken
+load.
+
+`_switch_character` already calls `_load_cached_dockables()`, and
+`load_dockables()` reads the files correctly. The gap is that nothing ever
+fills more than one character's cache per press.
+
+These two tasks close that, and Task 11 must land first: it is what makes a
+12-character bulk load affordable.
+### Task 11: Share cache entries for character-independent routes
+
+`cache_key` currently mixes `character_id` into every key. That is correct for
+private data, but `/universe/stations/60003760/` returns the same station name
+no matter who asks — so a 12-character bulk load re-resolves identical stations
+12 times, which is exactly the tight loop that produced the dockables 429.
+
+**Files:**
+- Modify: `src/eve_strait/esi/transport.py`
+- Modify: `tests/test_transport.py`
+
+**Interfaces:**
+- Consumes: `route_key` (Task 1), `cache_key` (Task 4), `EsiTransport` (Task 5).
+- Produces: `CHARACTER_INDEPENDENT: set[str]`; `EsiTransport._cache_identity(path, character_id) -> int | None`. `get()` and `cache_status()` signatures are unchanged.
+
+**Ruling on `/universe/structures/{id}/`:** it is an authenticated, ACL-gated
+route, so sharing it across characters needs justifying. It is shared here
+because the response describes the *structure* (name, system, type, owner), not
+the requester, and because only successes are ever cached — a 403 raises before
+`put()` is reached. The only caller, `dockable_locations()`, looks up
+structures that appear in that character's own asset list, so any character
+reaching the lookup already had access. If this ever feels wrong, removing the
+one line from the set restores per-character keying.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_transport.py`:
+
+```python
+def test_public_routes_share_one_entry_across_characters(make):
+    # The dockables 429 came from resolving the same stations per character.
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/stations/60003760/", character_id=1)
+    r = t.get("/universe/stations/60003760/", character_id=2)
+    assert r.from_cache is True
+    assert len(session.calls) == 1
+
+
+def test_structures_are_shared_across_characters(make):
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/structures/1035466617946/", character_id=1)
+    r = t.get("/universe/structures/1035466617946/", character_id=2)
+    assert r.from_cache is True
+    assert len(session.calls) == 1
+
+
+def test_private_routes_stay_isolated_per_character(make):
+    # Two alts in the same corp can see different corp structures depending
+    # on roles, so this response really does depend on who asked.
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers()),
+                             FakeResponse(headers=fresh_headers())])
+    t.get("/corporations/98000001/structures/", character_id=1)
+    t.get("/corporations/98000001/structures/", character_id=2)
+    assert len(session.calls) == 2
+
+
+def test_cache_status_uses_the_same_identity_rule(make):
+    t, _, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/stations/60003760/", character_id=1)
+    # Character 2 must see the shared entry as present, not missing.
+    assert t.cache_status("/universe/stations/60003760/", character_id=2) is not None
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/test_transport.py -q`
+Expected: FAIL — `test_public_routes_share_one_entry_across_characters` reports 2 calls, not 1.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `src/eve_strait/esi/transport.py`, add after `CACHE_POLICY`:
+
+```python
+# Routes whose response is identical no matter which character asks. Keying
+# these per character makes a bulk load across N characters re-fetch the same
+# data N times -- which is the loop that produced the dockables 429.
+#
+# /universe/structures/{id}/ is included deliberately: it is ACL-gated, but the
+# response describes the structure rather than the requester, and only
+# successes are ever cached (a 403 raises before the cache is written).
+CHARACTER_INDEPENDENT = {
+    "/universe/stations/{id}/",
+    "/universe/structures/{id}/",
+    "/universe/system_kills/",
+    "/universe/system_jumps/",
+    "/sovereignty/map/",
+    "/sovereignty/structures/",
+    "/industry/systems/",
+    "/incursions/",
+}
+```
+
+Add the method to `EsiTransport`:
+
+```python
+    def _cache_identity(self, path: str, character_id):
+        """Who a cached entry belongs to. None means "anyone"."""
+        return None if route_key(path) in CHARACTER_INDEPENDENT else character_id
+```
+
+In `cache_status`, replace the `character_id` argument to `cache_key` with the identity:
+
+```python
+    def cache_status(self, path, params=None, character_id=None):
+        return self.cache.status(
+            cache_key("GET", f"{config.ESI_BASE}{path}", params,
+                      self._cache_identity(path, character_id)))
+```
+
+In `get`, replace the key construction line:
+
+```python
+        key = cache_key("GET", url, params,
+                        self._cache_identity(path, character_id))
+```
+
+Leave the `character_id` passed to the governor untouched — rate-limit buckets
+really are per character even when the cached body is not.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest -q`
+Expected: PASS (69 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/eve_strait/esi/transport.py tests/test_transport.py
+git commit -m "perf(esi): share cached responses for character-independent routes"
+```
+
+---
+
+### Task 12: Load dockables for every linked character in one press
+
+**Files:**
+- Modify: `src/eve_strait/esi/client.py` (add `load_all_dockables` next to `scan_cyno_alts`)
+- Modify: `src/eve_strait/ui/panels/character_panel.py` (context action on `btn_structs`)
+- Modify: `src/eve_strait/ui/main_window.py` (handler + wiring)
+- Create: `tests/test_bulk_dockables.py`
+
+**Interfaces:**
+- Consumes: `EsiClient.dockable_locations`, `save_dockables`, `Dockable` (existing); `AssetsChangedDuringFetch` (Task 7).
+- Produces: `client.load_all_dockables(tokens, client_id, progress=None) -> tuple[dict[int, list[Dockable]], list[str]]`; `CharacterPanel.load_all_structures_requested` signal; `MainWindow._load_all_structures()`.
+
+Returns per-character results *and* notes, mirroring `scan_cyno_alts`: "no
+structures found" and "could not look" are different answers, and with 12
+characters the difference matters.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_bulk_dockables.py`:
+
+```python
+import types
+
+import requests
+
+from eve_strait.esi import client as client_mod
+
+
+class StubClient:
+    """Stands in for EsiClient: one canned answer per character."""
+
+    instances = {}
+
+    def __init__(self, token, client_id):
+        self.token = token
+        StubClient.instances[token.character_id] = self
+
+    def dockable_locations(self, progress=None):
+        return StubClient.answers[self.token.character_id]()
+
+
+def token(cid, name):
+    return types.SimpleNamespace(character_id=cid, character_name=name,
+                                 expired=False, access_token="t")
+
+
+def dock(name):
+    return client_mod.Dockable(1, name, 2, "station")
+
+
+def setup_stub(monkeypatch, answers):
+    StubClient.answers = answers
+    StubClient.instances = {}
+    monkeypatch.setattr(client_mod, "EsiClient", StubClient)
+    monkeypatch.setattr(client_mod, "save_dockables", lambda cid, d: None)
+
+
+def test_every_character_is_fetched(monkeypatch):
+    setup_stub(monkeypatch, {
+        1: lambda: [dock("Jita 4-4")],
+        2: lambda: [dock("Amarr VIII")],
+    })
+    tokens = {1: token(1, "A"), 2: token(2, "B")}
+    results, notes = client_mod.load_all_dockables(tokens, "cid")
+    assert set(results) == {1, 2}
+    assert results[1][0].name == "Jita 4-4"
+    assert notes == []
+
+
+def test_results_are_saved_per_character(monkeypatch):
+    saved = {}
+    setup_stub(monkeypatch, {1: lambda: [dock("Jita 4-4")]})
+    monkeypatch.setattr(client_mod, "save_dockables",
+                        lambda cid, d: saved.__setitem__(cid, d))
+    client_mod.load_all_dockables({1: token(1, "A")}, "cid")
+    assert saved[1][0].name == "Jita 4-4"
+
+
+def test_one_failure_does_not_abort_the_rest(monkeypatch):
+    def boom():
+        raise requests.HTTPError("403", response=types.SimpleNamespace(
+            status_code=403))
+
+    setup_stub(monkeypatch, {1: boom, 2: lambda: [dock("Amarr VIII")]})
+    tokens = {1: token(1, "Denied"), 2: token(2, "Fine")}
+    results, notes = client_mod.load_all_dockables(tokens, "cid")
+    assert 2 in results and results[2][0].name == "Amarr VIII"
+    assert 1 not in results
+    assert any("Denied" in n and "403" in n for n in notes)
+
+
+def test_torn_asset_read_is_reported_not_raised(monkeypatch):
+    def torn():
+        raise client_mod.AssetsChangedDuringFetch("changed")
+
+    setup_stub(monkeypatch, {1: torn})
+    results, notes = client_mod.load_all_dockables({1: token(1, "Busy")}, "cid")
+    assert results == {}
+    assert any("Busy" in n for n in notes)
+
+
+def test_progress_names_each_character(monkeypatch):
+    seen = []
+    setup_stub(monkeypatch, {1: lambda: [], 2: lambda: []})
+    tokens = {1: token(1, "Alpha"), 2: token(2, "Beta")}
+    client_mod.load_all_dockables(tokens, "cid", progress=seen.append)
+    assert any("Alpha" in m for m in seen)
+    assert any("Beta" in m for m in seen)
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `uv run pytest tests/test_bulk_dockables.py -q`
+Expected: FAIL with `AttributeError: module 'eve_strait.esi.client' has no attribute 'load_all_dockables'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `src/eve_strait/esi/client.py`, add after `scan_cyno_alts`:
+
+```python
+def load_all_dockables(tokens, client_id: str, progress=None):
+    """Fetch dockable locations for every linked character, in one pass.
+
+    One character at a time by design: asset routes bucket per character, so
+    this spreads across N rate-limit buckets rather than hammering one, and
+    the station/structure names resolved for the first character are reused
+    from cache by the rest.
+
+    Returns ({character_id: [Dockable]}, notes). Notes carry the per-character
+    reasons a fetch came back empty, because with a dozen characters "this
+    one owns nothing" and "this one could not be read" look identical in a
+    results list.
+    """
+    results: dict[int, list] = {}
+    notes: list[str] = []
+    for i, (cid, tok) in enumerate(sorted(tokens.items()), start=1):
+        name = getattr(tok, "character_name", str(cid))
+        if progress:
+            progress(f"Loading {name} ({i}/{len(tokens)})…")
+        try:
+            found = EsiClient(tok, client_id).dockable_locations()
+        except AssetsChangedDuringFetch:
+            notes.append(f"{name}: assets changed mid-read; try again.")
+            continue
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status == 403:
+                notes.append(f"{name}: denied (403) - this character was "
+                             "linked before the asset scope was granted. "
+                             "Sign in again to include it.")
+            else:
+                notes.append(f"{name}: {exc}")
+            continue
+        except Exception as exc:                        # noqa: BLE001
+            notes.append(f"{name}: {exc}")
+            continue
+        results[cid] = found
+        save_dockables(cid, found)
+    return results, notes
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/test_bulk_dockables.py -q`
+Expected: PASS (5 tests)
+
+- [ ] **Step 5: Add the UI action**
+
+In `src/eve_strait/ui/panels/character_panel.py`, add next to `load_structures_requested`:
+
+```python
+    load_all_structures_requested = Signal()
+```
+
+After `v.addWidget(self.btn_structs)`, add the context action — same pattern as
+the cyno force-refresh, so the primary click keeps its existing single-character
+meaning:
+
+```python
+        # Bulk load is a context action, not the main click: it walks every
+        # linked character, so it should be chosen rather than stumbled into.
+        self.btn_structs.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        act_all = QAction("Load for all linked characters", self.btn_structs)
+        act_all.triggered.connect(self.load_all_structures_requested)
+        self.btn_structs.addAction(act_all)
+```
+
+- [ ] **Step 6: Wire it in the main window**
+
+In `src/eve_strait/ui/main_window.py`, next to the existing
+`load_structures_requested` connection:
+
+```python
+        self.character.load_all_structures_requested.connect(
+            self._load_all_structures)
+```
+
+Add the handler next to `_load_structures`:
+
+```python
+    def _load_all_structures(self):
+        """Fill every linked character's dockables cache in one pass."""
+        if not self.tokens:
+            QMessageBox.information(self, "Structures", "Log in first.")
+            return
+        from ..esi import client as _client
+        self.character.set_loading(True, "Loading assets…")
+        cid = config.get_client_id()
+        tokens = dict(self.tokens)
+        w = Worker(lambda progress=None: _client.load_all_dockables(
+            tokens, cid, progress))
+        w.progress.connect(lambda msg: self.character.set_loading(True, msg))
+        w.finished_ok.connect(self._on_all_structures)
+        w.failed.connect(lambda m: (self.character.set_loading(False),
+                                    QMessageBox.warning(self, "Structures", m)))
+        self._run(w)
+
+    def _on_all_structures(self, result):
+        results, notes = result
+        self.character.set_loading(False)
+        # The active character's list is what routing uses; re-read it from
+        # the cache the bulk load just wrote.
+        self._load_cached_dockables()
+        self._render_character()
+        self.route.refresh()
+        total = sum(len(v) for v in results.values())
+        self.statusBar().showMessage(
+            f"Loaded {total} dockable locations across {len(results)} "
+            f"character(s).", 8000)
+        if notes:
+            QMessageBox.information(self, "Structures", "\n".join(notes))
+```
+
+- [ ] **Step 7: Verify**
+
+Run: `uv run pytest -q` — expected PASS (74 tests).
+Run: `python -m compileall -q src` — expected silent.
+
+Then by hand, `uv run eve-strait`: right-click "Load my dockable structures",
+choose "Load for all linked characters", and confirm the status bar reports a
+count across characters. Switch the dropdown to a character that previously
+showed nothing and confirm its structures now appear immediately.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/eve_strait/esi/client.py src/eve_strait/ui/panels/character_panel.py src/eve_strait/ui/main_window.py tests/test_bulk_dockables.py
+git commit -m "feat: load dockable structures for every linked character"
+```
