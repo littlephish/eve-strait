@@ -20,6 +20,7 @@ from .map_view import MapView
 from .panels.character_panel import CharacterPanel
 from .panels.route_panel import RoutePanel
 from .panels.ship_panel import ShipSkillsPanel
+from .tasks import BusyIndicator, TaskRegistry
 from .workers import Worker
 
 
@@ -90,6 +91,8 @@ class MainWindow(QMainWindow):
         self.agent = None
         self.bridge = None
         self._workers: list[Worker] = []
+        self._tasks = TaskRegistry()
+        self._busy = None          # created with the status bar
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
         self._corp_alliance: dict[int, int | None] = {}
@@ -113,6 +116,10 @@ class MainWindow(QMainWindow):
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._build_menu()
+        # Right-hand end of the status bar: showMessage() owns the left.
+        self._busy = BusyIndicator(self)
+        self.statusBar().addPermanentWidget(self._busy)
+        self._sync_busy()
         self._build_docks()
         self._load_settings()
         self._wire()
@@ -420,7 +427,7 @@ class MainWindow(QMainWindow):
         w = Worker(lambda: self.esi.location(priority="background"))
         w.finished_ok.connect(self._on_location)
         w.failed.connect(lambda m: self.character.set_location(""))
-        self._run(w)
+        self._run(w, "Checking character location…")
 
     def _on_location(self, data):
         # Re-arm from the current budget: the first poll is what teaches
@@ -462,7 +469,7 @@ class MainWindow(QMainWindow):
         w = Worker(client.system_activity)
         w.finished_ok.connect(self._on_activity)
         w.failed.connect(lambda m: None)
-        self._run(w)
+        self._run(w, "Loading kill and traffic activity…")
 
     def refresh_intel(self):
         """Re-poll every activity source: kills, traffic, ADM, industry."""
@@ -604,7 +611,7 @@ class MainWindow(QMainWindow):
         w = Worker(client.sovereignty_defense)
         w.finished_ok.connect(arrived("sov_defense", "adm"))
         w.failed.connect(lambda m: None)
-        self._run(w)
+        self._run(w, "Loading sovereignty defense…")
         w2 = Worker(client.industry_indices)
         w2.finished_ok.connect(arrived("industry_index", "industry"))
         w2.failed.connect(lambda m: None)
@@ -2652,7 +2659,7 @@ class MainWindow(QMainWindow):
         w.finished_ok.connect(self._on_cyno_alts)
         w.failed.connect(lambda m: (self.character.set_cyno_scanning(False),
                                     QMessageBox.warning(self, "Cyno alts", m)))
-        self._run(w)
+        self._run(w, "Scanning characters for cynos…")
 
     def _on_cyno_alts(self, result):
         alts, notes = result
@@ -2689,7 +2696,7 @@ class MainWindow(QMainWindow):
         w.finished_ok.connect(self._on_structures)
         w.failed.connect(lambda m: (self.character.set_loading(False),
                                     QMessageBox.warning(self, "Structures", m)))
-        self._run(w)
+        self._run(w, "Loading dockable structures…")
 
     def _on_structures(self, dockables):
         self.character.set_loading(False)
@@ -2702,8 +2709,33 @@ class MainWindow(QMainWindow):
         self.route.refresh()
 
     # -- worker helper ------------------------------------------------------
-    def _run(self, worker: Worker):
+    def _run(self, worker: Worker, label: str = ""):
+        """Start a background worker and show it in the status bar.
+
+        Every background operation in the app funnels through here, so this is
+        the one place that needs to know a task started -- the workers
+        themselves stay unaware of the UI.
+        """
         self._workers.append(worker)
+        key = id(worker)
+        self._tasks.add(key, label)
+        self._sync_busy()
+        # Workers already emit progress text; route it to the indicator so a
+        # long job says what it is doing rather than just spinning.
+        worker.progress.connect(lambda msg, k=key: self._task_progress(k, msg))
+        worker.finished.connect(lambda k=key: self._task_finished(k))
         worker.finished.connect(
             lambda: self._workers.remove(worker) if worker in self._workers else None)
         worker.start()
+
+    def _task_progress(self, key, message: str):
+        self._tasks.update(key, message)
+        self._sync_busy()
+
+    def _task_finished(self, key):
+        self._tasks.remove(key)
+        self._sync_busy()
+
+    def _sync_busy(self):
+        if self._busy is not None:
+            self._busy.set_state(self._tasks.summary(), self._tasks.tooltip())
