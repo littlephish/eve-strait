@@ -27,8 +27,11 @@ uv run python -m eve_strait
   them locally; map data, ship/skills, dockables and options are cached between runs.
 - ESI login is optional. Client ID and tokens live in `%LOCALAPPDATA%\eve-strait\`
   (`config.json`, `token.json`). The OAuth callback is `http://localhost:8635/callback`.
-- There is **no committed test suite**. CI (`.github/workflows/ci.yml`) is a sanity gate
-  only: byte-compile `src/` and import the package. Verify changes by running the app.
+- The committed test suite (`tests/`, run with `uv run pytest`) covers the ESI
+  transport layer only: rate-limit maths and cache expiry. It is deliberately narrow --
+  pure logic, no network, no Qt. Everything else is still verified by running the app.
+  CI (`.github/workflows/ci.yml`) byte-compiles `src/`, imports the package, and runs
+  that suite.
 
 ## Building and packaging
 

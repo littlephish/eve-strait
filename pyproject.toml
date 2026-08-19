@@ -12,6 +12,11 @@ dependencies = [
 [project.scripts]
 eve-strait = "eve_strait.__main__:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

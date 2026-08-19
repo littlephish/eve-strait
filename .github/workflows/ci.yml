@@ -5,11 +5,11 @@ name: CI
 # the Actions tab are GitHub's own default CodeQL scan, not a build check --
 # a security signal, not "does this still work".
 #
-# This is a fast, honest sanity gate, not a substitute for real testing: it
-# byte-compiles the package and confirms every module actually imports.
-# Eve-Strait has no test suite committed to the repo yet -- the regression
-# checks used during development are ad hoc scripts, not a tracked `tests/`
-# directory -- so this cannot and does not claim to run them.
+# This is a fast sanity gate: it byte-compiles the package, confirms every
+# module imports, and runs the unit tests. The suite covers the ESI transport
+# layer only (rate-limit maths, cache expiry) -- logic where a silent
+# off-by-one is invisible when running the app. Everything else is still
+# verified by hand.
 on:
   push:
     branches: [main]
@@ -35,3 +35,8 @@ jobs:
 
       - name: Import sanity
         run: python -c "import eve_strait; print(eve_strait.__version__)"
+
+      - name: Unit tests
+        run: |
+          python -m pip install pytest
+          python -m pytest -q
