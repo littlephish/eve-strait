@@ -254,6 +254,37 @@ adds a dev dependency and a CI step.
 - No `requests-cache` or other new runtime dependency.
 - No prefetching or speculative warming of the cache.
 
+## Observed limits (measured 2026-08-19)
+
+Taken against live ESI from this machine. Unauthenticated routes only: the
+authenticated groups need a linked character and were not measured here.
+
+| Group | Limit | Route probed | Flow |
+|---|---|---|---|
+| `incursion` | **150/15m** | `/incursions/` | intel refresh |
+| `sovereignty` | 600/15m | `/sovereignty/map/` | intel refresh |
+| (none yet) | not limited | `/universe/system_jumps/` | intel refresh |
+
+**Token costs confirmed exactly as documented.** Three consecutive 200s each
+reported `X-Ratelimit-Used: 2`, and a conditional request answered 304 reported
+`X-Ratelimit-Used: 1`. ETag revalidation really does cost half of a fetch, so
+the `TOKENS_PER_REQUEST = 2` constant and the ETag design are both sound.
+
+**Did the 150/15m assumption hold?** Partly, and enough to justify the change.
+A 150/15m group is real and in production today — `/incursions/` is one. That
+means the tight tier this design was built against exists rather than being
+inferred from a blog post. It does **not** confirm that `character-location`
+specifically sits at 150/15m; that group is authenticated and still unmeasured.
+
+Not every route is limited yet: `/universe/system_jumps/` returned no
+`X-Ratelimit-*` headers at all. The governor stays optimistic for those, which
+is the correct behaviour — CCP's rollout is still adding groups.
+
+**Outstanding:** run the app with a linked character and debug logging on, and
+record the `character-location` and `assets` group limits here. If
+`character-location` turns out to be 1000/15m or higher, the 30s polling floor
+is conservative rather than necessary and could be revisited on its own merits.
+
 ## References
 
 - [Rate Limiting - EVE Developer Docs](https://developers.eveonline.com/docs/services/esi/rate-limiting/)

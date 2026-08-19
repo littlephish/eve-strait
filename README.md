@@ -113,6 +113,19 @@ callback on `localhost:8635` and you can close the tab.
 
 Adding scopes later requires **re‑authenticating** (log out, then log in again).
 
+### Caching and rate limits
+
+Eve-Strait caches ESI responses for exactly as long as EVE says they are valid —
+about an hour for asset data — and paces its own requests against EVE's published
+rate limits. That means pressing **Scan my characters** twice in a row is free the
+second time: the panel shows when the data was read and when it next refreshes.
+Right-click the button for a forced refresh if you have just refitted, though
+EVE's own copy may still be up to an hour behind.
+
+Background work (live location polling, timed intel refreshes) backs off on its
+own when the budget runs low, so that anything you actually click still has
+allowance left to spend.
+
 ## How the numbers work
 
 | Quantity | Formula |
