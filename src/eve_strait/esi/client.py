@@ -634,7 +634,7 @@ class EsiClient:
 
 
 def scan_cyno_alts(tokens, client_id: str, cyno_modules: dict[int, str],
-                   progress=None) -> tuple[list, list[str]]:
+                   progress=None, force: bool = False) -> tuple[list, list[str]]:
     """Check every linked character for a fitted cyno.
 
     Returns (alts, notes). Notes carry the per-character reasons a scan came
@@ -653,7 +653,7 @@ def scan_cyno_alts(tokens, client_id: str, cyno_modules: dict[int, str],
             c = EsiClient(token, client_id)
             location = c.location()
             ship = c.ship()
-            assets = c.assets()
+            assets = c.assets(force=force)
         except AssetsChangedDuringFetch:
             notes.append(f"{name}: assets changed mid-read; scan again to "
                          "include this character.")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -33,6 +34,7 @@ class CharacterPanel(QWidget):
     goto_location_requested = Signal()
     scopes_requested = Signal()
     scan_cyno_requested = Signal()
+    force_cyno_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -172,6 +174,22 @@ class CharacterPanel(QWidget):
             "fitted to the ship they are currently in.")
         self.btn_cyno.clicked.connect(self.scan_cyno_requested)
         self.sec_cyno.add(self.btn_cyno)
+
+        # Asset data is cached for as long as ESI says it is valid (about
+        # an hour). Saying so turns "the button did nothing" into "the
+        # button correctly did nothing", which is the difference between a
+        # bug report and an informed user.
+        self.lbl_cyno_age = QLabel("")
+        self.lbl_cyno_age.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        self.sec_cyno.add(self.lbl_cyno_age)
+
+        # Force refresh is a menu action, not a second button: it spends
+        # the rate-limit budget the cache exists to protect, so it should
+        # take deliberate effort to reach.
+        self.btn_cyno.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        act_force = QAction("Force refresh (ignores cache)", self.btn_cyno)
+        act_force.triggered.connect(self.force_cyno_requested)
+        self.btn_cyno.addAction(act_force)
         self.cyno_list = QListWidget()
         self.cyno_list.setToolTip("Double-click to add that system as a waypoint.")
         self.cyno_list.itemDoubleClicked.connect(self._on_double)
@@ -187,6 +205,20 @@ class CharacterPanel(QWidget):
         return page
 
     # -- cyno alts ----------------------------------------------------------
+    def set_cyno_freshness(self, fetched_at, expires_at):
+        """Show when the cached asset data was read and when it expires."""
+        if not fetched_at:
+            self.lbl_cyno_age.setText("")
+            return
+        import time
+        when = time.strftime("%H:%M", time.localtime(fetched_at))
+        remaining = (expires_at or 0) - time.time()
+        if remaining > 60:
+            self.lbl_cyno_age.setText(
+                f"as of {when} · refreshes in {int(remaining // 60)} min")
+        else:
+            self.lbl_cyno_age.setText(f"as of {when} · ready to refresh")
+
     def set_cyno_scanning(self, busy: bool):
         self.btn_cyno.setEnabled(not busy)
         self.btn_cyno.setText("Scanning…" if busy else "Scan my characters")

@@ -1697,6 +1697,8 @@ class MainWindow(QMainWindow):
             lambda: self._open_settings("Permissions"))
         self.character.load_structures_requested.connect(self._load_structures)
         self.character.scan_cyno_requested.connect(self._scan_cyno_alts)
+        self.character.force_cyno_requested.connect(
+            lambda: self._scan_cyno_alts(force=True))
         self.character.add_system.connect(self.route.add_system)
         self.character.character_changed.connect(self._switch_character)
         self.character.unlink_requested.connect(self._unlink_character)
@@ -2589,7 +2591,7 @@ class MainWindow(QMainWindow):
         self._refresh_character_list()
         self._render_character()
 
-    def _scan_cyno_alts(self):
+    def _scan_cyno_alts(self, force: bool = False):
         """Roll-call of which linked characters can light a cyno, and where."""
         if not self.tokens:
             QMessageBox.information(self, "Cyno alts", "Link a character first.")
@@ -2606,7 +2608,7 @@ class MainWindow(QMainWindow):
         mods = self.universe.cyno_modules
         tokens = dict(self.tokens)
         w = Worker(lambda progress=None: _client.scan_cyno_alts(
-            tokens, cid, mods, progress))
+            tokens, cid, mods, progress, force=force))
         w.finished_ok.connect(self._on_cyno_alts)
         w.failed.connect(lambda m: (self.character.set_cyno_scanning(False),
                                     QMessageBox.warning(self, "Cyno alts", m)))
@@ -2616,6 +2618,14 @@ class MainWindow(QMainWindow):
         alts, notes = result
         self.cyno_alts = alts
         self.character.set_cyno_scanning(False)
+        from ..esi.transport import get_transport
+        if self.token:
+            st = get_transport().cache_status(
+                f"/characters/{self.token.character_id}/assets/",
+                params={"page": 1}, character_id=self.token.character_id)
+            self.character.set_cyno_freshness(
+                st.fetched_at if st else None,
+                st.expires_at if st else None)
         self.character.set_cyno_alts(alts, notes, self._system_name)
         if self.map_view:
             self.map_view.set_cyno_alts(alts)
