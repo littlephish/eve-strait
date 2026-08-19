@@ -143,10 +143,17 @@ genuinely immutable (longer) or where we choose to be stingier than CCP.
 
 | Route | Policy | Rationale |
 |---|---|---|
-| `/universe/stations/{id}/`, `/universe/names/` | permanent | Immutable. Kills the loop that caused 429 #2. |
+| `/universe/stations/{id}/` | permanent | Immutable. Kills the loop that caused 429 #2. |
 | `/universe/structures/{id}/` | 7 days | Name changes only on ownership transfer. |
 | assets, contacts, corp structures, starbases | `expires` + ETag | ~1h falls out of the header. |
 | `/characters/{id}/location/`, `/ship/`, `/online/` | never cached | Live data by definition. |
+
+`/universe/names/` and `/universe/ids/` are immutable but **not** cached in this
+pass: both are POSTs whose input is a JSON body, and the cache key is built from
+the URL and query params, not the body. Caching them needs body-aware keying.
+They already batch up to 1000 IDs per call, so they are not the burst that
+caused either observed 429; this is noted as follow-up work rather than done
+badly here.
 
 ## Pacing
 
