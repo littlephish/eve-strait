@@ -417,12 +417,18 @@ class MainWindow(QMainWindow):
             return
         if not self.esi:
             self.esi = EsiClient(self.token, config.get_client_id())
-        w = Worker(self.esi.location)
+        w = Worker(lambda: self.esi.location(priority="background"))
         w.finished_ok.connect(self._on_location)
         w.failed.connect(lambda m: self.character.set_location(""))
         self._run(w)
 
     def _on_location(self, data):
+        # Re-arm from the current budget: the first poll is what teaches
+        # the governor this group's real limit, so the interval can only
+        # be correct from the second poll onwards.
+        timer = getattr(self, "_location_timer", None)
+        if timer is not None and timer.isActive():
+            timer.setInterval(self._location_poll_ms())
         sid = (data or {}).get("solar_system_id")
         self.location_system_id = sid
         if not sid or not self.universe:
@@ -464,12 +470,26 @@ class MainWindow(QMainWindow):
         self._fetch_defense()
 
     # Live location is only worth polling ESI for while something actually
-    # wants it -- right now that is only the auto-waypoint feature. 15s: the
-    # endpoint itself is server-side cached for a few seconds, so anything
-    # much shorter would just be spending calls on a value that has not
-    # changed, and anything much longer risks the trigger system being
-    # noticed late.
-    LOCATION_POLL_MS = 15_000
+    # wants it -- right now that is only the auto-waypoint feature.
+    #
+    # The interval is derived from the rate-limit headers rather than fixed:
+    # /characters/{id}/location/ sits in the character-location group, and at
+    # the old fixed 15s this poll alone burned 120 tokens per 15-minute
+    # window -- around 80% of a 150/15m bucket -- so a cyno scan touching the
+    # same bucket would tip it into a 429. The governor gives background work
+    # half the group's budget; the 30s floor keeps us above the endpoint's own
+    # server-side cache, below which polling learns nothing new anyway.
+    LOCATION_POLL_FLOOR_MS = 30_000
+
+    def _location_poll_ms(self) -> int:
+        if not self.token:
+            return self.LOCATION_POLL_FLOOR_MS
+        from ..esi.transport import get_transport
+        seconds = get_transport().governor.poll_interval(
+            f"/characters/{self.token.character_id}/location/",
+            self.token.character_id,
+            floor=self.LOCATION_POLL_FLOOR_MS / 1000)
+        return int(seconds * 1000)
 
     def _sync_location_tracking(self):
         """Poll location on a timer only while the auto-waypoint feature
@@ -481,7 +501,7 @@ class MainWindow(QMainWindow):
                 self._location_timer = QTimer(self)
                 self._location_timer.timeout.connect(self._fetch_location)
             if not self._location_timer.isActive():
-                self._location_timer.start(self.LOCATION_POLL_MS)
+                self._location_timer.start(self._location_poll_ms())
                 self._fetch_location()  # don't wait a full interval to arm
         elif getattr(self, "_location_timer", None) is not None:
             self._location_timer.stop()
@@ -512,16 +532,36 @@ class MainWindow(QMainWindow):
             f"Reached {trigger.name} - in-game destination set to {dest.name}.", 8000)
 
     def _start_intel_timer(self):
-        """Re-poll on the configured interval. 0 minutes means never."""
+        """Re-poll on the configured interval. 0 minutes means never.
+
+        Single-shot and re-armed on completion rather than a repeating timer:
+        CCP asks that periodic jobs schedule from the end of the last run,
+        with some spread, so that every copy of an app does not stampede the
+        same endpoints at the same moment.
+        """
         from PySide6.QtCore import QTimer
         if getattr(self, "_intel_timer", None) is None:
             self._intel_timer = QTimer(self)
-            self._intel_timer.timeout.connect(self.refresh_intel)
+            self._intel_timer.setSingleShot(True)
+            self._intel_timer.timeout.connect(self._run_intel_refresh)
+        self._arm_intel_timer()
+
+    def _arm_intel_timer(self):
+        import random
         minutes = config.get_intel_refresh_minutes()
         if minutes <= 0:
             self._intel_timer.stop()
-        else:
-            self._intel_timer.start(minutes * 60 * 1000)
+            return
+        base = minutes * 60 * 1000
+        self._intel_timer.start(base + random.randint(0, 60_000))
+
+    def _run_intel_refresh(self):
+        # try/finally: a failed refresh must still re-arm, or one transient
+        # network error silently stops intel updating for the whole session.
+        try:
+            self.refresh_intel()
+        finally:
+            self._arm_intel_timer()
 
     def _edit_intel_settings(self):
         from ..esi import intel_store

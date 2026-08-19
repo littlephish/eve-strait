@@ -146,3 +146,13 @@ def test_healthy_error_budget_parks_nothing():
     g.observe_errors({"X-ESI-Error-Limit-Remain": "95",
                       "X-ESI-Error-Limit-Reset": "45"})
     assert g.check(ASSETS, 12345, "background").action == "proceed"
+
+
+def test_poll_interval_respects_a_custom_floor():
+    g = gov_at(150, limit="150/15m")
+    assert g.poll_interval(ASSETS, 12345, floor=5.0) == pytest.approx(24.0)
+
+
+def test_poll_interval_for_an_unobserved_route_is_the_floor():
+    g = RateLimitGovernor(clock=lambda: 1000.0)
+    assert g.poll_interval("/characters/1/location/", 1) == 30.0
