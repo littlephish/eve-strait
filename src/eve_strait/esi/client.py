@@ -9,6 +9,16 @@ import requests
 from .. import config
 from . import auth
 from .auth import check_response
+from .transport import get_transport
+
+
+class AssetsChangedDuringFetch(RuntimeError):
+    """The asset list refreshed while we were walking its pages.
+
+    Concatenating pages either side of a refresh produces a list that never
+    existed: items can appear twice or vanish. Better to say so and let the
+    caller retry than to cache a torn read for an hour.
+    """
 
 
 @dataclass
@@ -51,8 +61,8 @@ def sovereignty(progress=None) -> dict:
     if progress:
         progress("Loading sovereignty map...")
     try:
-        resp = requests.get(f"{config.ESI_BASE}/sovereignty/map/", timeout=45)
-        check_response(resp)
+        resp = get_transport().get("/sovereignty/map/", timeout=45,
+                                   priority="background")
         rows = resp.json()
     except (requests.RequestException, ValueError):
         return {"owners": {}, "names": {}}
@@ -92,8 +102,8 @@ def system_activity(progress=None) -> dict:
     if progress:
         progress("Loading recent kill activity...")
     try:
-        r = requests.get(f"{config.ESI_BASE}/universe/system_kills/", timeout=45)
-        check_response(r)
+        r = get_transport().get("/universe/system_kills/", timeout=45,
+                                priority="background")
         out["expires"] = r.headers.get("expires", "")
         for row in r.json():
             sid = row.get("system_id")
@@ -106,8 +116,8 @@ def system_activity(progress=None) -> dict:
     except (requests.RequestException, ValueError):
         return out
     try:
-        r = requests.get(f"{config.ESI_BASE}/universe/system_jumps/", timeout=45)
-        check_response(r)
+        r = get_transport().get("/universe/system_jumps/", timeout=45,
+                                priority="background")
         for row in r.json():
             sid = row.get("system_id")
             if sid:
@@ -137,8 +147,8 @@ def sovereignty_defense(progress=None) -> dict:
         progress("Loading sovereignty defense levels...")
     out: dict[int, dict] = {}
     try:
-        r = requests.get(f"{config.ESI_BASE}/sovereignty/structures/", timeout=45)
-        check_response(r)
+        r = get_transport().get("/sovereignty/structures/", timeout=45,
+                                priority="background")
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out
@@ -169,8 +179,8 @@ def industry_indices(progress=None) -> dict:
         progress("Loading industry indices...")
     out: dict[int, dict] = {}
     try:
-        r = requests.get(f"{config.ESI_BASE}/industry/systems/", timeout=45)
-        check_response(r)
+        r = get_transport().get("/industry/systems/", timeout=45,
+                                priority="background")
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out
@@ -186,8 +196,8 @@ def industry_indices(progress=None) -> dict:
 def incursions() -> set[int]:
     """Set of solar system IDs currently affected by an Incursion. Public."""
     try:
-        resp = requests.get(f"{config.ESI_BASE}/incursions/", timeout=20)
-        check_response(resp)
+        resp = get_transport().get("/incursions/", timeout=20,
+                                   priority="background")
         out: set[int] = set()
         for inc in resp.json():
             out.update(inc.get("infested_solar_systems", []))
@@ -206,9 +216,7 @@ def resolve_ids(names: list[str]) -> dict:
         return {"ids": {}, "unknown": []}
     out: dict[str, tuple[int, str]] = {}
     try:
-        resp = requests.post(f"{config.ESI_BASE}/universe/ids/",
-                             json=names, timeout=30)
-        check_response(resp)
+        resp = get_transport().post("/universe/ids/", json=names, timeout=30)
         data = resp.json()
     except (requests.RequestException, ValueError):
         return {"ids": {}, "unknown": names}
@@ -225,9 +233,7 @@ def resolve_names(ids: list[int]) -> dict[int, str]:
     if not ids:
         return {}
     try:
-        resp = requests.post(f"{config.ESI_BASE}/universe/names/",
-                             json=ids, timeout=20)
-        check_response(resp)
+        resp = get_transport().post("/universe/names/", json=ids, timeout=20)
         return {row["id"]: row["name"] for row in resp.json()}
     except (requests.RequestException, KeyError, ValueError):
         return {}
@@ -259,7 +265,10 @@ class EsiClient:
     def __init__(self, token: auth.Token, client_id: str):
         self.token = token
         self.client_id = client_id
-        self.session = requests.Session()
+        # No private session any more: every ESI request in the app shares one
+        # governed, cached transport so the rate-limit budget is tracked in
+        # one place rather than per client instance.
+        self.transport = get_transport()
 
     # -- auth plumbing ------------------------------------------------------
     def _ensure_token(self):
@@ -273,15 +282,23 @@ class EsiClient:
     def _headers(self):
         return {"Authorization": f"Bearer {self.token.access_token}"}
 
-    def _get(self, path: str, **params):
+    def _get(self, path: str, priority: str = "interactive",
+             force: bool = False, **params):
         self._ensure_token()
-        url = f"{config.ESI_BASE}{path}"
-        resp = self.session.get(url, headers=self._headers(), params=params, timeout=30)
-        if resp.status_code == 401:
+        try:
+            return self.transport.get(
+                path, params=params or None,
+                character_id=self.token.character_id,
+                headers=self._headers(), priority=priority, force=force)
+        except requests.HTTPError as exc:
+            if getattr(exc.response, "status_code", None) != 401:
+                raise
+            # An access token can be rejected even when it looks unexpired.
             self.token = auth.refresh_stored(self.token, self.client_id)
-            resp = self.session.get(url, headers=self._headers(), params=params, timeout=30)
-        check_response(resp, self.client_id)
-        return resp
+            return self.transport.get(
+                path, params=params or None,
+                character_id=self.token.character_id,
+                headers=self._headers(), priority=priority, force=force)
 
     # -- assets -------------------------------------------------------------
     def assets(self) -> list[dict]:
@@ -299,7 +316,7 @@ class EsiClient:
         return out
 
     # -- name resolution ----------------------------------------------------
-    def location(self) -> dict:
+    def location(self, priority: str = "interactive") -> dict:
         """Where this character is right now.
 
         Uses esi-location.read_location.v1, which is already in the default
@@ -307,9 +324,9 @@ class EsiClient:
         Returns {"solar_system_id": int, "station_id"?: int, "structure_id"?: int}.
         """
         cid = self.token.character_id
-        return self._get(f"/characters/{cid}/location/").json()
+        return self._get(f"/characters/{cid}/location/", priority=priority).json()
 
-    def ship(self) -> dict:
+    def ship(self, priority: str = "interactive") -> dict:
         """The ship this character is in right now.
 
         Needs esi-location.read_ship_type.v1. Returns ship_type_id, ship_item_id and
@@ -317,13 +334,13 @@ class EsiClient:
         list, which is how a cyno is found.
         """
         cid = self.token.character_id
-        return self._get(f"/characters/{cid}/ship/").json()
+        return self._get(f"/characters/{cid}/ship/", priority=priority).json()
 
-    def online(self) -> dict:
+    def online(self, priority: str = "interactive") -> dict:
         """Login state for this character (esi-location.read_online.v1)."""
         cid = self.token.character_id
         try:
-            return self._get(f"/characters/{cid}/online/").json()
+            return self._get(f"/characters/{cid}/online/", priority=priority).json()
         except requests.HTTPError:
             return {}
 
@@ -331,16 +348,19 @@ class EsiClient:
                      clear_other_waypoints=False) -> None:
         """Set an in-game autopilot waypoint (needs esi-ui.write_waypoint.v1)."""
         self._ensure_token()
-        url = f"{config.ESI_BASE}/ui/autopilot/waypoint/"
         params = {
             "destination_id": destination_id,
             "add_to_beginning": str(add_to_beginning).lower(),
             "clear_other_waypoints": str(clear_other_waypoints).lower(),
         }
-        resp = self.session.post(url, headers=self._headers(), params=params, timeout=30)
+        cid = self.token.character_id
+        resp = self.transport.post("/ui/autopilot/waypoint/", params=params,
+                                   character_id=cid, headers=self._headers())
         if resp.status_code == 401:
             self.token = auth.refresh_stored(self.token, self.client_id)
-            resp = self.session.post(url, headers=self._headers(), params=params, timeout=30)
+            resp = self.transport.post("/ui/autopilot/waypoint/", params=params,
+                                       character_id=self.token.character_id,
+                                       headers=self._headers())
         check_response(resp, self.client_id)
 
     def structure(self, structure_id: int) -> dict | None:
