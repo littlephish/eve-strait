@@ -28,6 +28,7 @@ _STATUS_ICON = {"ok": "✓", "risky": "⚠", "no docking": "✗"}
 class CharacterPanel(QWidget):
     login_requested = Signal()
     load_structures_requested = Signal()
+    load_all_structures_requested = Signal()
     add_system = Signal(int)
     character_changed = Signal(int)          # character_id
     unlink_requested = Signal(int)           # character_id
@@ -150,6 +151,15 @@ class CharacterPanel(QWidget):
         self.btn_structs = QPushButton("Load my dockable structures")
         self.btn_structs.clicked.connect(self.load_structures_requested)
         v.addWidget(self.btn_structs)
+
+        # Bulk load is a context action, not the main click: it walks
+        # every linked character, so it should be chosen rather than
+        # stumbled into.
+        self.btn_structs.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.ActionsContextMenu)
+        act_all = QAction("Load for all linked characters", self.btn_structs)
+        act_all.triggered.connect(self.load_all_structures_requested)
+        self.btn_structs.addAction(act_all)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)   # indeterminate spinner

@@ -677,3 +677,44 @@ def scan_cyno_alts(tokens, client_id: str, cyno_modules: dict[int, str],
         if alt is not None:
             alts.append(alt)
     return alts, notes
+
+
+def load_all_dockables(tokens, client_id: str, progress=None):
+    """Fetch dockable locations for every linked character, in one pass.
+
+    One character at a time by design: asset routes bucket per character, so
+    this spreads across N rate-limit buckets rather than hammering one, and
+    the station/structure names resolved for the first character are reused
+    from cache by the rest.
+
+    Returns ({character_id: [Dockable]}, notes). Notes carry the per-character
+    reasons a fetch came back empty, because with a dozen characters "this one
+    owns nothing" and "this one could not be read" look identical in a results
+    list.
+    """
+    results: dict[int, list] = {}
+    notes: list[str] = []
+    for i, (cid, tok) in enumerate(sorted(tokens.items()), start=1):
+        name = getattr(tok, "character_name", str(cid))
+        if progress:
+            progress(f"Loading {name} ({i}/{len(tokens)})…")
+        try:
+            found = EsiClient(tok, client_id).dockable_locations()
+        except AssetsChangedDuringFetch:
+            notes.append(f"{name}: assets changed mid-read; try again.")
+            continue
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status == 403:
+                notes.append(f"{name}: denied (403) - this character was "
+                             "linked before the asset scope was granted. "
+                             "Sign in again to include it.")
+            else:
+                notes.append(f"{name}: {exc}")
+            continue
+        except Exception as exc:                        # noqa: BLE001
+            notes.append(f"{name}: {exc}")
+            continue
+        results[cid] = found
+        save_dockables(cid, found)
+    return results, notes

@@ -1826,6 +1826,8 @@ class MainWindow(QMainWindow):
         self.character.scopes_requested.connect(
             lambda: self._open_settings("Permissions"))
         self.character.load_structures_requested.connect(self._load_structures)
+        self.character.load_all_structures_requested.connect(
+            self._load_all_structures)
         self.character.scan_cyno_requested.connect(self._scan_cyno_alts)
         self.character.force_cyno_requested.connect(
             lambda: self._scan_cyno_alts(force=True))
@@ -2780,6 +2782,38 @@ class MainWindow(QMainWindow):
         w.failed.connect(lambda m: (self.character.set_loading(False),
                                     QMessageBox.warning(self, "Structures", m)))
         self._run(w, "Loading dockable structures…")
+
+    def _load_all_structures(self):
+        """Fill every linked character's dockables cache in one pass."""
+        if not self.tokens:
+            QMessageBox.information(self, "Structures", "Log in first.")
+            return
+        from ..esi import client as _client
+        self.character.set_loading(True, "Loading assets…")
+        cid = config.get_client_id()
+        tokens = dict(self.tokens)
+        w = Worker(lambda progress=None: _client.load_all_dockables(
+            tokens, cid, progress))
+        w.progress.connect(lambda msg: self.character.set_loading(True, msg))
+        w.finished_ok.connect(self._on_all_structures)
+        w.failed.connect(lambda m: (self.character.set_loading(False),
+                                    QMessageBox.warning(self, "Structures", m)))
+        self._run(w, "Loading dockables for all characters…")
+
+    def _on_all_structures(self, result):
+        results, notes = result
+        self.character.set_loading(False)
+        # The active character's list is what routing uses; re-read it from
+        # the cache the bulk load just wrote.
+        self._load_cached_dockables()
+        self._render_character()
+        self.route.refresh()
+        total = sum(len(v) for v in results.values())
+        self.statusBar().showMessage(
+            f"Loaded {total} dockable locations across {len(results)} "
+            f"character(s).", 8000)
+        if notes:
+            QMessageBox.information(self, "Structures", "\n".join(notes))
 
     def _on_structures(self, dockables):
         self.character.set_loading(False)
