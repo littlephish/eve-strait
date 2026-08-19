@@ -301,14 +301,21 @@ class EsiClient:
                 headers=self._headers(), priority=priority, force=force)
 
     # -- assets -------------------------------------------------------------
-    def assets(self) -> list[dict]:
+    def assets(self, force: bool = False) -> list[dict]:
         cid = self.token.character_id
         out: list[dict] = []
         page = 1
+        stamp = None
         while True:
-            resp = self._get(f"/characters/{cid}/assets/", page=page)
-            batch = resp.json()
-            out.extend(batch)
+            resp = self._get(f"/characters/{cid}/assets/", page=page, force=force)
+            page_stamp = resp.headers.get("last-modified", "")
+            if stamp is None:
+                stamp = page_stamp
+            elif page_stamp and page_stamp != stamp:
+                raise AssetsChangedDuringFetch(
+                    "Your asset list changed while it was being read. "
+                    "Try the scan again.")
+            out.extend(resp.json())
             pages = int(resp.headers.get("X-Pages", "1"))
             if page >= pages:
                 break
@@ -647,6 +654,10 @@ def scan_cyno_alts(tokens, client_id: str, cyno_modules: dict[int, str],
             location = c.location()
             ship = c.ship()
             assets = c.assets()
+        except AssetsChangedDuringFetch:
+            notes.append(f"{name}: assets changed mid-read; scan again to "
+                         "include this character.")
+            continue
         except requests.HTTPError as exc:
             status = getattr(exc.response, "status_code", None)
             if status == 403:
