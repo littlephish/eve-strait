@@ -27,6 +27,8 @@ RESERVE_FLOOR = 0.10     # below this, only interactive work may spend
 MAX_PACING_DELAY = 60.0  # never stall a single request longer than this
 POLL_FLOOR_SECONDS = 30.0
 BACKGROUND_SHARE = 0.50  # fraction of a group's budget timers may use
+MAX_INTERACTIVE_WAIT = 60.0   # longer than this, tell the user instead of stalling
+ERROR_LIMIT_FLOOR = 10        # X-ESI-Error-Limit-Remain below this parks everything
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class RateLimitGovernor:
         # Learned from responses: which group a route belongs to. Until a
         # route has been seen once we cannot know, so it stays optimistic.
         self._route_groups: dict[str, str] = {}
+        self._error_parked_until = 0.0
 
     # -- keying -------------------------------------------------------------
     def _key(self, path: str, character_id: int | None):
@@ -111,10 +114,41 @@ class RateLimitGovernor:
                     pass
 
     # -- decisions ----------------------------------------------------------
+    def park(self, path: str, character_id: int | None, seconds: float) -> None:
+        """Stop using a bucket until Retry-After has elapsed."""
+        with self._lock:
+            key = self._key(path, character_id)
+            st = self._groups.setdefault(key, _GroupState())
+            st.parked_until = max(st.parked_until, self._clock() + seconds)
+
+    def observe_errors(self, headers) -> None:
+        """The error limit is a separate, global, fixed-window budget.
+
+        Exhausting it makes ESI discard every request until the window ends,
+        and because 4XX also costs 5 tokens an error storm drains both
+        budgets at once. So we park everything, not just one group.
+        """
+        try:
+            remain = int(headers.get("X-ESI-Error-Limit-Remain", ""))
+            reset = float(headers.get("X-ESI-Error-Limit-Reset", ""))
+        except (TypeError, ValueError):
+            return
+        if remain < ERROR_LIMIT_FLOOR:
+            with self._lock:
+                self._error_parked_until = max(self._error_parked_until,
+                                               self._clock() + reset)
+
     def check(self, path: str, character_id: int | None,
               priority: str = "interactive") -> Decision:
         with self._lock:
+            now = self._clock()
             st = self._groups.get(self._key(path, character_id))
+            parked_until = max(self._error_parked_until,
+                               st.parked_until if st else 0.0)
+            if parked_until > now:
+                if priority == "background":
+                    return Decision("decline", reason="parked")
+                return Decision("wait", parked_until - now, "parked")
             if st is None or st.limit is None or st.remaining is None:
                 return Decision("proceed")          # optimistic until observed
             fraction = st.remaining / st.limit.max_tokens

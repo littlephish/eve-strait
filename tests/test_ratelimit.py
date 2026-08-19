@@ -90,3 +90,59 @@ def test_poll_interval_derives_from_a_tight_limit():
 
 def test_poll_interval_never_dips_below_the_floor():
     assert gov_at(5000, limit="5000/15m").poll_interval(ASSETS, 12345) == 30.0
+
+
+class FakeClock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def test_park_blocks_background_until_it_expires():
+    clock = FakeClock()
+    g = gov_at(1000, clock=clock)
+    g.park(ASSETS, 12345, 30)
+    assert g.check(ASSETS, 12345, "background").action == "decline"
+    clock.t += 31
+    assert g.check(ASSETS, 12345, "background").action == "proceed"
+
+
+def test_short_park_makes_interactive_wait_the_remainder():
+    clock = FakeClock()
+    g = gov_at(1000, clock=clock)
+    g.park(ASSETS, 12345, 30)
+    clock.t += 10
+    d = g.check(ASSETS, 12345, "interactive")
+    assert d.action == "wait"
+    assert d.seconds == pytest.approx(20.0)
+
+
+def test_long_park_is_reported_not_slept_through():
+    # 15 minutes is too long to freeze a button on. The transport turns a
+    # wait longer than MAX_INTERACTIVE_WAIT into a RateLimited error.
+    g = gov_at(1000)
+    g.park(ASSETS, 12345, 900)
+    d = g.check(ASSETS, 12345, "interactive")
+    assert d.action == "wait"
+    assert d.seconds > 60.0
+
+
+def test_error_limit_parks_every_group():
+    clock = FakeClock()
+    g = gov_at(1000, clock=clock)
+    g.observe_errors({"X-ESI-Error-Limit-Remain": "3",
+                      "X-ESI-Error-Limit-Reset": "45"})
+    assert g.check(ASSETS, 12345, "background").action == "decline"
+    # A completely unrelated route is parked too: the error budget is global.
+    assert g.check("/sovereignty/map/", None, "background").action == "decline"
+    clock.t += 46
+    assert g.check("/sovereignty/map/", None, "background").action == "proceed"
+
+
+def test_healthy_error_budget_parks_nothing():
+    g = gov_at(1000)
+    g.observe_errors({"X-ESI-Error-Limit-Remain": "95",
+                      "X-ESI-Error-Limit-Reset": "45"})
+    assert g.check(ASSETS, 12345, "background").action == "proceed"
