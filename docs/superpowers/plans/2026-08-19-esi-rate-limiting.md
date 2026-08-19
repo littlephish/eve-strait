@@ -39,7 +39,7 @@ Sets up the test suite alongside the first piece of real logic, because a test h
 - Consumes: nothing.
 - Produces: `Limit(max_tokens: int, window_seconds: int)` frozen dataclass; `parse_limit(raw: str) -> Limit | None`; `route_key(path: str) -> str`.
 
-- [ ] **Step 1: Add the dev dependency and CI step**
+- [x] **Step 1: Add the dev dependency and CI step**
 
 In `pyproject.toml`, after the `[project.scripts]` block, add:
 
@@ -78,7 +78,7 @@ In `AGENTS.md`, under "Running", replace the line beginning "There is **no commi
   running the app.
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `tests/test_ratelimit.py`:
 
@@ -114,12 +114,12 @@ def test_route_key_leaves_static_paths_alone():
 
 Why `route_key` matters: without collapsing IDs, every station lookup would be its own governor key and we would never accumulate enough observations to pace anything.
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'eve_strait.esi.ratelimit'`
 
-- [ ] **Step 4: Write minimal implementation**
+- [x] **Step 4: Write minimal implementation**
 
 Create `src/eve_strait/esi/ratelimit.py`:
 
@@ -169,12 +169,12 @@ def route_key(path: str) -> str:
     return _ID_SEGMENT_RE.sub("/{id}", path)
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: PASS (12 tests)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pyproject.toml .github/workflows/ci.yml AGENTS.md src/eve_strait/esi/ratelimit.py tests/test_ratelimit.py
@@ -193,7 +193,7 @@ git commit -m "feat(esi): parse rate-limit headers, add unit test suite"
 - Consumes: `Limit`, `parse_limit`, `route_key` from Task 1.
 - Produces: `Decision(action: str, seconds: float, reason: str)` where `action` is one of `"proceed"`, `"wait"`, `"decline"`; `RateLimitGovernor` with `observe(path, character_id, headers)`, `check(path, character_id, priority) -> Decision`, and `poll_interval(path, character_id, floor=30.0) -> float`. `priority` is `"interactive"` or `"background"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_ratelimit.py`:
 
@@ -265,12 +265,12 @@ def test_poll_interval_never_dips_below_the_floor():
     assert gov_at(5000, limit="5000/15m").poll_interval(ASSETS, 12345) == 30.0
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: FAIL with `ImportError: cannot import name 'Decision'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Append to `src/eve_strait/esi/ratelimit.py`:
 
@@ -372,12 +372,12 @@ class RateLimitGovernor:
             return max(st.limit.window_seconds / requests, floor)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: PASS (22 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/eve_strait/esi/ratelimit.py tests/test_ratelimit.py
@@ -396,7 +396,7 @@ git commit -m "feat(esi): pace requests as the rate-limit budget drains"
 - Consumes: `RateLimitGovernor`, `Decision` from Task 2.
 - Produces: `RateLimitGovernor.park(path, character_id, seconds)`; `RateLimitGovernor.observe_errors(headers)`; `MAX_INTERACTIVE_WAIT = 60.0`. `check()` gains park-aware behaviour: a parked group returns `decline` for background and `wait` for interactive, with `seconds` set to the remaining park time.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_ratelimit.py`:
 
@@ -457,12 +457,12 @@ def test_healthy_error_budget_parks_nothing():
     assert g.check(ASSETS, 12345, "background").action == "proceed"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: FAIL with `AttributeError: 'RateLimitGovernor' object has no attribute 'park'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/eve_strait/esi/ratelimit.py`, add near the other constants:
 
@@ -531,12 +531,12 @@ Replace the body of `check()` with this park-aware version (the pacing logic is 
             return Decision("wait", delay, "pacing")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: PASS (27 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/eve_strait/esi/ratelimit.py tests/test_ratelimit.py
@@ -559,7 +559,7 @@ git commit -m "feat(esi): honour Retry-After parks and the ESI error limit"
 
 `get()` returns the entry whether or not it has expired — the transport decides what to do with a stale entry, because a stale entry is still useful for an ETag revalidation and for serving to declined background callers.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_httpcache.py`:
 
@@ -668,12 +668,12 @@ def test_parse_expires_ignores_junk():
     assert parse_expires({"expires": "0"}, now=0.0) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_httpcache.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'eve_strait.esi.httpcache'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/eve_strait/esi/httpcache.py`:
 
@@ -812,14 +812,14 @@ class HttpCache:
 
 Note on `touch()`: it updates `fetched_at` as well as `expires_at`, because "as of 14:32" in the UI should mean "we confirmed this at 14:32", and a 304 is a confirmation.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_httpcache.py -v`
 Expected: PASS (14 tests)
 
 If `test_parse_expires_reads_an_http_date` fails on the exact epoch value, recompute it rather than adjusting the implementation: `python -c "from email.utils import parsedate_to_datetime as p; print(p('Wed, 19 Aug 2026 12:00:00 GMT').timestamp())"` and use that number. The assertion is checking that parsing happens, not that a particular date is special.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/eve_strait/esi/httpcache.py tests/test_httpcache.py
@@ -845,7 +845,7 @@ def get(self, path, *, params=None, character_id=None, headers=None,
         priority="interactive", force=False, timeout=30) -> Response
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_transport.py`:
 
@@ -1039,12 +1039,12 @@ def test_cache_status_reports_without_a_request(make):
     assert len(session.calls) == 1
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_transport.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'eve_strait.esi.transport'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/eve_strait/esi/transport.py`:
 
@@ -1248,17 +1248,17 @@ def get_transport() -> EsiTransport:
         return _transport
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_transport.py -v`
 Expected: PASS (13 tests)
 
-- [ ] **Step 5: Run the whole suite**
+- [x] **Step 5: Run the whole suite**
 
 Run: `uv run pytest -q`
 Expected: PASS (54 tests)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/eve_strait/esi/transport.py tests/test_transport.py
@@ -1277,7 +1277,7 @@ git commit -m "feat(esi): governed, cached transport for all ESI requests"
 - Consumes: `get_transport()`, `Response` from Task 5.
 - Produces: no new public names. `EsiClient._get` keeps its existing signature `(self, path, **params)` and still returns something with `.json()` and `.headers`, so its nine call sites are unchanged.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_client_delegation.py`:
 
@@ -1347,12 +1347,12 @@ def test_module_level_calls_pass_no_character_id(monkeypatch):
     assert kwargs.get("character_id") is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_client_delegation.py -v`
 Expected: FAIL with `AttributeError: module 'eve_strait.esi.client' has no attribute 'get_transport'`
 
-- [ ] **Step 3: Rewrite `_get` and the auth plumbing**
+- [x] **Step 3: Rewrite `_get` and the auth plumbing**
 
 In `src/eve_strait/esi/client.py`, add to the imports at the top:
 
@@ -1402,7 +1402,7 @@ Replace `EsiClient.__init__` and `_get` (currently lines 259-285) with:
                 headers=self._headers(), priority=priority, force=force)
 ```
 
-- [ ] **Step 4: Add priority pass-through to the live-location methods**
+- [x] **Step 4: Add priority pass-through to the live-location methods**
 
 Replace `location`, `ship` and `online` (currently lines 302-328) so timers can mark themselves background. Keep the existing docstrings verbatim; only the signatures and the `_get` calls change:
 
@@ -1423,7 +1423,7 @@ Replace `location`, `ship` and `online` (currently lines 302-328) so timers can 
             return {}
 ```
 
-- [ ] **Step 5: Convert `set_waypoint` to the transport**
+- [x] **Step 5: Convert `set_waypoint` to the transport**
 
 Replace the body of `set_waypoint` (currently lines 330-345) below the docstring with:
 
@@ -1440,7 +1440,7 @@ Replace the body of `set_waypoint` (currently lines 330-345) below the docstring
         check_response(resp, self.client_id)
 ```
 
-- [ ] **Step 6: Convert the six module-level functions**
+- [x] **Step 6: Convert the six module-level functions**
 
 Each currently calls `requests.get(f"{config.ESI_BASE}/...", timeout=N)` followed by `check_response(resp)`. Replace each call, and delete the `check_response(resp)` line that follows it — the transport raises `RateLimited` on 429 and calls `raise_for_status()` itself.
 
@@ -1511,23 +1511,23 @@ Both keep their existing `try/except` wrappers and both drop their `check_respon
 
 `resolve_names` posts to `/universe/names/`, so it uses `get_transport().post(...)`. Its results are the permanent-cache case, but POST is not cached by the transport — leave the existing in-function behaviour alone; caching name resolution is out of scope for this task and `resolve_names` already batches.
 
-- [ ] **Step 7: Verify no direct ESI calls remain**
+- [x] **Step 7: Verify no direct ESI calls remain**
 
 Run: `grep -n "requests\.\(get\|post\)" src/eve_strait/esi/client.py`
 Expected: no output. If any line prints, it was missed above.
 
-- [ ] **Step 8: Run the tests**
+- [x] **Step 8: Run the tests**
 
 Run: `uv run pytest -q`
 Expected: PASS (59 tests)
 
-- [ ] **Step 9: Verify the app still runs**
+- [x] **Step 9: Verify the app still runs**
 
 Run: `uv run eve-strait`
 
 Check by hand: the map loads, and if you have a token linked, the character panel populates. Close the app.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/eve_strait/esi/client.py tests/test_client_delegation.py
@@ -1546,7 +1546,7 @@ git commit -m "refactor(esi): route every ESI call through the governed transpor
 - Consumes: `EsiClient._get` from Task 6.
 - Produces: `EsiClient.assets(force: bool = False) -> list[dict]`; raises `AssetsChangedDuringFetch` (new, defined in `client.py`) when pages disagree.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_assets_paging.py`:
 
@@ -1617,12 +1617,12 @@ def test_force_is_forwarded_to_every_page(monkeypatch):
     assert captured == [True, True]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_assets_paging.py -v`
 Expected: FAIL with `AttributeError: module 'eve_strait.esi.client' has no attribute 'AssetsChangedDuringFetch'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/eve_strait/esi/client.py`, add near the top after the imports:
 
@@ -1661,7 +1661,7 @@ Replace `assets` (lines 287-300) with:
         return out
 ```
 
-- [ ] **Step 4: Handle the new exception where assets are scanned**
+- [x] **Step 4: Handle the new exception where assets are scanned**
 
 In `scan_cyno_alts` (line 609), the existing `except Exception as exc` already catches `AssetsChangedDuringFetch` and records it as a per-character note, which is the right behaviour — one alt's torn read must not abort the whole roll-call. Add the message-clarifying clause before the generic handler:
 
@@ -1672,12 +1672,12 @@ In `scan_cyno_alts` (line 609), the existing `except Exception as exc` already c
             continue
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest -q`
 Expected: PASS (63 tests)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/eve_strait/esi/client.py tests/test_assets_paging.py
@@ -1698,7 +1698,7 @@ git commit -m "feat(esi): reject torn asset reads across paginated fetches"
 
 No unit tests: this is Qt widget wiring, which the project verifies by running the app.
 
-- [ ] **Step 1: Add the freshness label and the force-refresh action**
+- [x] **Step 1: Add the freshness label and the force-refresh action**
 
 In `src/eve_strait/ui/panels/character_panel.py`, add next to the existing `scan_cyno_requested` signal at line 35:
 
@@ -1728,7 +1728,7 @@ After `self.sec_cyno.add(self.btn_cyno)` (line 174), insert:
 
 Add the imports this needs at the top of the file: `QAction` from `PySide6.QtGui`, and `Qt` from `PySide6.QtCore` if not already imported.
 
-- [ ] **Step 2: Add the label updater**
+- [x] **Step 2: Add the label updater**
 
 In the same file, next to `set_cyno_scanning` (line 190):
 
@@ -1748,7 +1748,7 @@ In the same file, next to `set_cyno_scanning` (line 190):
             self.lbl_cyno_age.setText(f"as of {when} · ready to refresh")
 ```
 
-- [ ] **Step 3: Wire the signal and the force flag**
+- [x] **Step 3: Wire the signal and the force flag**
 
 In `src/eve_strait/ui/main_window.py`, next to the existing connection at line 1699:
 
@@ -1764,7 +1764,7 @@ Change the signature at line 2592 to `def _scan_cyno_alts(self, force: bool = Fa
             tokens, cid, mods, progress, force=force))
 ```
 
-- [ ] **Step 4: Thread `force` through `scan_cyno_alts`**
+- [x] **Step 4: Thread `force` through `scan_cyno_alts`**
 
 In `src/eve_strait/esi/client.py`, change the signature at line 609 to:
 
@@ -1783,7 +1783,7 @@ and inside the loop change the three calls to:
 
 `location` and `ship` are never cached, so `force` does not apply to them.
 
-- [ ] **Step 5: Update the label after a scan**
+- [x] **Step 5: Update the label after a scan**
 
 In `_on_cyno_alts` (line 2615), after `self.character.set_cyno_scanning(False)`:
 
@@ -1797,7 +1797,7 @@ In `_on_cyno_alts` (line 2615), after `self.character.set_cyno_scanning(False)`:
                 st.fetched_at if st else None, st.expires_at if st else None)
 ```
 
-- [ ] **Step 6: Verify by hand**
+- [x] **Step 6: Verify by hand**
 
 Run: `uv run eve-strait`
 
@@ -1806,7 +1806,7 @@ Check, with a character linked:
 2. Click it again immediately. It returns effectively instantly and the label is unchanged — no network traffic was spent.
 3. Right-click the button, choose "Force refresh (ignores cache)". It re-fetches and the label's timestamp updates.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/eve_strait/ui/panels/character_panel.py src/eve_strait/ui/main_window.py src/eve_strait/esi/client.py
@@ -1827,7 +1827,7 @@ This is the task that addresses the suspected root cause: 15s polling consumes 1
 - Consumes: `RateLimitGovernor.poll_interval` (Task 2), `get_transport()` (Task 5), `EsiClient.location(priority=...)` (Task 6).
 - Produces: no new public names.
 
-- [ ] **Step 1: Write the failing test for the interval used by the UI**
+- [x] **Step 1: Write the failing test for the interval used by the UI**
 
 Append to `tests/test_ratelimit.py`:
 
@@ -1842,12 +1842,12 @@ def test_poll_interval_for_an_unobserved_route_is_the_floor():
     assert g.poll_interval("/characters/1/location/", 1) == 30.0
 ```
 
-- [ ] **Step 2: Run tests to verify they fail or pass**
+- [x] **Step 2: Run tests to verify they fail or pass**
 
 Run: `uv run pytest tests/test_ratelimit.py -v`
 Expected: PASS. `poll_interval` was built in Task 2; these two cases pin the behaviour the UI now depends on. If they fail, fix `poll_interval` before continuing — the UI change below is meaningless on a broken interval.
 
-- [ ] **Step 3: Replace the hardcoded interval**
+- [x] **Step 3: Replace the hardcoded interval**
 
 In `src/eve_strait/ui/main_window.py`, replace the comment block and constant at lines 466-472 with:
 
@@ -1875,7 +1875,7 @@ In `src/eve_strait/ui/main_window.py`, replace the comment block and constant at
         return int(seconds * 1000)
 ```
 
-- [ ] **Step 4: Use it in `_sync_location_tracking`**
+- [x] **Step 4: Use it in `_sync_location_tracking`**
 
 Replace the `self._location_timer.start(self.LOCATION_POLL_MS)` line (line 484) with:
 
@@ -1893,13 +1893,13 @@ And, so the interval tracks a limit we learn about only after the first response
             self._location_timer.setInterval(self._location_poll_ms())
 ```
 
-- [ ] **Step 5: Mark the poll as background work**
+- [x] **Step 5: Mark the poll as background work**
 
 Find the `location()` call inside `_fetch_location` and change it to `location(priority="background")`. This is what lets the governor decline the poll — and the UI keep its last known position — when the budget is nearly spent.
 
 Run `grep -n "\.location()" src/eve_strait/ui/main_window.py` to find every call site and change only the one inside `_fetch_location`. Calls made in response to a button press stay interactive.
 
-- [ ] **Step 6: Stagger the intel refresh timer**
+- [x] **Step 6: Stagger the intel refresh timer**
 
 CCP's guidance is to schedule periodic work from the end of the last run rather than on a fixed wall-clock interval, so that every client running this app does not fire in lockstep on the hour.
 
@@ -1939,7 +1939,7 @@ CCP's guidance is to schedule periodic work from the end of the last run rather 
 
 The `try/finally` matters: a failed refresh must still re-arm, or one transient network error silently stops intel updating for the rest of the session.
 
-- [ ] **Step 7: Verify by hand**
+- [x] **Step 7: Verify by hand**
 
 Run: `uv run eve-strait`
 
@@ -1947,7 +1947,7 @@ Enable auto-waypoint with a character linked, then confirm the location still up
 
 Then open the intel settings, set the refresh interval to 1 minute, and confirm intel still refreshes roughly every 1-2 minutes and keeps refreshing (proving the re-arm works).
 
-- [ ] **Step 8: Run the suite and commit**
+- [x] **Step 8: Run the suite and commit**
 
 Run: `uv run pytest -q`
 Expected: PASS (65 tests)
@@ -1971,7 +1971,7 @@ The plan so far rests on an inference: that the `character-location` group's lim
 - Consumes: the debug logging added in `EsiTransport._observe` (Task 5).
 - Produces: no code.
 
-- [ ] **Step 1: Capture real rate-limit headers**
+- [x] **Step 1: Capture real rate-limit headers**
 
 Run the app with debug logging on:
 
@@ -1981,13 +1981,13 @@ uv run python -c "import logging; logging.basicConfig(level=logging.DEBUG); from
 
 With a character linked, do all three: let location polling run for two minutes, run a cyno scan, and refresh dockables. Record from the log output, for each distinct `group=`, the observed `limit=` value.
 
-- [ ] **Step 2: Record the findings in the spec**
+- [x] **Step 2: Record the findings in the spec**
 
 Add a section to `docs/superpowers/specs/2026-08-19-esi-rate-limiting-design.md` headed "Observed limits", followed by the date you took the measurement, with a table of three columns: group name, the `X-Ratelimit-Limit` value seen, and which flow hit it. State plainly whether the 150/15m assumption behind the polling change held.
 
 If the observed `character-location` limit is far above 150/15m, note that the 30s floor is now conservative rather than necessary, and that it could be revisited — but do not change it in this task. A cadence change deserves its own measurement.
 
-- [ ] **Step 3: Document the caching behaviour for users**
+- [x] **Step 3: Document the caching behaviour for users**
 
 In `README.md`, add to the ESI section a short paragraph:
 
@@ -2000,7 +2000,7 @@ when it next refreshes. Right-click the button for a forced refresh if you
 have just refitted, though EVE's own copy may still be up to an hour behind.
 ```
 
-- [ ] **Step 4: Full verification**
+- [x] **Step 4: Full verification**
 
 Run: `uv run pytest -q` — expected PASS.
 Run: `python -m compileall -q src` — expected silent.
@@ -2012,7 +2012,7 @@ Confirm `esi_cache.sqlite` now exists in the cache directory:
 ls "$LOCALAPPDATA/eve-strait/cache/esi_cache.sqlite"
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-08-19-esi-rate-limiting-design.md
@@ -2070,7 +2070,7 @@ structures that appear in that character's own asset list, so any character
 reaching the lookup already had access. If this ever feels wrong, removing the
 one line from the set restores per-character keying.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_transport.py`:
 
@@ -2109,12 +2109,12 @@ def test_cache_status_uses_the_same_identity_rule(make):
     assert t.cache_status("/universe/stations/60003760/", character_id=2) is not None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_transport.py -q`
 Expected: FAIL — `test_public_routes_share_one_entry_across_characters` reports 2 calls, not 1.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/eve_strait/esi/transport.py`, add after `CACHE_POLICY`:
 
@@ -2165,12 +2165,12 @@ In `get`, replace the key construction line:
 Leave the `character_id` passed to the governor untouched — rate-limit buckets
 really are per character even when the cached body is not.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest -q`
 Expected: PASS (69 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/eve_strait/esi/transport.py tests/test_transport.py
@@ -2195,7 +2195,7 @@ Returns per-character results *and* notes, mirroring `scan_cyno_alts`: "no
 structures found" and "could not look" are different answers, and with 12
 characters the difference matters.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_bulk_dockables.py`:
 
@@ -2289,12 +2289,12 @@ def test_progress_names_each_character(monkeypatch):
     assert any("Beta" in m for m in seen)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_bulk_dockables.py -q`
 Expected: FAIL with `AttributeError: module 'eve_strait.esi.client' has no attribute 'load_all_dockables'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/eve_strait/esi/client.py`, add after `scan_cyno_alts`:
 
@@ -2340,12 +2340,12 @@ def load_all_dockables(tokens, client_id: str, progress=None):
     return results, notes
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_bulk_dockables.py -q`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: Add the UI action**
+- [x] **Step 5: Add the UI action**
 
 In `src/eve_strait/ui/panels/character_panel.py`, add next to `load_structures_requested`:
 
@@ -2366,7 +2366,7 @@ meaning:
         self.btn_structs.addAction(act_all)
 ```
 
-- [ ] **Step 6: Wire it in the main window**
+- [x] **Step 6: Wire it in the main window**
 
 In `src/eve_strait/ui/main_window.py`, next to the existing
 `load_structures_requested` connection:
@@ -2412,7 +2412,7 @@ Add the handler next to `_load_structures`:
             QMessageBox.information(self, "Structures", "\n".join(notes))
 ```
 
-- [ ] **Step 7: Verify**
+- [x] **Step 7: Verify**
 
 Run: `uv run pytest -q` — expected PASS (74 tests).
 Run: `python -m compileall -q src` — expected silent.
@@ -2422,7 +2422,7 @@ choose "Load for all linked characters", and confirm the status bar reports a
 count across characters. Switch the dropdown to a character that previously
 showed nothing and confirm its structures now appear immediately.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/eve_strait/esi/client.py src/eve_strait/ui/panels/character_panel.py src/eve_strait/ui/main_window.py tests/test_bulk_dockables.py
