@@ -87,7 +87,8 @@ def sovereignty(progress=None) -> dict:
     return {"owners": owners, "names": names}
 
 
-def system_activity(progress=None) -> dict:
+def system_activity(progress=None, force: bool = False,
+                    priority: str = "background") -> dict:
     """Recent activity per solar system. Public, no auth.
 
     /universe/system_kills/ carries ship, pod and NPC kills for the last hour;
@@ -103,7 +104,7 @@ def system_activity(progress=None) -> dict:
         progress("Loading recent kill activity...")
     try:
         r = get_transport().get("/universe/system_kills/", timeout=45,
-                                priority="background")
+                                priority=priority, force=force)
         out["expires"] = r.headers.get("expires", "")
         for row in r.json():
             sid = row.get("system_id")
@@ -117,7 +118,7 @@ def system_activity(progress=None) -> dict:
         return out
     try:
         r = get_transport().get("/universe/system_jumps/", timeout=45,
-                                priority="background")
+                                priority=priority, force=force)
         for row in r.json():
             sid = row.get("system_id")
             if sid:
@@ -134,7 +135,8 @@ def system_activity(progress=None) -> dict:
 SOV_HUB_TYPE_ID = 32458
 
 
-def sovereignty_defense(progress=None) -> dict:
+def sovereignty_defense(progress=None, force: bool = False,
+                        priority: str = "background") -> dict:
     """Per-system ADM and vulnerability window. Public, no auth.
 
     There is no per-system player count anywhere in ESI. ADM is the closest
@@ -148,7 +150,7 @@ def sovereignty_defense(progress=None) -> dict:
     out: dict[int, dict] = {}
     try:
         r = get_transport().get("/sovereignty/structures/", timeout=45,
-                                priority="background")
+                                priority=priority, force=force)
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out
@@ -169,7 +171,8 @@ def sovereignty_defense(progress=None) -> dict:
     return out
 
 
-def industry_indices(progress=None) -> dict:
+def industry_indices(progress=None, force: bool = False,
+                     priority: str = "background") -> dict:
     """Per-system industry cost indices. Public, no auth.
 
     Cost indices rise with industrial job volume, so they are a second
@@ -180,7 +183,7 @@ def industry_indices(progress=None) -> dict:
     out: dict[int, dict] = {}
     try:
         r = get_transport().get("/industry/systems/", timeout=45,
-                                priority="background")
+                                priority=priority, force=force)
         rows = r.json()
     except (requests.RequestException, ValueError):
         return out

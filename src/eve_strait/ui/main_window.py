@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.bridge = None
         self._workers: list[Worker] = []
         self._tasks = TaskRegistry()
+        self._force_intel_outstanding = 0
         self._busy = None          # created with the status bar
         self._structs_fetched: set[int] = set()
         self.standings: dict[int, float] = {}
@@ -464,17 +465,78 @@ class MainWindow(QMainWindow):
         self.route.set_origin(self.location_system_id)
 
     # -- system activity (kills, pods, traffic) -----------------------------
-    def _fetch_activity(self):
+    def _fetch_activity(self, force: bool = False, priority: str = "background"):
         from ..esi import client
-        w = Worker(client.system_activity)
+        w = Worker(lambda: client.system_activity(force=force, priority=priority))
         w.finished_ok.connect(self._on_activity)
         w.failed.connect(lambda m: None)
+        if force:
+            self._track_force_worker(w)
         self._run(w, "Loading kill and traffic activity…")
 
-    def refresh_intel(self):
+    # -- heat map data refresh ---------------------------------------------
+    def _track_force_worker(self, worker):
+        """Count a forced-refresh worker so the menu item can stay disabled.
+
+        refresh_intel() fans out to three workers, so a boolean would clear on
+        the first one home and let a second force run start while two are
+        still in flight.
+        """
+        self._force_intel_outstanding += 1
+        worker.finished.connect(self._force_worker_done)
+        self._sync_force_action()
+
+    def _force_worker_done(self):
+        self._force_intel_outstanding = max(0, self._force_intel_outstanding - 1)
+        self._sync_force_action()
+
+    def _sync_force_action(self):
+        act = getattr(self, "act_force_heat", None)
+        if act is not None:
+            act.setEnabled(self._force_intel_outstanding == 0)
+
+    def _heatmap_data_age(self) -> str:
+        """When the kill/traffic layer was last read, and when it renews."""
+        import time
+        from ..esi.transport import get_transport
+        st = get_transport().cache_status("/universe/system_kills/")
+        if not st:
+            return ""
+        seen = time.strftime("%H:%M", time.localtime(st.fetched_at))
+        due = time.strftime("%H:%M", time.localtime(st.expires_at))
+        return f" Data as of {seen}, next update {due}."
+
+    def _refresh_heatmap(self, force: bool = False):
+        """Menu-driven intel refresh.
+
+        Interactive priority, not background: the governor may decline
+        background work when the budget is low, and a menu item the user just
+        clicked should not be the thing that silently does nothing.
+        """
+        if force:
+            if self._force_intel_outstanding:
+                return                      # already running; item is greyed
+            from ..esi.transport import get_transport
+            import time
+            st = get_transport().cache_status("/universe/system_kills/")
+            still_fresh = bool(st and st.expires_at > time.time())
+            if still_fresh and QMessageBox.question(
+                    self, "Force re-download",
+                    "EVE has not published new heat map data yet"
+                    f"{self._heatmap_data_age()}" + "\n\n"
+                    "Re-downloading now returns the same numbers and spends "
+                    "part of your rate-limit budget. Continue?"
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        self.refresh_intel(force=force, priority="interactive")
+        self.statusBar().showMessage(
+            ("Forcing heat map re-download." if force
+             else "Refreshing heat map data.") + self._heatmap_data_age(), 8000)
+
+    def refresh_intel(self, force: bool = False, priority: str = "background"):
         """Re-poll every activity source: kills, traffic, ADM, industry."""
-        self._fetch_activity()
-        self._fetch_defense()
+        self._fetch_activity(force=force, priority=priority)
+        self._fetch_defense(force=force, priority=priority)
 
     # Live location is only worth polling ESI for while something actually
     # wants it -- right now that is only the auto-waypoint feature.
@@ -598,7 +660,7 @@ class MainWindow(QMainWindow):
             "Intel refresh disabled." if mins <= 0
             else f"Intel refreshes every {mins} min.", 5000)
 
-    def _fetch_defense(self):
+    def _fetch_defense(self, force: bool = False, priority: str = "background"):
         """ADM and industry indices: the 'is anyone actually here' signals."""
         from ..esi import client
         def arrived(attr, key):
@@ -608,14 +670,20 @@ class MainWindow(QMainWindow):
                     self._set_heat_layer(key)
             return slot
 
-        w = Worker(client.sovereignty_defense)
+        w = Worker(lambda: client.sovereignty_defense(force=force,
+                                                      priority=priority))
         w.finished_ok.connect(arrived("sov_defense", "adm"))
         w.failed.connect(lambda m: None)
+        if force:
+            self._track_force_worker(w)
         self._run(w, "Loading sovereignty defense…")
-        w2 = Worker(client.industry_indices)
+        w2 = Worker(lambda: client.industry_indices(force=force,
+                                                    priority=priority))
         w2.finished_ok.connect(arrived("industry_index", "industry"))
         w2.failed.connect(lambda m: None)
-        self._run(w2)
+        if force:
+            self._track_force_worker(w2)
+        self._run(w2, "Loading industry indices…")
 
     def system_intel(self, system_id: int) -> dict:
         """Everything we know about activity in one system.
@@ -1099,6 +1167,21 @@ class MainWindow(QMainWindow):
             if key == "none":
                 heat.addSeparator()
         self._heat_key = "none"
+
+        heat.addSeparator()
+        act_refresh = QAction("Refresh Heat Map Data", self)
+        act_refresh.setToolTip(
+            "Re-poll kills, traffic, ADM and industry now instead of waiting "
+            "for the timer. Respects EVE's own cache, so it is nearly free.")
+        act_refresh.triggered.connect(lambda: self._refresh_heatmap(False))
+        heat.addAction(act_refresh)
+
+        self.act_force_heat = QAction("Force re-download (ignores cache)", self)
+        self.act_force_heat.setToolTip(
+            "Re-download even if EVE's copy has not changed yet. Spends part "
+            "of your rate-limit budget; disabled while one is already running.")
+        self.act_force_heat.triggered.connect(lambda: self._refresh_heatmap(True))
+        heat.addAction(self.act_force_heat)
 
         view.addSeparator()
         self.act_scan_cyno = QAction("Scan for cyno activity...", self)
