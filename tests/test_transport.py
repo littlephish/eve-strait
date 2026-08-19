@@ -190,3 +190,37 @@ def test_cache_status_reports_without_a_request(make):
     st = t.cache_status("/characters/1/assets/", character_id=1)
     assert st.expires_at > st.fetched_at
     assert len(session.calls) == 1
+
+
+def test_public_routes_share_one_entry_across_characters(make):
+    # The dockables 429 came from resolving the same stations per character.
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/stations/60003760/", character_id=1)
+    r = t.get("/universe/stations/60003760/", character_id=2)
+    assert r.from_cache is True
+    assert len(session.calls) == 1
+
+
+def test_structures_are_shared_across_characters(make):
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/structures/1035466617946/", character_id=1)
+    r = t.get("/universe/structures/1035466617946/", character_id=2)
+    assert r.from_cache is True
+    assert len(session.calls) == 1
+
+
+def test_private_routes_stay_isolated_per_character(make):
+    # Two alts in the same corp can see different corp structures depending
+    # on roles, so this response really does depend on who asked.
+    t, session, _, _ = make([FakeResponse(headers=fresh_headers()),
+                             FakeResponse(headers=fresh_headers())])
+    t.get("/corporations/98000001/structures/", character_id=1)
+    t.get("/corporations/98000001/structures/", character_id=2)
+    assert len(session.calls) == 2
+
+
+def test_cache_status_uses_the_same_identity_rule(make):
+    t, _, _, _ = make([FakeResponse(headers=fresh_headers())])
+    t.get("/universe/stations/60003760/", character_id=1)
+    # Character 2 must see the shared entry as present, not missing.
+    assert t.cache_status("/universe/stations/60003760/", character_id=2) is not None

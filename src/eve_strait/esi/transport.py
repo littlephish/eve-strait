@@ -38,6 +38,26 @@ CACHE_POLICY: dict[str, float] = {
     "/characters/{id}/online/": NEVER,
 }
 
+# Routes whose response is identical no matter which character asks. Keying
+# these per character makes a bulk load across N characters re-fetch the same
+# data N times -- which is the loop that produced the dockables 429.
+#
+# /universe/structures/{id}/ is included deliberately: it is ACL-gated, but the
+# response describes the structure rather than the requester, and only
+# successes are ever cached (a 403 raises before the cache is written). Its
+# only caller looks up structures from the character's own asset list, so any
+# character reaching the lookup already had access.
+CHARACTER_INDEPENDENT = {
+    "/universe/stations/{id}/",
+    "/universe/structures/{id}/",
+    "/universe/system_kills/",
+    "/universe/system_jumps/",
+    "/sovereignty/map/",
+    "/sovereignty/structures/",
+    "/industry/systems/",
+    "/incursions/",
+}
+
 
 class Response:
     """Uniform result whether it came from sqlite or the wire."""
@@ -76,15 +96,21 @@ class EsiTransport:
         return CACHE_POLICY.get(route_key(path), None) != NEVER
 
     # -- public -------------------------------------------------------------
+    def _cache_identity(self, path: str, character_id):
+        """Who a cached entry belongs to. None means "anyone"."""
+        return None if route_key(path) in CHARACTER_INDEPENDENT else character_id
+
     def cache_status(self, path, params=None, character_id=None):
         return self.cache.status(
-            cache_key("GET", f"{config.ESI_BASE}{path}", params, character_id))
+            cache_key("GET", f"{config.ESI_BASE}{path}", params,
+                      self._cache_identity(path, character_id)))
 
     def get(self, path, *, params=None, character_id=None, headers=None,
             priority="interactive", force=False, timeout=30) -> Response:
         url = f"{config.ESI_BASE}{path}"
         cacheable = self._cacheable(path)
-        key = cache_key("GET", url, params, character_id)
+        key = cache_key("GET", url, params,
+                        self._cache_identity(path, character_id))
         entry = self.cache.get(key) if cacheable else None
         now = self._clock()
 
