@@ -713,6 +713,12 @@ class MainWindow(QMainWindow):
         result = result or {}
         self.kill_activity = result.get("kills", {})
         self.jump_activity = result.get("jumps", {})
+        # Repaint if the active layer is drawn from what just arrived. Only
+        # jumps_24h used to be refreshed here, so a kills or 1h-traffic layer
+        # chosen before the data landed stayed blank until re-picked by hand.
+        if self._heat_key in ("jumps_1h", "ship_kills", "pod_kills",
+                              "npc_kills"):
+            self._set_heat_layer(self._heat_key)
         # ESI only reports the last hour, so build 24h totals ourselves.
         # Both writes go to a worker: the rolling window is small, but the
         # long-term SQLite store can be thousands of rows and must not run on
@@ -727,7 +733,8 @@ class MainWindow(QMainWindow):
 
         def took(totals):
             self.activity_totals = totals
-            if self._heat_key == "jumps_24h":
+            if self._heat_key in ("jumps_24h", "ship_kills_24h",
+                                  "pod_kills_24h", "npc_kills_24h"):
                 self._set_heat_layer(self._heat_key)
 
         w = Worker(persist)
@@ -1228,8 +1235,17 @@ class MainWindow(QMainWindow):
          "open for a day."),
         ("npc_kills", "Ratting (NPC kills, 1h)",
          "NPC kills. High in null means someone is farming anomalies."),
+        ("npc_kills_24h", "Ratting (NPC kills, 24h)",
+         "NPC kills, accumulated locally the same way gate traffic's 24h "
+         "figure is -- ESI only ever reports the last hour, so this is only "
+         "as complete as the app has been open for. Partial until a full "
+         "24h has passed."),
         ("ship_kills", "Player ship kills, last hour", "Where people are dying."),
+        ("ship_kills_24h", "Player ship kills, last 24h",
+         "Accumulated locally; partial until it has been open for a day."),
         ("pod_kills", "Pod kills, last hour", "Podded, so a fight went badly."),
+        ("pod_kills_24h", "Pod kills, last 24h",
+         "Accumulated locally; partial until it has been open for a day."),
         ("adm", "Sovereignty ADM",
          "Activity Defense Multiplier, 1 to 6. Raised by ratting, mining and "
          "industry in the system, so a high ADM means a used system."),
@@ -1281,6 +1297,12 @@ class MainWindow(QMainWindow):
         elif key in ("ship_kills", "pod_kills", "npc_kills"):
             field = key.split("_")[0]
             values = {sid: c.get(field, 0) for sid, c in kills.items()}
+        elif key in ("ship_kills_24h", "pod_kills_24h", "npc_kills_24h"):
+            field = key.split("_")[0]
+            values = {sid: c.get(field, 0)
+                     for sid, c in (totals.get("kills") or {}).items()}
+            hours = totals.get("hours", 0)
+            label = f"{label} ({hours}h so far)" if hours < 24 else label
         elif key == "adm":
             values = {sid: d.get("adm") or 0
                       for sid, d in (self.sov_defense or {}).items()}

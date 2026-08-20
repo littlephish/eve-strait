@@ -55,8 +55,14 @@ def record(activity: dict) -> None:
         "expires": expires,
         # Store only non-zero entries; most of New Eden is quiet.
         "jumps": {str(k): v for k, v in jumps.items() if v},
-        "kills": {str(k): [v.get("ship", 0), v.get("pod", 0)]
-                  for k, v in kills.items() if v.get("ship") or v.get("pod")},
+        # [ship, pod, npc]. NPC kills used to be dropped right here -- the
+        # per-system dict from system_activity() always carried an "npc"
+        # count, this just never wrote it down, so every "24h" kill figure
+        # was ship/pod only and there was no way to build an NPC-kills-24h
+        # layer no matter what read totals() afterward.
+        "kills": {str(k): [v.get("ship", 0), v.get("pod", 0), v.get("npc", 0)]
+                  for k, v in kills.items()
+                  if v.get("ship") or v.get("pod") or v.get("npc")},
     })
     cutoff = time.time() - _WINDOW_SECONDS
     samples = [s for s in samples if s.get("t", 0) >= cutoff][-_MAX_SAMPLES:]
@@ -66,8 +72,14 @@ def record(activity: dict) -> None:
 def totals() -> dict:
     """Summed activity over the retained window.
 
-    Returns {"jumps": {system_id: int}, "kills": {system_id: {"ship","pod"}},
+    Returns {"jumps": {system_id: int},
+             "kills": {system_id: {"ship","pod","npc"}},
              "hours": int} where ``hours`` is how many hourly samples we hold.
+
+    Tolerates samples recorded before "npc" was added to the stored triple --
+    those are plain 2-element [ship, pod] lists already on disk, which just
+    contribute 0 npc kills rather than erroring, and age out of the window
+    within _MAX_SAMPLES hours regardless.
     """
     jumps: dict[int, int] = {}
     kills: dict[int, dict] = {}
@@ -76,9 +88,10 @@ def totals() -> dict:
         for sid, n in (s.get("jumps") or {}).items():
             jumps[int(sid)] = jumps.get(int(sid), 0) + n
         for sid, pair in (s.get("kills") or {}).items():
-            slot = kills.setdefault(int(sid), {"ship": 0, "pod": 0})
-            slot["ship"] += pair[0] if isinstance(pair, list) else 0
+            slot = kills.setdefault(int(sid), {"ship": 0, "pod": 0, "npc": 0})
+            slot["ship"] += pair[0] if isinstance(pair, list) and len(pair) > 0 else 0
             slot["pod"] += pair[1] if isinstance(pair, list) and len(pair) > 1 else 0
+            slot["npc"] += pair[2] if isinstance(pair, list) and len(pair) > 2 else 0
     return {"jumps": jumps, "kills": kills, "hours": len(samples)}
 
 

@@ -118,6 +118,7 @@ class MapView(QGraphicsView):
         self._heat_brushes: dict[int, QBrush] = {}
         self._heat_label = ""
         self._heat_max = 0.0
+        self._heat_values: dict[int, float] = {}
 
         self._build()
         self._build_hover()
@@ -819,13 +820,22 @@ class MapView(QGraphicsView):
         that a linear ramp paints Jita red and leaves everything else in an
         identical blue. Pass None or an empty dict to clear the layer.
         """
+        # Keep the raw values: they can arrive before _build() has created
+        # the dots. Cached intel is served from sqlite in ~160ms and beats
+        # the map build, and discarding them here left the layer permanently
+        # cold with no way to recover short of re-picking the layer.
+        self._heat_values = dict(values or {})
+        self._heat_label = label
+        self._recompute_heat()
+
+    def _recompute_heat(self):
+        """Rebuild the brushes from the stored values and the current dots."""
         import math
 
         self._heat_brushes = {}
-        self._heat_label = label
         self._heat_max = 0.0
 
-        clean = {sid: float(v) for sid, v in (values or {}).items()
+        clean = {sid: float(v) for sid, v in self._heat_values.items()
                  if v and float(v) > 0 and sid in self._dots}
         if clean:
             top = max(clean.values())
@@ -915,6 +925,9 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(dot)
             self._dots[s.id] = dot
             self._sec_brushes[s.id] = brush
+        # Intel can land before the dots exist; now that they do, paint any
+        # heat values that were waiting.
+        self._recompute_heat()
         rect = self.scene_obj.itemsBoundingRect()
         self.scene_obj.setSceneRect(rect.adjusted(-20, -20, 20, 20))
         self.resetTransform()
