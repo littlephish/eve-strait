@@ -713,6 +713,12 @@ class MainWindow(QMainWindow):
         result = result or {}
         self.kill_activity = result.get("kills", {})
         self.jump_activity = result.get("jumps", {})
+        # Repaint if the active layer is drawn from what just arrived. Only
+        # jumps_24h used to be refreshed here, so a kills or 1h-traffic layer
+        # chosen before the data landed stayed blank until re-picked by hand.
+        if self._heat_key in ("jumps_1h", "ship_kills", "pod_kills",
+                              "npc_kills"):
+            self._set_heat_layer(self._heat_key)
         # ESI only reports the last hour, so build 24h totals ourselves.
         # Both writes go to a worker: the rolling window is small, but the
         # long-term SQLite store can be thousands of rows and must not run on
