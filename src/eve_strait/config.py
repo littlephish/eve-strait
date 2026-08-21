@@ -185,8 +185,18 @@ INV_TYPES_URL = "https://www.fuzzwork.co.uk/dump/latest/csv/invTypes.csv"
 # ---------------------------------------------------------------------------
 # Physics
 # ---------------------------------------------------------------------------
-# One (Julian) light year in metres, as EVE uses it.
-LY_METERS = 9_460_730_472_580_800.0
+# One light year in metres, as EVE's own jump drive math uses it -- NOT the
+# real-world (Julian) astronomical light year. Per CCP's own developer docs
+# (developers.eveonline.com/docs/guides/map-data/, "Combining the coordinate
+# systems"): "For the purposes of jump drive range calculation, a single
+# lightyear is exactly 9,460,000,000,000,000.0 (9.46 x 10^15) meters,
+# slightly less than the real world scientific definition of a lightyear...
+# Using the incorrect value may cause routes to include impossible jumps."
+# This app previously used the real-world constant (9,460,730,472,580,800.0)
+# -- close enough that it never visibly broke anything (~0.008% off, well
+# under any distance shown in the UI), but wrong per CCP's own explicit
+# warning about exactly this mistake, so corrected to their documented value.
+LY_METERS = 9_460_000_000_000_000.0
 
 # Jump drives cannot be activated into high-security space (>= 0.5).
 JUMPABLE_SECURITY_MAX = 0.5
