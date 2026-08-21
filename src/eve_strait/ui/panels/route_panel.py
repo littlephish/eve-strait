@@ -386,6 +386,16 @@ class RoutePanel(QWidget):
         return trigger, dest_wp.system, dest_location_id
 
     # ---- exposed getters --------------------------------------------------
+    def has_route(self) -> bool:
+        """True once there's an actual multi-stop plan, not just an origin.
+
+        Used to decide whether it's safe to change something out from under
+        the user automatically (e.g. auto-selecting the Ship dropdown after
+        a character switch) -- a single lingering waypoint from a previous
+        session isn't "a route" in the sense that matters for that.
+        """
+        return len(self.waypoints) >= 2
+
     def systems(self):
         return [wp.system for wp in self.waypoints]
 

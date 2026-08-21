@@ -9,6 +9,7 @@ import requests
 
 from .. import config
 from ..config import JUMPABLE_SECURITY_MAX, LY_METERS, SDE_CSV_PATH, SDE_CSV_URL
+from .ships import SHIPS_BY_NAME
 
 # Region IDs >= 11000000 are wormhole/abyssal/void space (no gates, no static
 # geometry we care about for jumps); keep known space only.
@@ -70,6 +71,7 @@ class Universe:
         self.system_stations: dict[int, list[Station]] = {}
         self.station_type_names: dict[int, str] = {}
         self.cyno_modules: dict[int, str] = {}
+        self.ship_hull_type_ids: dict[int, str] = {}
         self._grid: dict[tuple[int, int, int], list[System]] = {}
         self._build_grid()
 
@@ -182,6 +184,7 @@ class Universe:
         stations = _parse_stations(config.STA_STATIONS_PATH, type_names)
         self.station_type_names = type_names
         self.cyno_modules = _load_cyno_modules(config.INV_TYPES_PATH)
+        self.ship_hull_type_ids = _load_ship_hull_type_ids(config.INV_TYPES_PATH)
         self.stations = stations
         by_sys: dict[int, list[Station]] = {}
         for st in stations.values():
@@ -378,6 +381,28 @@ def _load_cyno_modules(path) -> dict[int, str]:
             except (KeyError, ValueError):
                 continue
     return mods
+
+
+def _load_ship_hull_type_ids(path) -> dict[int, str]:
+    """ESI ship_type_id -> hull name, for the jump-capable hulls in
+    data/ships.py.
+
+    Matched by exact typeName against SHIPS_BY_NAME rather than a
+    hand-maintained table of EVE's numeric type IDs -- that keeps this
+    correct automatically as long as the SDE dump and data/ships.py agree
+    on hull names, with nothing to keep in sync by hand.
+    """
+    out: dict[int, str] = {}
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            name = row.get("typeName")
+            if name in SHIPS_BY_NAME:
+                try:
+                    out[int(row["typeID"])] = name
+                except (KeyError, ValueError):
+                    continue
+    return out
 
 
 def _parse_stations(path, type_names: dict[int, str]) -> dict[int, Station]:

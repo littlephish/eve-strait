@@ -81,6 +81,19 @@ class ShipSkillsPanel(QWidget):
     def current_ship(self) -> Ship:
         return SHIPS_BY_NAME[self.ship_combo.currentData()]
 
+    def set_current_ship(self, name: str) -> bool:
+        """Select a hull by name, e.g. after probing what the character is
+        actually flying. Unlike restore(), this fires the normal change
+        signal -- it's a live update the rest of the UI (route, readouts)
+        needs to react to, not a silent state load. Returns False, doing
+        nothing, if the name isn't one of the jump-capable hulls this app
+        knows about (most ships aren't -- that's expected, not an error)."""
+        i = self.ship_combo.findData(name)
+        if i < 0:
+            return False
+        self.ship_combo.setCurrentIndex(i)
+        return True
+
     def current_skills(self) -> Skills:
         return Skills(
             jump_drive_calibration=self.sp_jdc.value(),

@@ -387,6 +387,7 @@ class MainWindow(QMainWindow):
         self._fetch_contacts()
         self._fetch_starbases()
         self._fetch_location()
+        self._fetch_ship_type()
         self._sync_location_tracking()
         self._render_character()
         self.route.refresh()
@@ -460,6 +461,34 @@ class MainWindow(QMainWindow):
             if self.character.chk_follow.isChecked():
                 self.map_view.ensure_location_visible(sid)
         self._maybe_fire_auto_waypoint(sid)
+
+    def _fetch_ship_type(self):
+        """Which hull the active character is in right now, to preselect
+        the Ship dropdown on login/switch. Fired alongside _fetch_location()
+        so both the location and hull the UI shows are current immediately
+        rather than waiting on whatever the previous character had set.
+        """
+        if not self.token:
+            return
+        if not self.esi:
+            self.esi = EsiClient(self.token, config.get_client_id())
+        w = Worker(lambda: self.esi.ship(priority="background"))
+        w.finished_ok.connect(self._on_ship_probe)
+        w.failed.connect(lambda m: None)  # no ship scope, offline, etc: leave the dropdown as-is
+        self._run(w, "Checking current ship…")
+
+    def _on_ship_probe(self, data):
+        # Never override a ship the user already picked to plan an actual
+        # route -- only apply the probe while the Ship panel is still just
+        # sitting at its defaults/last selection with nothing built on it.
+        if self.route.has_route():
+            return
+        type_id = (data or {}).get("ship_type_id")
+        if not type_id or not self.universe:
+            return
+        hull = self.universe.ship_hull_type_ids.get(type_id)
+        if hull and self.ship.set_current_ship(hull):
+            self.statusBar().showMessage(f"Ship set to {hull} (currently flying).", 4000)
 
     def _use_location_as_origin(self):
         """Put the character's current system at the head of the route."""
@@ -2742,6 +2771,7 @@ class MainWindow(QMainWindow):
         self._fetch_contacts()
         self._fetch_starbases()
         self._fetch_location()
+        self._fetch_ship_type()
         self._sync_location_tracking()
 
     def _on_login_fail(self, msg: str):
