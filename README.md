@@ -152,8 +152,8 @@ Where a hull can dock is modelled in
 [`docking.py`](src/eve_strait/data/docking.py):
 
 - **Titans / Supercarriers** → Keepstar (XL) only.
-- **Carriers / Dreads / FAX / Rorqual** → NPC stations, Fortizar/Keepstar, and XL
-  engineering/refinery structures.
+- **Carriers / Command Carriers / Dreads / FAX / Rorqual** → NPC stations, Fortizar/Keepstar,
+  and XL engineering/refinery structures.
 - **Jump Freighters & subcaps** → anything.
 - NPC stations are flagged **safe** (docking ring) or **kickout** (unsafe undock).
 

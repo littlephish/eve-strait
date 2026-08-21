@@ -37,6 +37,7 @@ _HULL_CATEGORY = {
     "Titan": SUPERCAP,
     "Supercarrier": SUPERCAP,
     "Carrier": CAPITAL,
+    "Command Carrier": CAPITAL,     # T2 carrier-hull, docks the same tier
     "Dreadnought": CAPITAL,
     "Force Auxiliary": CAPITAL,
     "Capital Industrial": CAPITAL,  # Rorqual

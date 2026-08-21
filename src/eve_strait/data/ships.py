@@ -58,6 +58,20 @@ SHIPS: list[Ship] = [
     Ship("Chimera",    "Carrier", "Caldari",  3.0, 1000.0),
     Ship("Thanatos",   "Carrier", "Gallente", 3.0, 1000.0),
     Ship("Nidhoggur",  "Carrier", "Minmatar", 3.0, 1000.0),
+    # --- Command Carriers (T2, added in the Cradle of War expansion, June
+    # 2026) -------------------------------------------------------------
+    # Base jump range of 3.75 ly is from CCP's own expansion notes
+    # (eveonline.com/news/view/cradle-of-war-expansion-notes), identical
+    # across all four. Fuel/ly is the same 1000 approximate placeholder used
+    # for the other non-freighter, non-Rorqual capitals above -- CCP hasn't
+    # published an exact isotope figure for these yet; correct it here if
+    # that turns out wrong. Docked as capital tier (data/docking.py), not
+    # supercapital: their hull mass (~1.22-1.27B kg) matches Carrier/FAX,
+    # not Supercarrier/Titan (~1.6B+), confirmed against the local SDE dump.
+    Ship("Salvation", "Command Carrier", "Amarr",    3.75, 1000.0),
+    Ship("Simurgh",   "Command Carrier", "Caldari",  3.75, 1000.0),
+    Ship("Gaia",      "Command Carrier", "Gallente", 3.75, 1000.0),
+    Ship("Ymir",      "Command Carrier", "Minmatar", 3.75, 1000.0),
     # --- Force Auxiliary ---------------------------------------------------
     Ship("Apostle", "Force Auxiliary", "Amarr",    3.0, 1000.0),
     Ship("Minokawa","Force Auxiliary", "Caldari",  3.0, 1000.0),
