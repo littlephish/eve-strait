@@ -550,21 +550,38 @@ class MainWindow(QMainWindow):
     # server-side cache, below which polling learns nothing new anyway.
     LOCATION_POLL_FLOOR_MS = 30_000
 
+    # "Follow Me" wants a livelier marker than auto-waypoint alone needs, so
+    # it's allowed a lower floor -- but the floor is still a floor, not a
+    # fixed interval: ESI's own docs say /characters/{id}/location/ is
+    # server-cached for 5 seconds and that circumventing that cache can get
+    # an application banned, so 5s is the honest bottom, and the governor
+    # (RateLimitGovernor.poll_interval) is still the one deciding the actual
+    # number above that floor based on the real remaining budget. Never
+    # replace this with a flat interval -- see AGENTS.md's rate-limiting
+    # section for why.
+    FOLLOW_ME_POLL_FLOOR_MS = 5_000
+
     def _location_poll_ms(self) -> int:
         if not self.token:
             return self.LOCATION_POLL_FLOOR_MS
+        floor_ms = (self.FOLLOW_ME_POLL_FLOOR_MS
+                    if self.character.chk_follow.isChecked()
+                    else self.LOCATION_POLL_FLOOR_MS)
         from ..esi.transport import get_transport
         seconds = get_transport().governor.poll_interval(
             f"/characters/{self.token.character_id}/location/",
             self.token.character_id,
-            floor=self.LOCATION_POLL_FLOOR_MS / 1000)
+            floor=floor_ms / 1000)
         return int(seconds * 1000)
 
     def _sync_location_tracking(self):
-        """Poll location on a timer only while the auto-waypoint feature
-        could actually use it: armed, and a character to poll for."""
+        """Poll location on a timer while something wants a live position:
+        the auto-waypoint feature (armed) or "Follow Me" (checked), and a
+        character to poll for either way."""
         from PySide6.QtCore import QTimer
-        want = self.route.chk_auto_waypoint.isChecked() and bool(self.token)
+        want = (bool(self.token)
+                and (self.route.chk_auto_waypoint.isChecked()
+                     or self.character.chk_follow.isChecked()))
         if want:
             if getattr(self, "_location_timer", None) is None:
                 self._location_timer = QTimer(self)
@@ -572,8 +589,17 @@ class MainWindow(QMainWindow):
             if not self._location_timer.isActive():
                 self._location_timer.start(self._location_poll_ms())
                 self._fetch_location()  # don't wait a full interval to arm
+            else:
+                # Follow Me toggling on/off changes the floor mid-flight;
+                # re-arm so the new interval takes effect without waiting
+                # out whatever was left of the old one.
+                self._location_timer.setInterval(self._location_poll_ms())
         elif getattr(self, "_location_timer", None) is not None:
             self._location_timer.stop()
+
+    def _on_follow_me_toggled(self, on: bool):
+        config.set_follow_me(on)
+        self._sync_location_tracking()
 
     def _maybe_fire_auto_waypoint(self, current_system_id: int):
         """Called from _on_location every time it updates. Fires the in-game
@@ -1857,6 +1883,8 @@ class MainWindow(QMainWindow):
         self.character.character_changed.connect(self._switch_character)
         self.character.unlink_requested.connect(self._unlink_character)
         self.character.goto_location_requested.connect(self._use_location_as_origin)
+        self.character.follow_me_toggled.connect(self._on_follow_me_toggled)
+        self.character.chk_follow.setChecked(config.get_follow_me())
 
     # -- settings persistence ----------------------------------------------
     def _load_settings(self):

@@ -116,6 +116,45 @@ These are gameplay invariants, not implementation details — don't break them w
 - Regional stargates (the 116 gates longer than any jump) are taken at **any** gate-balance
   setting — no number of jumps replaces them.
 
+## ESI rate limiting — don't re-derive this, it already exists
+
+There is a real, already-built rate-limit governor. Before touching anything that calls
+ESI, read `src/eve_strait/esi/ratelimit.py` and `src/eve_strait/esi/transport.py` in full —
+past mistakes in this repo came from assuming a flat poll interval was the current state
+and almost re-implementing/bypassing a governor that was already more sophisticated than
+that.
+
+- **Every ESI call goes through `get_transport()`** (`esi/transport.py`), never raw
+  `requests.get`/`.post`. `EsiTransport` wraps a sqlite `HttpCache` and the
+  `RateLimitGovernor` together; that's the one choke point. Verify with
+  `grep -n "requests\.\(get\|post\)(" src/eve_strait/esi/client.py` before adding a new
+  call site — it should return nothing.
+- **Never hardcode a poll interval.** For anything on a timer (location polling, activity
+  refresh, etc.), compute the interval from `governor.poll_interval(route, character_id,
+  floor=...)`, not a literal like `5000` ms. The `floor` is the only thing a feature should
+  choose for itself, and it must be justified against ESI's own per-endpoint cache window
+  (e.g. `/characters/{id}/location/` is server-cached 5s — confirmed against ESI's docs,
+  which also warn that circumventing that cache can get an application banned. That's the
+  floor, not a target to undercut).
+- **Interactive requests use `governor.check()`**, background timers use
+  `governor.poll_interval()`, 429/`Retry-After` responses go through `governor.park()`, and
+  non-2xx/3xx responses feed `governor.observe_errors()` for the legacy error-limit budget.
+  Don't add a second, parallel rate-limit mechanism for a new feature — extend the existing
+  one if it's missing something.
+- **All ESI fetches run off the UI thread**, via the `Worker` (`ui/workers.py`) +
+  `MainWindow._run()` pattern, which also registers the job with `TaskRegistry` so it shows
+  in the status bar's `BusyIndicator` automatically (`ui/tasks.py`). A new fetch should use
+  this path, not a bespoke `QThread` or a synchronous call on the UI thread.
+- **`CACHE_POLICY` in `transport.py`** overrides ESI's `Expires` header per-route on
+  purpose (e.g. `NEVER` for live-by-definition routes like location/ship/online). If a new
+  route needs different caching than ESI's header implies, add it there — don't special-case
+  caching logic at the call site.
+- There is currently **no user-facing override** of the governor's pacing. If one is added,
+  it must not weaken the *reactive* protections (429 handling, error-limit parking) — those
+  exist to avoid actually getting banned. An override should only be allowed to relax the
+  *proactive* pacing (`check()`'s pacing delay, `poll_interval()`'s throttling), and should
+  default to off.
+
 ## Conventions
 
 - Windows-first: paths, line endings and the build tooling assume Windows.

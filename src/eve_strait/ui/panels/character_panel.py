@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -33,6 +34,7 @@ class CharacterPanel(QWidget):
     character_changed = Signal(int)          # character_id
     unlink_requested = Signal(int)           # character_id
     goto_location_requested = Signal()
+    follow_me_toggled = Signal(bool)
     scopes_requested = Signal()
     scan_cyno_requested = Signal()
     force_cyno_requested = Signal()
@@ -133,6 +135,21 @@ class CharacterPanel(QWidget):
         self.lbl_location = QLabel("")
         self.lbl_location.setWordWrap(True)
         v.addWidget(self.lbl_location)
+
+        self.chk_follow = QCheckBox("Follow me (poll location quickly)")
+        self.chk_follow.setToolTip(
+            "Quick, dedicated polling of this character's location instead "
+            "of once on login/switch. Never faster than 5 seconds, which is "
+            "ESI's own server-side cache window on this endpoint, confirmed "
+            "against its docs -- polling faster would just return the same "
+            "cached answer and risks being read as circumventing that "
+            "cache, which ESI's own docs warn can get an application "
+            "banned. The actual interval is set by the app's rate-limit "
+            "budget and may be slower than 5s if that budget is tight. "
+            "Keeps the map's 'currently in' marker live and makes the "
+            "auto-waypoint feature notice a jump sooner.")
+        self.chk_follow.toggled.connect(self.follow_me_toggled)
+        v.addWidget(self.chk_follow)
 
         btn_row = QHBoxLayout()
         self.btn_add = QPushButton("Add another…")
@@ -268,6 +285,7 @@ class CharacterPanel(QWidget):
             self.lbl_location.setText("")
         self.btn_unlink.setEnabled(bool(name))
         self.btn_here.setEnabled(bool(name))
+        self.chk_follow.setEnabled(bool(name))
 
     def set_characters(self, characters: list[tuple[int, str]], active_id: int | None):
         """characters: [(character_id, name)] with the active one selected."""

@@ -452,6 +452,21 @@ def set_ai_chat_enabled(on: bool) -> None:
     save_config(cfg)
 
 
+def get_follow_me() -> bool:
+    """Quick location polling for the active character. Off by default:
+    ESI's location endpoint is a real network call every time (see
+    transport.CACHE_POLICY's NEVER for it), so this trades request volume
+    for a livelier "currently in" display and a snappier auto-waypoint
+    trigger, and should be something the user turns on, not ambient."""
+    return bool(load_config().get("follow_me", False))
+
+
+def set_follow_me(on: bool) -> None:
+    cfg = load_config()
+    cfg["follow_me"] = bool(on)
+    save_config(cfg)
+
+
 def get_mcp_enabled() -> bool:
     """MCP server opt-in. Off by default and checked by the server itself,
     so an accidental launch refuses to serve rather than exposing tools."""
