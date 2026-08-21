@@ -452,6 +452,13 @@ class MainWindow(QMainWindow):
             + (f", {region}" if region else ""))
         if self.map_view:
             self.map_view.set_current_location(sid)
+            # Only in Follow Me: auto-waypoint's own 30s-floor polling is
+            # too infrequent to justify yanking the view around every time
+            # it lands, but Follow Me exists specifically to keep the "you
+            # are here" marker current, so a jump that carries it off screen
+            # should bring it back.
+            if self.character.chk_follow.isChecked():
+                self.map_view.ensure_location_visible(sid)
         self._maybe_fire_auto_waypoint(sid)
 
     def _use_location_as_origin(self):

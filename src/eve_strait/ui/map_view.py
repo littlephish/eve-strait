@@ -272,6 +272,21 @@ class MapView(QGraphicsView):
             self._here_items.append(ring)
         self._apply_visibility("location")
 
+    def ensure_location_visible(self, system_id, margin: float = 80.0):
+        """Scroll the minimum amount needed to keep a system on screen.
+
+        Used by "Follow Me": a jump can carry the character out of the
+        current view between polls, and losing the marker off-screen would
+        defeat the point of fast polling. This deliberately does not
+        recentre -- QGraphicsView.ensureVisible() only pans when the point
+        (plus margin) is already outside the viewport, so panning/zooming
+        the map manually while it's live isn't fought on every poll.
+        """
+        p = self._pos.get(system_id)
+        if p is None:
+            return
+        self.ensureVisible(QRectF(p.x() - 1, p.y() - 1, 2, 2), margin, margin)
+
     def set_cyno_alts(self, alts):
         """Mark the systems where one of your own characters can light a cyno.
 
