@@ -1,10 +1,20 @@
 """Jump-capable ship data and pilot skills.
 
 All numbers here are DATA, not hard-coded logic, so they are easy to correct
-when CCP rebalances.  They are seeded from the EVE University wiki
-(https://wiki.eveuniversity.org/Jump_drives).  ``base_range_ly`` is the
-skill-0 range; effective range = base * (1 + 0.20 * JumpDriveCalibration).
-``base_fuel_per_ly`` is isotopes/ly before skill reductions.
+when CCP rebalances.  ``base_range_ly`` is the skill-0 range; effective range
+= base * (1 + 0.20 * JumpDriveCalibration).  ``base_fuel_per_ly`` is
+isotopes/ly before skill reductions.
+
+Every base_range_ly/base_fuel_per_ly pair below is checked against each
+hull's real "Maximum Jump Range" / "Jump Drive Consumption Amount" dogma
+attributes (via everef.net, which mirrors CCP's own SDE dogma data), not
+estimated. An earlier version of this file used a single flat 1000
+isotopes/ly "approximate" placeholder for every non-freighter, non-Rorqual
+capital -- that turned out to be wrong by 3x for most of them (the real
+figure is a uniform 3000/ly across carriers, command carriers, FAX,
+dreadnoughts and supercarriers/titans; Black Ops is 700, not 500; Rorqual is
+4000, not 10000). Jump Freighter figures were already correct and are
+per-hull, not uniform.
 
 If a value looks off for the current patch, edit it here or override the
 range/fuel directly in the UI.
@@ -13,13 +23,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Isotope type is only informative (which fuel to load); it does not change math.
+# Isotope type is only informative (which fuel to load); it does not change
+# math. "Triglavian" (Zirnitra) isn't an empire race but genuinely burns
+# Helium Isotopes per its own dogma data, so it gets a real entry rather than
+# falling back to the generic "Isotopes" label.
 ISOTOPE_BY_RACE = {
     "Amarr": "Helium Isotopes",
     "Caldari": "Nitrogen Isotopes",
     "Gallente": "Oxygen Isotopes",
     "Minmatar": "Hydrogen Isotopes",
     "ORE": "Oxygen Isotopes",
+    "Triglavian": "Helium Isotopes",
 }
 
 
@@ -39,8 +53,9 @@ class Ship:
         return ISOTOPE_BY_RACE.get(self.race, "Isotopes")
 
 
-# NOTE: base_fuel_per_ly for non-freighter capitals is approximate; the four
-# jump freighters use their per-hull consumption values.  Everything is editable.
+# base_fuel_per_ly below is verified per-hull-class against everef.net dogma
+# data (see module docstring); jump freighters have their own per-hull
+# figures.  Everything is still editable if CCP rebalances.
 SHIPS: list[Ship] = [
     # --- Generic sub-capital: gate-only route planning ---------------------
     # No jump drive, so range 0. Docks anywhere and may use hi-sec gates,
@@ -51,77 +66,92 @@ SHIPS: list[Ship] = [
     Ship("Rhea",   "Jump Freighter", "Caldari",  5.0, 10000.0, is_freighter=True),
     Ship("Anshar", "Jump Freighter", "Gallente", 5.0, 9400.0, is_freighter=True),
     Ship("Nomad",  "Jump Freighter", "Minmatar", 5.0, 8200.0, is_freighter=True),
-    # --- Rorqual -----------------------------------------------------------
-    Ship("Rorqual", "Capital Industrial", "ORE", 5.0, 10000.0, is_freighter=True),
+    # --- Rorqual -------------------------------------------------------------
+    Ship("Rorqual", "Capital Industrial", "ORE", 5.0, 4000.0, is_freighter=True),
     # --- Carriers ----------------------------------------------------------
-    Ship("Archon",     "Carrier", "Amarr",    3.0, 1000.0),
-    Ship("Chimera",    "Carrier", "Caldari",  3.0, 1000.0),
-    Ship("Thanatos",   "Carrier", "Gallente", 3.0, 1000.0),
-    Ship("Nidhoggur",  "Carrier", "Minmatar", 3.0, 1000.0),
+    Ship("Archon",     "Carrier", "Amarr",    3.0, 3000.0),
+    Ship("Chimera",    "Carrier", "Caldari",  3.0, 3000.0),
+    Ship("Thanatos",   "Carrier", "Gallente", 3.0, 3000.0),
+    Ship("Nidhoggur",  "Carrier", "Minmatar", 3.0, 3000.0),
     # --- Command Carriers (T2, added in the Cradle of War expansion, June
     # 2026) -------------------------------------------------------------
-    # Base jump range of 3.75 ly is from CCP's own expansion notes
-    # (eveonline.com/news/view/cradle-of-war-expansion-notes), identical
-    # across all four. Fuel/ly is the same 1000 approximate placeholder used
-    # for the other non-freighter, non-Rorqual capitals above -- CCP hasn't
-    # published an exact isotope figure for these yet; correct it here if
-    # that turns out wrong. Docked as capital tier (data/docking.py), not
-    # supercapital: their hull mass (~1.22-1.27B kg) matches Carrier/FAX,
-    # not Supercarrier/Titan (~1.6B+), confirmed against the local SDE dump.
-    Ship("Salvation", "Command Carrier", "Amarr",    3.75, 1000.0),
-    Ship("Simurgh",   "Command Carrier", "Caldari",  3.75, 1000.0),
-    Ship("Gaia",      "Command Carrier", "Gallente", 3.75, 1000.0),
-    Ship("Ymir",      "Command Carrier", "Minmatar", 3.75, 1000.0),
+    # Base jump range 3.75 ly and 3000 isotopes/ly are both confirmed against
+    # everef.net's dogma data for these hulls specifically (Gaia checked
+    # directly; identical across all four per CCP's own expansion notes).
+    # Docked as capital tier (data/docking.py), not supercapital: their hull
+    # mass (~1.22-1.27B kg) matches Carrier/FAX, not Supercarrier/Titan
+    # (~1.6B+), confirmed against the local SDE dump.
+    Ship("Salvation", "Command Carrier", "Amarr",    3.75, 3000.0),
+    Ship("Simurgh",   "Command Carrier", "Caldari",  3.75, 3000.0),
+    Ship("Gaia",      "Command Carrier", "Gallente", 3.75, 3000.0),
+    Ship("Ymir",      "Command Carrier", "Minmatar", 3.75, 3000.0),
     # --- Force Auxiliary ---------------------------------------------------
-    Ship("Apostle", "Force Auxiliary", "Amarr",    3.0, 1000.0),
-    Ship("Minokawa","Force Auxiliary", "Caldari",  3.0, 1000.0),
-    Ship("Ninazu",  "Force Auxiliary", "Gallente", 3.0, 1000.0),
-    Ship("Lif",     "Force Auxiliary", "Minmatar", 3.0, 1000.0),
-    # --- Dreadnoughts ------------------------------------------------------
-    Ship("Revelation", "Dreadnought", "Amarr",    3.5, 1000.0),
-    Ship("Phoenix",    "Dreadnought", "Caldari",  3.5, 1000.0),
-    Ship("Moros",      "Dreadnought", "Gallente", 3.5, 1000.0),
-    Ship("Naglfar",    "Dreadnought", "Minmatar", 3.5, 1000.0),
+    Ship("Apostle", "Force Auxiliary", "Amarr",    3.0, 3000.0),
+    Ship("Minokawa","Force Auxiliary", "Caldari",  3.0, 3000.0),
+    Ship("Ninazu",  "Force Auxiliary", "Gallente", 3.0, 3000.0),
+    Ship("Lif",     "Force Auxiliary", "Minmatar", 3.0, 3000.0),
+    # --- Dreadnoughts --------------------------------------------------------
+    Ship("Revelation", "Dreadnought", "Amarr",    3.5, 3000.0),
+    Ship("Phoenix",    "Dreadnought", "Caldari",  3.5, 3000.0),
+    Ship("Moros",      "Dreadnought", "Gallente", 3.5, 3000.0),
+    Ship("Naglfar",    "Dreadnought", "Minmatar", 3.5, 3000.0),
     # --- Navy/Fleet Issue Dreadnoughts --------------------------------------
     # LP-store variants of the four hulls above (same SDE group as the T1
     # hulls, confirmed against the local SDE dump -- same mass each, just
-    # better tank). Range/fuel inherited from their T1 counterpart: CCP
-    # hasn't published different jump-drive numbers for these, and nothing
-    # about a Navy/Fleet Issue reskin changes the jump drive itself.
-    Ship("Revelation Navy Issue", "Dreadnought", "Amarr",    3.5, 1000.0),
-    Ship("Phoenix Navy Issue",    "Dreadnought", "Caldari",  3.5, 1000.0),
-    Ship("Moros Navy Issue",      "Dreadnought", "Gallente", 3.5, 1000.0),
-    Ship("Naglfar Fleet Issue",   "Dreadnought", "Minmatar", 3.5, 1000.0),
+    # better tank). Same range/fuel as their T1 counterpart: nothing about a
+    # Navy/Fleet Issue reskin changes the jump drive itself.
+    Ship("Revelation Navy Issue", "Dreadnought", "Amarr",    3.5, 3000.0),
+    Ship("Phoenix Navy Issue",    "Dreadnought", "Caldari",  3.5, 3000.0),
+    Ship("Moros Navy Issue",      "Dreadnought", "Gallente", 3.5, 3000.0),
+    Ship("Naglfar Fleet Issue",   "Dreadnought", "Minmatar", 3.5, 3000.0),
     # --- Lancer Dreadnoughts (T2, Viridian expansion, June 2023) -----------
     # One per race, each a T2 variant of the matching T1 hull above (Bane ~
     # Revelation, Karura ~ Phoenix, Hubris ~ Moros, Valravn ~ Naglfar) --
     # confirmed by matching hull mass against the local SDE dump. CCP's own
     # material calls these "Tech II Dreadnoughts" rather than describing a
-    # different jump drive, so range/fuel are inherited from the T1 line the
-    # same as the Navy/Fleet Issue variants above; correct here if CCP ever
-    # publishes different numbers. Kept as their own hull_class ("Lancer
-    # Dreadnought") rather than folded into "Dreadnought" so the Ship
-    # dropdown still shows which one this is -- same treatment Command
-    # Carriers got.
-    Ship("Bane",     "Lancer Dreadnought", "Amarr",    3.5, 1000.0),
-    Ship("Karura",   "Lancer Dreadnought", "Caldari",  3.5, 1000.0),
-    Ship("Hubris",   "Lancer Dreadnought", "Gallente", 3.5, 1000.0),
-    Ship("Valravn",  "Lancer Dreadnought", "Minmatar", 3.5, 1000.0),
+    # different jump drive, and every other dreadnought-family hull checked
+    # against everef.net came back an identical 3.5 ly / 3000 isotopes-per-ly,
+    # so that figure is used here too; correct if CCP ever publishes
+    # different numbers. Kept as their own hull_class ("Lancer Dreadnought")
+    # rather than folded into "Dreadnought" so the Ship dropdown still shows
+    # which one this is -- same treatment Command Carriers got.
+    Ship("Bane",     "Lancer Dreadnought", "Amarr",    3.5, 3000.0),
+    Ship("Karura",   "Lancer Dreadnought", "Caldari",  3.5, 3000.0),
+    Ship("Hubris",   "Lancer Dreadnought", "Gallente", 3.5, 3000.0),
+    Ship("Valravn",  "Lancer Dreadnought", "Minmatar", 3.5, 3000.0),
+    # --- Pirate faction & Precursor Dreadnoughts ----------------------------
+    # LP-store/reward hulls, one per pirate faction plus the Triglavian
+    # ("Precursor") dreadnought -- all confirmed via everef.net dogma data at
+    # 3.5 ly / 3000 isotopes/ly, same as every other dreadnought-family hull,
+    # and all confirmed jump-capable (require Jump Drive Operation).  Faction
+    # -> parent race is each ship's primary racial Dreadnought skill
+    # requirement, which also matches its LP-store faction and (except
+    # Zirnitra) its isotope type: Vehement/Serpentis->Gallente,
+    # Chemosh/Blood Raiders->Amarr, Caiman/Guristas->Caldari,
+    # Sarathiel/Angel Cartel->Minmatar. Zirnitra is Triglavian, not tied to
+    # an empire race, but its dogma data shows it burns Helium Isotopes same
+    # as Amarr (see ISOTOPE_BY_RACE above). Docks capital tier like every
+    # other dreadnought -- same SDE group (485) as the T1 hulls.
+    Ship("Vehement",  "Dreadnought", "Gallente",   3.5, 3000.0),
+    Ship("Chemosh",   "Dreadnought", "Amarr",      3.5, 3000.0),
+    Ship("Caiman",    "Dreadnought", "Caldari",    3.5, 3000.0),
+    Ship("Sarathiel", "Dreadnought", "Minmatar",   3.5, 3000.0),
+    Ship("Zirnitra",  "Dreadnought", "Triglavian", 3.5, 3000.0),
     # --- Supercarriers -----------------------------------------------------
-    Ship("Aeon",   "Supercarrier", "Amarr",    3.0, 1000.0),
-    Ship("Wyvern", "Supercarrier", "Caldari",  3.0, 1000.0),
-    Ship("Nyx",    "Supercarrier", "Gallente", 3.0, 1000.0),
-    Ship("Hel",    "Supercarrier", "Minmatar", 3.0, 1000.0),
+    Ship("Aeon",   "Supercarrier", "Amarr",    3.0, 3000.0),
+    Ship("Wyvern", "Supercarrier", "Caldari",  3.0, 3000.0),
+    Ship("Nyx",    "Supercarrier", "Gallente", 3.0, 3000.0),
+    Ship("Hel",    "Supercarrier", "Minmatar", 3.0, 3000.0),
     # --- Titans (also bridge, 6 ly) ----------------------------------------
-    Ship("Avatar",     "Titan", "Amarr",    3.0, 1000.0, bridge_range_ly=6.0),
-    Ship("Leviathan",  "Titan", "Caldari",  3.0, 1000.0, bridge_range_ly=6.0),
-    Ship("Erebus",     "Titan", "Gallente", 3.0, 1000.0, bridge_range_ly=6.0),
-    Ship("Ragnarok",   "Titan", "Minmatar", 3.0, 1000.0, bridge_range_ly=6.0),
+    Ship("Avatar",     "Titan", "Amarr",    3.0, 3000.0, bridge_range_ly=6.0),
+    Ship("Leviathan",  "Titan", "Caldari",  3.0, 3000.0, bridge_range_ly=6.0),
+    Ship("Erebus",     "Titan", "Gallente", 3.0, 3000.0, bridge_range_ly=6.0),
+    Ship("Ragnarok",   "Titan", "Minmatar", 3.0, 3000.0, bridge_range_ly=6.0),
     # --- Black Ops (covert bridge, 8 ly) -----------------------------------
-    Ship("Redeemer", "Black Ops", "Amarr",    4.0, 500.0, bridge_range_ly=8.0),
-    Ship("Widow",    "Black Ops", "Caldari",  4.0, 500.0, bridge_range_ly=8.0),
-    Ship("Sin",      "Black Ops", "Gallente", 4.0, 500.0, bridge_range_ly=8.0),
-    Ship("Panther",  "Black Ops", "Minmatar", 4.0, 500.0, bridge_range_ly=8.0),
+    Ship("Redeemer", "Black Ops", "Amarr",    4.0, 700.0, bridge_range_ly=8.0),
+    Ship("Widow",    "Black Ops", "Caldari",  4.0, 700.0, bridge_range_ly=8.0),
+    Ship("Sin",      "Black Ops", "Gallente", 4.0, 700.0, bridge_range_ly=8.0),
+    Ship("Panther",  "Black Ops", "Minmatar", 4.0, 700.0, bridge_range_ly=8.0),
 ]
 
 SHIPS_BY_NAME = {s.name: s for s in SHIPS}
