@@ -82,6 +82,31 @@ SHIPS: list[Ship] = [
     Ship("Phoenix",    "Dreadnought", "Caldari",  3.5, 1000.0),
     Ship("Moros",      "Dreadnought", "Gallente", 3.5, 1000.0),
     Ship("Naglfar",    "Dreadnought", "Minmatar", 3.5, 1000.0),
+    # --- Navy/Fleet Issue Dreadnoughts --------------------------------------
+    # LP-store variants of the four hulls above (same SDE group as the T1
+    # hulls, confirmed against the local SDE dump -- same mass each, just
+    # better tank). Range/fuel inherited from their T1 counterpart: CCP
+    # hasn't published different jump-drive numbers for these, and nothing
+    # about a Navy/Fleet Issue reskin changes the jump drive itself.
+    Ship("Revelation Navy Issue", "Dreadnought", "Amarr",    3.5, 1000.0),
+    Ship("Phoenix Navy Issue",    "Dreadnought", "Caldari",  3.5, 1000.0),
+    Ship("Moros Navy Issue",      "Dreadnought", "Gallente", 3.5, 1000.0),
+    Ship("Naglfar Fleet Issue",   "Dreadnought", "Minmatar", 3.5, 1000.0),
+    # --- Lancer Dreadnoughts (T2, Viridian expansion, June 2023) -----------
+    # One per race, each a T2 variant of the matching T1 hull above (Bane ~
+    # Revelation, Karura ~ Phoenix, Hubris ~ Moros, Valravn ~ Naglfar) --
+    # confirmed by matching hull mass against the local SDE dump. CCP's own
+    # material calls these "Tech II Dreadnoughts" rather than describing a
+    # different jump drive, so range/fuel are inherited from the T1 line the
+    # same as the Navy/Fleet Issue variants above; correct here if CCP ever
+    # publishes different numbers. Kept as their own hull_class ("Lancer
+    # Dreadnought") rather than folded into "Dreadnought" so the Ship
+    # dropdown still shows which one this is -- same treatment Command
+    # Carriers got.
+    Ship("Bane",     "Lancer Dreadnought", "Amarr",    3.5, 1000.0),
+    Ship("Karura",   "Lancer Dreadnought", "Caldari",  3.5, 1000.0),
+    Ship("Hubris",   "Lancer Dreadnought", "Gallente", 3.5, 1000.0),
+    Ship("Valravn",  "Lancer Dreadnought", "Minmatar", 3.5, 1000.0),
     # --- Supercarriers -----------------------------------------------------
     Ship("Aeon",   "Supercarrier", "Amarr",    3.0, 1000.0),
     Ship("Wyvern", "Supercarrier", "Caldari",  3.0, 1000.0),

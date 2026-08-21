@@ -110,9 +110,9 @@ These are gameplay invariants, not implementation details — don't break them w
   - Fuel/ly: `base_iso × (1 − 0.10·JFC) × (freighter ? 1 − 0.10·JF : 1)`
   - Reactivation timer: `max(1 + ly, preFatigue/10)` minutes, capped at 30
   - New fatigue: `max(10·(1+ly), fatigue·(1+ly))` minutes, capped at 5 h (× implant reduction)
-- Docking tiers (Titans/Supercarriers → Keepstar only; carriers/command carriers/dreads/
-  FAX/Rorqual → NPC stations, Fortizar/Keepstar, XL engineering/refinery; jump freighters &
-  subcaps → anything) live in `data/docking.py`.
+- Docking tiers (Titans/Supercarriers → Keepstar only; carriers/command carriers/dreads
+  (incl. lancer)/FAX/Rorqual → NPC stations, Fortizar/Keepstar, XL engineering/refinery;
+  jump freighters & subcaps → anything) live in `data/docking.py`.
 - Regional stargates (the 116 gates longer than any jump) are taken at **any** gate-balance
   setting — no number of jumps replaces them.
 

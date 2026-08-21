@@ -39,6 +39,7 @@ _HULL_CATEGORY = {
     "Carrier": CAPITAL,
     "Command Carrier": CAPITAL,     # T2 carrier-hull, docks the same tier
     "Dreadnought": CAPITAL,
+    "Lancer Dreadnought": CAPITAL,  # T2 dreadnought-hull, docks the same tier
     "Force Auxiliary": CAPITAL,
     "Capital Industrial": CAPITAL,  # Rorqual
     "Subcapital": SUBCAP,           # generic gate-only hull
