@@ -15,12 +15,15 @@ somehow ship without ``update.exe``.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -264,12 +267,79 @@ def _powershell_command(new_dir: Path, target: Path) -> list[str]:
             "-Src", str(new_dir), "-Dst", str(target), "-ExeName", _EXE_NAME]
 
 
+def _other_instance_pids() -> list[int]:
+    """PIDs of other running processes with our own exe name, minus us.
+
+    update.exe waits for the exe file to become writable, on the assumption
+    that "the app closed" is the only thing holding it open. That is false
+    for one real case this app itself creates: Claude Desktop (or ChatGPT
+    Desktop, or any other MCP host) launches ``eve-strait.exe --mcp`` as its
+    own long-lived background process from the config snippet this app
+    hands out (see ai_dialog.py's claude_desktop_snippet()). Closing the GUI
+    window does nothing to that separate process, so it keeps the exe
+    locked and the updater eventually gives up and relaunches the OLD
+    build, unchanged -- which looks exactly like "the update did nothing".
+    tasklist/taskkill are always present on Windows, so this needs no new
+    dependency.
+    """
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {_EXE_NAME}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for row in csv.reader(io.StringIO(out.stdout)):
+        if len(row) < 2:
+            continue
+        try:
+            pid = int(row[1])
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def _close_other_instances(progress=None) -> None:
+    """Best-effort: end any other eve-strait.exe process before updating.
+
+    In practice this is almost always an MCP server child spawned by an
+    external MCP host, not another copy of the GUI -- but either way, it is
+    holding a lock the updater cannot proceed past, so it has to go. Never
+    raises: if this fails, update.exe's own 60s unlock-wait is still there
+    as a fallback, this just makes hitting that fallback far less likely.
+    """
+    pids = _other_instance_pids()
+    if not pids:
+        return
+    if progress:
+        progress(f"Closing {len(pids)} other Eve-Strait process(es)"
+                  " (e.g. an MCP server) so the update can proceed...")
+    for pid in pids:
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True, timeout=10,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    # Give Windows a moment to actually release the file handle; update.exe
+    # still polls for up to 60s on top of this, so this is just to avoid
+    # handing off to it while a kill is still mid-flight.
+    for _ in range(10):
+        if not _other_instance_pids():
+            break
+        time.sleep(0.3)
+
+
 def apply_and_restart(zip_path: Path, progress=None) -> None:
     """Swap in the downloaded build and relaunch. Does not return on success."""
     if not is_frozen():
         raise RuntimeError("Updating in place only works for the packaged build")
     new_dir = _extract(zip_path, progress)
     target = install_dir()
+    _close_other_instances(progress)
 
     args = _updater_command(new_dir, target) or _powershell_command(new_dir, target)
     if progress:

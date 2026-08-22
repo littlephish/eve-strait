@@ -71,6 +71,13 @@ git push origin v0.2.0
   the updater offered an update to the running build.
 - The in-app updater (Help → Check for updates) does a folder swap of the release zip;
   `update-log.txt` next to the exe records each step.
+- The updater's "wait for the exe to unlock" step assumes only the GUI holds it open.
+  It doesn't: Claude/ChatGPT Desktop can be running `eve-strait.exe --mcp` as a separate,
+  long-lived background process (from the MCP config snippet this app hands out), and
+  closing the GUI window does nothing to that process. `update.py`'s `apply_and_restart()`
+  calls `_close_other_instances()` first to end every other process with this exe's name via
+  `tasklist`/`taskkill` — don't remove that call, or updates will silently no-op whenever an
+  MCP host is connected (confirmed happening on a real machine, not theoretical).
 
 ## Layout
 

@@ -37,6 +37,20 @@ one file** to a temp folder and runs it from there. That lets it replace the
 entire install, including the installed `update.exe`, with no self-replace
 problem. See `apply_and_restart()` in `src/eve_strait/update.py`.
 
+**The unlock-wait assumes only the GUI holds the exe open. That's not always
+true.** Eve-Strait's own MCP feature hands out a config snippet that has
+Claude/ChatGPT Desktop launch `eve-strait.exe --mcp` as a separate, long-lived
+background process (see `ai_dialog.py`'s `_mcp_command()`) -- closing the main
+window does nothing to that process, so it keeps the exe locked, this
+updater's wait times out at 60s, and it falls back to relaunching the OLD
+build untouched, which looks exactly like the update silently did nothing.
+Confirmed live on a real dev machine: two such background processes were
+found still running from a previous session. `apply_and_restart()` now calls
+`_close_other_instances()` (via `tasklist`/`taskkill`) to end every other
+process with this exe's name *before* handing off to this updater, so in
+practice this updater's wait should almost never be the thing that actually
+matters -- but it stays as the last-resort fallback regardless.
+
 ## Build
 
 ```
