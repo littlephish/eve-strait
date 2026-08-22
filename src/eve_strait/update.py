@@ -26,6 +26,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 from . import __version__, config
@@ -109,8 +110,21 @@ def can_write_install_dir() -> bool:
         return False
 
 
-def download(url: str, progress=None, dest_dir: Path | None = None) -> Path:
-    """Fetch the release zip, reporting percent complete."""
+def download(url: str, progress=None, dest_dir: Path | None = None,
+             expected_size: int = 0) -> Path:
+    """Fetch the release zip, reporting percent complete.
+
+    Checks the byte count before handing the file on. A connection that dies
+    mid-transfer does not raise -- it just stops, leaving a short file that
+    looks like a download -- and the very next thing that happens to this zip
+    is that its contents overwrite a working install. So "all of it arrived"
+    is worth asserting rather than assuming.
+
+    ``expected_size`` is the asset size the GitHub API already told us, which
+    is a second opinion on the server's own Content-Length. Neither is a
+    defence against tampering; TLS is what covers that. This covers the
+    transfer simply stopping.
+    """
     base = dest_dir or Path(tempfile.mkdtemp(prefix="eve-strait-update-"))
     base.mkdir(parents=True, exist_ok=True)
     dest = base / "update.zip"
@@ -123,16 +137,55 @@ def download(url: str, progress=None, dest_dir: Path | None = None) -> Path:
             done += len(chunk)
             if progress and total:
                 progress(f"Downloading update... {done * 100 // total}%")
+
+    for want, source in ((total, "the server"),
+                         (expected_size, "the release listing")):
+        if want and done != want:
+            # Leave nothing that a later run could mistake for a good download.
+            dest.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Download incomplete: received {done:,} bytes but {source} "
+                f"said {want:,}. Nothing has been changed - try again.")
     return dest
 
 
 def _extract(zip_path: Path, progress=None) -> Path:
-    """Unpack the zip and return the folder that holds the executable."""
+    """Verify the archive, unpack it, and return the folder holding the exe.
+
+    Every entry in a zip carries its own CRC32, so ``testzip()`` is a real
+    per-file integrity check of exactly the bytes about to overwrite the
+    install -- no published SHA256SUMS needed, and it catches a bad disk or a
+    mangled transfer that still happened to be the right length. It is only
+    an integrity check: a zip rebuilt by an attacker has perfectly good CRCs.
+
+    Checked before extracting rather than after, so a corrupt archive never
+    puts a single file on disk.
+    """
     if progress:
-        progress("Extracting...")
+        progress("Checking the download...")
     out = zip_path.parent / "unpacked"
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(out)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            damaged = zf.testzip()
+            if damaged is not None:
+                raise RuntimeError(
+                    f"The downloaded archive is damaged ({damaged} failed its "
+                    "checksum). Nothing has been changed - try again.")
+            if progress:
+                progress("Extracting...")
+            zf.extractall(out)
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(
+            f"The downloaded file is not a readable zip ({exc}). Nothing has "
+            "been changed - try again.") from exc
+    except (zlib.error, EOFError) as exc:
+        # testzip() only *returns* the offending name when an entry's CRC
+        # disagrees. If the compressed stream itself is mangled it raises from
+        # zlib instead, and "Error -3 while decompressing data" is not
+        # something to put in front of anyone. Same situation, same message.
+        raise RuntimeError(
+            f"The downloaded archive is damaged ({exc}). Nothing has been "
+            "changed - try again.") from exc
     if (out / _EXE_NAME).exists():
         return out
     for child in out.rglob(_EXE_NAME):      # zip usually nests one folder deep

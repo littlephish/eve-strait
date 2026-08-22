@@ -351,7 +351,8 @@ class MainWindow(QMainWindow):
         def start():
             dlg.set_busy("Downloading...")
             dw = Worker(update.download, info["zip_url"],
-                        dest_dir=update.staging_dir())
+                        dest_dir=update.staging_dir(),
+                        expected_size=info.get("zip_size", 0))
             dw.progress.connect(dlg.set_busy)
 
             def ready(zip_path):
