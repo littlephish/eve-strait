@@ -48,7 +48,11 @@ def _scrollable(panel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Eve-Strait")
+        from .. import __version__
+        # Version in the title bar: it is the one piece of chrome that is
+        # always on screen and always in a screenshot, so bug reports carry
+        # the build with them without anyone having to ask.
+        self.setWindowTitle(f"Eve-Strait {__version__}")
         self.resize(1500, 950)
 
         # Qt gives the bottom corners to the left/right dock areas by default,
@@ -308,6 +312,11 @@ class MainWindow(QMainWindow):
         """Short owner label for map hover, e.g. 'Goonswarm Federation'."""
         info = self.sov_of(system_id)
         return info[0] if info else None
+
+    # -- about ---------------------------------------------------------------
+    def _open_about(self):
+        from .dialogs import AboutDialog
+        AboutDialog(self).exec()
 
     # -- updates ------------------------------------------------------------
     def _check_updates(self, explicit: bool = False):
@@ -1190,6 +1199,10 @@ class MainWindow(QMainWindow):
         self.act_auto_update.setChecked(_update.auto_check_enabled())
         self.act_auto_update.toggled.connect(_update.set_auto_check)
         help_menu.addAction(self.act_auto_update)
+        help_menu.addSeparator()
+        act_about = QAction("About Eve-Strait", self)
+        act_about.triggered.connect(self._open_about)
+        help_menu.addAction(act_about)
 
         view = self.menuBar().addMenu("&View")
         act_reset = QAction("Reset all panels", self)
@@ -1337,6 +1350,25 @@ class MainWindow(QMainWindow):
                 self.map_view.set_overlay_visible(key, on)
         self._save_settings()
 
+    # Short noun for the hover line under a system name ("Jita / 1,204
+    # jumps (1h)"). Separate from the HEAT_LAYERS menu text because that text
+    # is a sentence fragment for a menu ("Gate traffic, last hour") and far
+    # too long to hang off a system name on the map. Kept as its own table so
+    # the menu tuples stay a 3-tuple and this is trivially editable.
+    HEAT_UNITS = {
+        "jumps_1h": "jumps (1h)",
+        "jumps_24h": "jumps (24h)",
+        "npc_kills": "NPC kills (1h)",
+        "npc_kills_24h": "NPC kills (24h)",
+        "ship_kills": "ship kills (1h)",
+        "ship_kills_24h": "ship kills (24h)",
+        "pod_kills": "pod kills (1h)",
+        "pod_kills_24h": "pod kills (24h)",
+        "adm": "ADM",
+        "industry": "cost index",
+        "cyno": "cyno-fitted losses",
+    }
+
     def _set_heat_layer(self, key: str):
         """Recompute the heat layer from whatever intel we already hold."""
         self._heat_key = key
@@ -1350,12 +1382,15 @@ class MainWindow(QMainWindow):
         kills = self.kill_activity or {}
         totals = self.activity_totals or {}
         label = dict((k, t) for k, t, _ in self.HEAT_LAYERS).get(key, key)
+        unit = self.HEAT_UNITS.get(key, "")
         if key == "jumps_1h":
             values = dict(self.jump_activity or {})
         elif key == "jumps_24h":
             values = dict(totals.get("jumps") or {})
             hours = totals.get("hours", 0)
-            label = f"{label} ({hours}h so far)" if hours < 24 else label
+            if hours < 24:
+                label = f"{label} ({hours}h so far)"
+                unit = f"jumps ({hours}h so far)"
         elif key in ("ship_kills", "pod_kills", "npc_kills"):
             field = key.split("_")[0]
             values = {sid: c.get(field, 0) for sid, c in kills.items()}
@@ -1364,7 +1399,9 @@ class MainWindow(QMainWindow):
             values = {sid: c.get(field, 0)
                      for sid, c in (totals.get("kills") or {}).items()}
             hours = totals.get("hours", 0)
-            label = f"{label} ({hours}h so far)" if hours < 24 else label
+            if hours < 24:
+                label = f"{label} ({hours}h so far)"
+                unit = unit.replace("(24h)", f"({hours}h so far)")
         elif key == "adm":
             values = {sid: d.get("adm") or 0
                       for sid, d in (self.sov_defense or {}).items()}
@@ -1375,6 +1412,7 @@ class MainWindow(QMainWindow):
             values = dict(self.cyno_activity or {})
             hours = self._cyno_sweep.get("hours", 24)
             label = f"Cyno-fitted losses, {hours}h"
+            unit = f"cyno-fitted losses ({hours}h)"
         else:
             values = {}
 
@@ -1387,7 +1425,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"No {label.lower()} data yet. It arrives with the next "
                     "intel refresh (Settings -> Intel).", 8000)
-        self.map_view.set_heat(values, label)
+        self.map_view.set_heat(values, label, unit)
 
     # -- AI assistant -------------------------------------------------------
     def _edit_ai_settings(self):

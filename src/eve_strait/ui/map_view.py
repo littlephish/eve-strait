@@ -10,7 +10,9 @@ from PySide6.QtGui import (
     QFont,
     QPainter,
     QPen,
+    QPixmap,
     QPolygonF,
+    QRadialGradient,
     QTransform,
 )
 from PySide6.QtWidgets import (
@@ -116,7 +118,10 @@ class MapView(QGraphicsView):
         self._dots: dict[int, QGraphicsEllipseItem] = {}
         self._sec_brushes: dict[int, QBrush] = {}
         self._heat_brushes: dict[int, QBrush] = {}
+        self._glow: list[tuple[int, QColor, float]] = []
+        self._glow_cache: dict[tuple, QPixmap] = {}
         self._heat_label = ""
+        self._heat_unit = ""
         self._heat_max = 0.0
         self._heat_values: dict[int, float] = {}
 
@@ -822,7 +827,17 @@ class MapView(QGraphicsView):
     # Systems with no reading, so the ones that do have data stand out.
     _HEAT_COLD = QColor(52, 58, 74)
 
-    def set_heat(self, values: dict | None, label: str = ""):
+    # Glow behind the hottest dots. Only the top _GLOW_BANDS of the ramp get
+    # one: glowing every system with a reading hazes the whole map over and
+    # nothing stands out, which is the problem this is meant to fix.
+    _GLOW_BANDS = 3
+    _GLOW_MIN_PX = 7.0        # radius at the bottom of the glowing range
+    _GLOW_MAX_PX = 24.0       # radius at the peak value
+    _GLOW_STEP_PX = 2.0       # radii are quantised to this, to keep the cache small
+    _GLOW_ALPHA = 150         # centre alpha; falls to 0 at the rim
+
+    def set_heat(self, values: dict | None, label: str = "",
+                 unit: str = ""):
         """Shade the system dots by one metric.
 
         Deliberately recolours the existing dots rather than adding a halo
@@ -834,6 +849,11 @@ class MapView(QGraphicsView):
         Scaled logarithmically, because kills and gate traffic are so skewed
         that a linear ramp paints Jita red and leaves everything else in an
         identical blue. Pass None or an empty dict to clear the layer.
+
+        ``label`` names the metric in the legend; ``unit`` is the short noun
+        the hover label puts after the number ("jumps (1h)"). The legend
+        phrase is too long to hang off a system name, which is why they are
+        two strings rather than one.
         """
         # Keep the raw values: they can arrive before _build() has created
         # the dots. Cached intel is served from sqlite in ~160ms and beats
@@ -841,6 +861,7 @@ class MapView(QGraphicsView):
         # cold with no way to recover short of re-picking the layer.
         self._heat_values = dict(values or {})
         self._heat_label = label
+        self._heat_unit = unit
         self._recompute_heat()
 
     def _recompute_heat(self):
@@ -848,6 +869,7 @@ class MapView(QGraphicsView):
         import math
 
         self._heat_brushes = {}
+        self._glow = []
         self._heat_max = 0.0
 
         clean = {sid: float(v) for sid, v in self._heat_values.items()
@@ -858,11 +880,137 @@ class MapView(QGraphicsView):
             span = math.log10(1.0 + top) or 1.0
             n = len(self._HEAT_RAMP)
             # One brush per band, shared by every system in it.
-            band_brushes = [QBrush(QColor(c)) for c in self._HEAT_RAMP]
+            band_colours = [QColor(c) for c in self._HEAT_RAMP]
+            band_brushes = [QBrush(c) for c in band_colours]
+            first_glow = n - self._GLOW_BANDS
             for sid, v in clean.items():
-                band = min(n - 1, int(math.log10(1.0 + v) / span * n))
+                t = math.log10(1.0 + v) / span      # 0..1 up the ramp
+                band = min(n - 1, int(t * n))
                 self._heat_brushes[sid] = band_brushes[band]
+                if band >= first_glow:
+                    self._glow.append(
+                        (sid, band_colours[band], self._glow_radius(t, n)))
+            # Smallest first, so the hottest system's glow lands on top of a
+            # busy neighbour's rather than under it.
+            self._glow.sort(key=lambda g: g[2])
         self._apply_heat()
+
+    def _glow_radius(self, t: float, bands: int) -> float:
+        """Glow radius in screen pixels for a value at ramp position ``t``.
+
+        Radius carries the magnitude, not just the band colour: size is a far
+        stronger visual channel than hue, and the mid-ramp colours are close
+        enough that neighbouring bands read as the same green otherwise.
+        Quantised to _GLOW_STEP_PX so the pixmap cache holds a handful of
+        images instead of one per system.
+        """
+        t0 = (bands - self._GLOW_BANDS) / bands
+        frac = (t - t0) / (1.0 - t0) if t0 < 1.0 else 1.0
+        frac = max(0.0, min(1.0, frac))
+        r = self._GLOW_MIN_PX + (self._GLOW_MAX_PX - self._GLOW_MIN_PX) * frac
+        return round(r / self._GLOW_STEP_PX) * self._GLOW_STEP_PX
+
+    def _glow_pixmap(self, colour: QColor, radius: float, dpr: float) -> QPixmap:
+        """Cached radial-gradient sprite, one per (colour, radius, DPI).
+
+        Rasterising a gradient per system per frame would cost what the
+        rejected halo-item layer cost (see set_heat); blitting a ready-made
+        sprite does not. Keyed on the device pixel ratio as well so dragging
+        the window to a different-DPI monitor re-renders instead of blurring.
+        """
+        key = (colour.rgb(), radius, dpr)
+        pm = self._glow_cache.get(key)
+        if pm is not None:
+            return pm
+
+        # Physical pixels for the buffer, logical ones for the drawing: a
+        # QPainter on a pixmap already scales by that pixmap's device pixel
+        # ratio, so everything below stays in logical units. Scaling by dpr
+        # here as well double-scaled it (2.25x on a 1.5x display), which put
+        # the gradient's centre at 75% across the sprite and left only the
+        # top-left quarter of the circle inside it -- a hard-edged square
+        # with the glow bunched into one corner, invisible at dpr 1.0 and so
+        # invisible to every offscreen test.
+        size = max(1, int(round(radius * 2 * dpr)))
+        pm = QPixmap(size, size)
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+
+        mid = QColor(colour)
+        mid.setAlpha(int(self._GLOW_ALPHA * 0.35))
+        inner = QColor(colour)
+        inner.setAlpha(self._GLOW_ALPHA)
+        rim = QColor(colour)
+        rim.setAlpha(0)
+
+        grad = QRadialGradient(radius, radius, radius)
+        grad.setColorAt(0.0, inner)
+        grad.setColorAt(0.45, mid)
+        grad.setColorAt(1.0, rim)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(QPen(Qt.PenStyle.NoPen))
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(QPointF(radius, radius), radius, radius)
+        p.end()
+
+        self._glow_cache[key] = pm
+        return pm
+
+    def drawBackground(self, painter, rect):
+        """Paint the heat glow under every item, in viewport pixels.
+
+        Not QGraphicsItems: set_heat explains why a per-system item layer was
+        rejected (5000 ellipses, ~285 ms a frame, and this view does a full
+        viewport repaint on every mouse move). This draws only the systems in
+        the top few bands, as cached sprites, and culls anything off screen,
+        so a pan costs a few hundred blits at most.
+
+        Drawn with the transform reset, like the legend in drawForeground, so
+        the glow is a constant screen size at every zoom -- matching the dots
+        themselves, which are ItemIgnoresTransformations.
+
+        Rides the heat overlay's own toggle: no glow without a heat layer.
+        """
+        super().drawBackground(painter, rect)
+        if not self._glow or not self._overlay_on.get("heat", True):
+            return
+
+        painter.save()
+        painter.resetTransform()
+        dpr = self.devicePixelRatioF()
+        w = self.viewport().width()
+        h = self.viewport().height()
+        for sid, colour, radius in self._glow:
+            pos = self._pos.get(sid)
+            if pos is None:
+                continue
+            v = self.mapFromScene(pos)
+            if (v.x() < -radius or v.y() < -radius
+                    or v.x() > w + radius or v.y() > h + radius):
+                continue
+            pm = self._glow_pixmap(colour, radius, dpr)
+            painter.drawPixmap(QPointF(v.x() - radius, v.y() - radius), pm)
+        painter.restore()
+
+    def heat_stat(self, system_id: int) -> str:
+        """The hover line for one system, or "" if it has no reading.
+
+        Empty for a system the metric does not cover, rather than "0 jumps":
+        ESI simply omits quiet systems, so a zero here would be an assertion
+        the data does not make.
+        """
+        if not self._overlay_on.get("heat", True) or not self._heat_brushes:
+            return ""
+        value = self._heat_values.get(system_id)
+        if not value:
+            return ""
+        v = float(value)
+        # ADM and the industry index are small and fractional; everything
+        # else is a count big enough to want thousands separators.
+        num = f"{v:,.1f}" if v < 100 and v != int(v) else f"{round(v):,.0f}"
+        return f"{num} {self._heat_unit}".strip()
 
     def _apply_heat(self):
         """Repaint the dots as either the heat ramp or security colours."""
@@ -1085,6 +1233,9 @@ class MapView(QGraphicsView):
             if k.get("ship") or k.get("pod"):
                 label = (f"{label}  |  {k.get('ship', 0)} kills, "
                          f"{k.get('pod', 0)} pods (1h)")
+        stat = self.heat_stat(sid)
+        if stat:
+            label = f"{label}\n{stat}"
         notes = getattr(self, "_note_lookup", None)
         if notes is not None:
             note = (notes(sid) or "").strip()

@@ -313,6 +313,13 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
+### Which version am I running?
+
+The version is in the window title (`Eve-Strait 0.1.0`) and in **Help - About Eve-Strait**,
+which also carries the repo link and the Python/Qt/OS line worth pasting into a bug report.
+Both read `eve_strait.__version__`, the same string the release workflow stamps and the
+updater compares against GitHub.
+
 ### Updating
 
 **Help - Check for updates** asks the GitHub releases API whether a newer tag exists, and can

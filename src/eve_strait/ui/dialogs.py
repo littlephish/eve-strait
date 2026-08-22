@@ -950,3 +950,60 @@ class WormholeDialog(QDialog):
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         v.addWidget(buttons)
+
+
+class AboutDialog(QDialog):
+    """What this is, which build you are running, and where the source lives.
+
+    The version shown is the same ``eve_strait.__version__`` the updater
+    compares against the GitHub release feed, so a screenshot of this dialog
+    answers "what are you running?" on a bug report by itself -- which is
+    also why the Python/Qt/OS line is here rather than buried in a log.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import platform
+
+        from PySide6 import __version__ as pyside_version
+
+        from .. import __version__
+        from ..update import GITHUB_REPO
+
+        repo = f"https://github.com/{GITHUB_REPO}"
+        self.setWindowTitle("About Eve-Strait")
+        self.setMinimumWidth(430)
+        v = QVBoxLayout(self)
+
+        name = QLabel("Eve-Strait")
+        f = name.font()
+        f.setPointSize(f.pointSize() + 5)
+        f.setBold(True)
+        name.setFont(f)
+        v.addWidget(name)
+
+        v.addWidget(QLabel(f"Version {__version__}"))
+        v.addWidget(_link_label(
+            "Capital jump route planner for EVE Online.<br>"
+            f'<a href="{repo}">{repo}</a>'))
+
+        env = QLabel(f"Python {platform.python_version()}  ·  "
+                     f"PySide6 {pyside_version}  ·  {platform.system()}")
+        env.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        v.addWidget(env)
+
+        v.addSpacing(8)
+        legal = QLabel(
+            "Released under the GNU General Public License v3.<br><br>"
+            "EVE Online and the EVE logo are the registered trademarks of "
+            "CCP hf. All rights reserved. This is a third-party tool, not "
+            "affiliated with or endorsed by CCP hf.")
+        legal.setTextFormat(Qt.TextFormat.RichText)
+        legal.setWordWrap(True)
+        legal.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
+        v.addWidget(legal)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        v.addWidget(buttons)
