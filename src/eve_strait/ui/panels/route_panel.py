@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from itertools import count
 
-from PySide6.QtCore import QStringListModel, Qt, Signal
+from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1045,7 +1045,18 @@ class RoutePanel(QWidget):
         s = uni.by_name(text.split("  (")[0])
         if s is not None:
             self._add_system(s.id)
-            self.search.clear()
+            # Qt's own QLineEdit<->QCompleter wiring restores the raw
+            # "name  (sec)" completion text into the field as part of
+            # accepting the popup selection, and it does that on a queued
+            # callback that runs *after* this handler returns -- a plain
+            # self.search.clear() here gets silently overwritten by it a
+            # moment later (confirmed: clear() takes effect immediately,
+            # then the field shows the raw completion text again right
+            # after). Deferring our own clear the same way puts it after
+            # Qt's queued restore instead of before it, so ours is what
+            # actually sticks. The "(sec)" suffix is only ever meant for the
+            # popup list, never the field itself.
+            QTimer.singleShot(0, self.search.clear)
 
     # ---- copy -------------------------------------------------------------
     def _copy_menu(self):
