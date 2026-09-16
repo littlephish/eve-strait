@@ -48,3 +48,35 @@ def test_rorqual_may_use_the_bridge(uni):
 def test_capitals_are_refused_the_bridge(uni, name):
     """20 ly with no stargate: without the bridge there is no route at all."""
     assert plan(uni, name) is None
+
+
+def _owned_uni(alliance_id):
+    systems = {1: make(1, "Aaa", 0.0), 2: make(2, "Bbb", 20.0)}
+    u = Universe(systems, gates={})
+    u.set_bridges([{"a": "Aaa", "b": "Bbb", "alliance_id": alliance_id,
+                    "source": "esi"}])
+    return u
+
+
+def _plan(uni, my_alliance_id):
+    return router.plan_multimodal(
+        uni, SHIPS_BY_NAME["Rhea"], Skills(jump_drive_calibration=5),
+        uni.systems[1], uni.systems[2], my_alliance_id=my_alliance_id)
+
+
+def test_own_alliance_gate_is_usable():
+    assert _plan(_owned_uni(99), 99) is not None
+
+
+def test_other_alliance_gate_is_refused():
+    assert _plan(_owned_uni(99), 1234) is None
+
+
+def test_unknown_owner_is_trusted():
+    """Hand-typed and legacy gates must keep working on upgrade."""
+    assert _plan(_owned_uni(None), 1234) is not None
+
+
+def test_unknown_pilot_alliance_permits_everything():
+    """Not logged in: we cannot judge, so we do not block."""
+    assert _plan(_owned_uni(99), None) is not None

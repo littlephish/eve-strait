@@ -266,6 +266,7 @@ def plan_multimodal(
     gate_pref: str = "fast",
     jump_cost: float | None = None,
     use_ansiblex: bool = True,
+    my_alliance_id: int | None = None,
     use_wormholes: bool = False,
     haven=None,
     haven_penalty: float = 0.35,
@@ -283,7 +284,11 @@ def plan_multimodal(
       * a jump may originate anywhere (including high-sec) but can only
         *land in* security < 0.5 (no cyno can be lit in high-sec);
       * capitals/supers cannot use high-sec gates at all (only jump freighters
-        and other subcap hulls may gate through high-sec).
+        and other subcap hulls may gate through high-sec);
+      * capitals/supers cannot use an Ansiblex at all, the Rorqual excepted;
+      * an Ansiblex may be used only by the alliance that owns it. An owner we
+        do not know is trusted rather than blocked -- a hand-typed gate is the
+        user asserting access we cannot verify.
 
     Returns (systems, modes) where modes[i] is how leg i (systems[i]->[i+1])
     is travelled ("jump" or "gate"), or None if unreachable.
@@ -372,8 +377,16 @@ def plan_multimodal(
                    if use_ansiblex and docking.ansiblex_allowed(ship) else ())
         for bid in bridges:
             b = universe.systems.get(bid)
+            # Access is alliance-only since Cradle of War. An owner we do not
+            # know is trusted rather than blocked -- a hand-typed gate is the
+            # user asserting access we have no way to verify, and refusing it
+            # would break their setup on upgrade.
+            owner = universe.bridge_owner.get(
+                (nid, bid) if nid < bid else (bid, nid))
             if (b is None or blocked(bid) or edge_banned(nid, bid)
-                    or not docking.gate_allowed(ship, b.security)):
+                    or not docking.gate_allowed(ship, b.security)
+                    or (owner is not None and my_alliance_id is not None
+                        and owner != my_alliance_id)):
                 continue
             nc = c + w_gate
             if nc < best.get(bid, float("inf")):
