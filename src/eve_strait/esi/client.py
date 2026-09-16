@@ -51,32 +51,60 @@ def parse_ansiblex_name(name: str):
     return None
 
 
-def sovereignty(progress=None) -> dict:
-    """Who holds sovereignty in each null-sec system. Public, no auth.
+def parse_sovereignty(payload: dict) -> tuple[dict, dict]:
+    """Split a /sovereignty/systems payload into owners and capitals.
 
-    Returns {"owners": {system_id: (owner_id, kind)}, "names": {id: name}}.
+    Returns ({system_id: (owner_id, kind)}, {alliance_id: capital_system_id}).
+
+    Precedence is alliance > corporation > faction, matching what
+    /sovereignty/map/ produced -- the alliance claim carries corporation_id
+    too, and the alliance is the meaningful holder.
+    """
+    owners: dict[int, tuple[int, str]] = {}
+    capitals: dict[int, int] = {}
+    for row in (payload or {}).get("solar_systems") or ():
+        sid = row.get("solar_system_id")
+        if not sid:
+            continue
+        claim = row.get("claim") or {}
+        alliance = claim.get("alliance") or {}
+        faction = claim.get("faction") or {}
+        if alliance.get("alliance_id"):
+            owners[sid] = (alliance["alliance_id"], "alliance")
+            if alliance.get("is_capital_system"):
+                capitals[alliance["alliance_id"]] = sid
+        elif alliance.get("corporation_id"):
+            owners[sid] = (alliance["corporation_id"], "corporation")
+        elif faction.get("faction_id"):
+            owners[sid] = (faction["faction_id"], "faction")
+    return owners, capitals
+
+
+def sovereignty(progress=None) -> dict:
+    """Who holds sovereignty in each system, and each alliance's capital.
+
+    Returns {"owners": {system_id: (owner_id, kind)}, "names": {id: name},
+             "capitals": {alliance_id: system_id}}.
     Owner names are resolved up front (a couple of batched calls) so lookups
     during rendering are instant.
+
+    Reads /sovereignty/systems rather than the older /sovereignty/map/,
+    because only the former carries is_capital_system -- which sets the
+    Ansiblex capacitor zones. One call now serves both purposes.
+
+    The two disagree on five systems, all of them faction-held Triglavian and
+    EDENCOM special systems that the new route omits. Faction space is not
+    drawn in the territory layer anyway, so the only loss is a hover label on
+    those five.
     """
     if progress:
         progress("Loading sovereignty map...")
     try:
-        resp = get_transport().get("/sovereignty/map/", timeout=45,
-                                   priority="background")
-        rows = resp.json()
+        payload = sovereignty_systems()
     except (requests.RequestException, ValueError):
-        return {"owners": {}, "names": {}}
+        return {"owners": {}, "names": {}, "capitals": {}}
 
-    owners: dict[int, tuple[int, str]] = {}
-    for row in rows:
-        sid = row.get("system_id")
-        for key, kind in (("alliance_id", "alliance"),
-                          ("corporation_id", "corporation"),
-                          ("faction_id", "faction")):
-            oid = row.get(key)
-            if sid and oid:
-                owners[sid] = (oid, kind)
-                break
+    owners, capitals = parse_sovereignty(payload)
 
     ids = sorted({oid for oid, _ in owners.values()})
     names: dict[int, str] = {}
@@ -84,7 +112,7 @@ def sovereignty(progress=None) -> dict:
         if progress:
             progress(f"Resolving sovereignty holders ({i + 1}/{len(ids)})...")
         names.update(resolve_names(ids[i:i + 1000]))
-    return {"owners": owners, "names": names}
+    return {"owners": owners, "names": names, "capitals": capitals}
 
 
 def system_activity(progress=None, force: bool = False,
