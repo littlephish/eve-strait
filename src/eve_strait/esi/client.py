@@ -135,6 +135,40 @@ def system_activity(progress=None, force: bool = False,
 SOV_HUB_TYPE_ID = 32458
 
 
+def capital_systems(payload: dict) -> dict[int, int]:
+    """Map alliance_id -> its capital solar system.
+
+    The capital system sets Ansiblex capacitor zones: cost scales with how far
+    a gate's destination sits from it. Only alliance claims carry
+    is_capital_system, so faction and unclaimed rows are skipped.
+
+    One public call covers every alliance, which is why this needs no
+    configuration from the user -- and the capital has a 90-day change
+    cooldown, so the answer is stable.
+    """
+    out: dict[int, int] = {}
+    for row in (payload or {}).get("solar_systems") or ():
+        claim = (row.get("claim") or {}).get("alliance") or {}
+        if not claim.get("is_capital_system"):
+            continue
+        alliance_id = claim.get("alliance_id")
+        system_id = row.get("solar_system_id")
+        if alliance_id and system_id:
+            out[alliance_id] = system_id
+    return out
+
+
+def sovereignty_systems(force: bool = False,
+                        priority: str = "background") -> dict:
+    """Raw /sovereignty/systems payload. Public, no auth needed.
+
+    Lives on the compatibility-dated route set; transport.url_for handles the
+    base and the mandatory date.
+    """
+    return get_transport().get("/sovereignty/systems", timeout=45,
+                               priority=priority, force=force).json()
+
+
 def sovereignty_defense(progress=None, force: bool = False,
                         priority: str = "background") -> dict:
     """Per-system ADM and vulnerability window. Public, no auth.

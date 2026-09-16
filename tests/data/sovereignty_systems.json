@@ -1,0 +1,7 @@
+{"solar_systems": [
+  {"solar_system_id": 30000001, "claim": {"faction": {"faction_id": 500007}}},
+  {"solar_system_id": 30000208, "claim": {"alliance": {"alliance_id": 99003581, "corporation_id": 98599770, "is_capital_system": false, "development": {"activity_defense_multiplier": 6.0, "military_level": 5, "industrial_level": 5, "strategic_level": 5}}}},
+  {"solar_system_id": 30000239, "claim": {"alliance": {"alliance_id": 99003581, "corporation_id": 98599770, "is_capital_system": true, "development": {"activity_defense_multiplier": 6.0, "military_level": 5, "industrial_level": 0, "strategic_level": 5}}}},
+  {"solar_system_id": 30004600, "claim": {"alliance": {"alliance_id": 1900696668, "is_capital_system": true}}},
+  {"solar_system_id": 30004601, "claim": {}}
+]}
