@@ -270,14 +270,38 @@ def set_default_dock(system_id: int, dock_name: str | None) -> None:
     save_config(cfg)
 
 
-def get_bridges() -> list[list[str]]:
-    """Ansiblex jump-gate links as [systemA, systemB] name pairs."""
-    return load_config().get("bridges", [])
+def get_bridges() -> list[dict]:
+    """Ansiblex jump-gate links as records.
+
+    Each record is {"a", "b", "alliance_id", "source"}. ``alliance_id`` is the
+    alliance that owns the gate, or None where it is not known.
+
+    Configs written before the Cradle of War work stored bare [nameA, nameB]
+    pairs. Those migrate in as manual entries with no known owner, and an
+    unknown owner stays routable: the user typed them deliberately, and
+    refusing to route would break their setup on upgrade.
+    """
+    out: list[dict] = []
+    for row in load_config().get("bridges") or ():
+        if isinstance(row, dict):
+            a, b = row.get("a"), row.get("b")
+            source = row.get("source") or "manual"
+            alliance_id = row.get("alliance_id")
+        elif isinstance(row, (list, tuple)) and len(row) == 2:
+            a, b = row[0], row[1]
+            source, alliance_id = "manual", None
+        else:
+            continue
+        if not a or not b:
+            continue
+        out.append({"a": a, "b": b,
+                    "alliance_id": alliance_id, "source": source})
+    return out
 
 
-def set_bridges(pairs: list[list[str]]) -> None:
+def set_bridges(records: list[dict]) -> None:
     cfg = load_config()
-    cfg["bridges"] = pairs
+    cfg["bridges"] = records
     save_config(cfg)
 
 
