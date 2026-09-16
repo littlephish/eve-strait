@@ -23,6 +23,9 @@ from .panels.ship_panel import ShipSkillsPanel
 from .tasks import BusyIndicator, TaskRegistry
 from .workers import Worker
 
+# Blank line between paragraphs of a QMessageBox body.
+_PARAGRAPH = "\n\n"
+
 
 def _scrollable(panel):
     """Wrap a panel so its dock can be narrowed.
@@ -1297,6 +1300,11 @@ class MainWindow(QMainWindow):
          "sitting in a cyno-fitted ship. Populated by Scan my characters, "
          "in the character panel."),
         ("heat", "Heat map", True, "The metric shading chosen below."),
+        ("pochven", "Pochven inset", True,
+         "Triglavian space, drawn as a box off the right edge of the map "
+         "(its real coordinates are scattered through empire space, where it "
+         "can never be flown to). Purely cosmetic: no route crosses the "
+         "Pochven border whether this is on or off."),
     )
 
     # Heat metrics: (key, menu text, tooltip). Every one of these comes from
@@ -1973,6 +1981,11 @@ class MainWindow(QMainWindow):
         for key, a in self.act_layers.items():
             # "gate_links" is where this setting lived before the layer menu.
             fallback = view.get("gate_links", True) if key == "gates" else None
+            # A short-lived "hide_pochven" key predates the inset. It is
+            # deliberately NOT migrated: it meant "stop scattering 27
+            # unreachable systems through my trade routes", which the inset
+            # already fixes, so honouring it would hide the thing that
+            # answers it.
             default = fallback if fallback is not None else \
                 dict((k, d) for k, _, d, _ in self.MAP_LAYERS)[key]
             a.blockSignals(True)
@@ -2248,6 +2261,11 @@ class MainWindow(QMainWindow):
             return
         ship = self.ship.current_ship()
         dest = self.route.waypoints[-1].system
+        trig = self.pochven_waypoint_error(
+            [wp.system for wp in self.route.waypoints])
+        if trig:
+            QMessageBox.warning(self, "Auto-route", trig)
+            return
         from ..data import docking
         if dest.security >= 0.5 and not docking.can_use_highsec_gates(ship):
             QMessageBox.warning(
@@ -2299,11 +2317,56 @@ class MainWindow(QMainWindow):
         self.route.set_route(systems, modes)
 
     def avoid_systems(self) -> set:
-        """Systems routing must never pass through: manual avoids + incursions."""
+        """Systems routing must never pass through: manual avoids + incursions.
+
+        Pochven is deliberately NOT here. It is not a preference the user can
+        switch off, it is a game rule, and it is expressed where rules belong
+        -- System.jumpable, which stops any jump landing there. Adding it to
+        this set as well would be both redundant and wrong, since the router
+        exempts the destination from the avoid set.
+        """
         avoid = set(self.avoided_ids)
         if self.route.avoid_incursions():
             avoid |= self.incursion_systems
         return avoid
+
+    def pochven_waypoint_error(self, systems) -> str | None:
+        """Why these waypoints can't be routed, if they straddle the border.
+
+        Routing *within* Pochven is fine and routing entirely outside it is
+        fine; it is only crossing that no route can express, because the
+        crossing is a filament rather than a leg. The router already returns
+        None for such a pair -- nothing may land in Pochven and no stargate
+        crosses -- but "no route found" would leave the user guessing at a
+        range or docking problem that isn't there, so it is named up front.
+        """
+        if not self.universe:
+            return None
+        pids = self.universe.pochven_ids
+        inside = [s.name for s in systems if s.id in pids]
+        outside = [s.name for s in systems if s.id not in pids]
+        if not inside or not outside:
+            return None
+        from ..data import pochven as pdata
+        verb = "is" if len(inside) == 1 else "are"
+        other = "is" if len(outside) == 1 else "are"
+        # Built as paragraphs rather than one long literal so the blank
+        # lines survive being edited later.
+        return _PARAGRAPH.join((
+            f"This route crosses the Pochven border "
+            f"({', '.join(inside[:3])} {verb} in Pochven, "
+            f"{', '.join(outside[:3])} {other} not).",
+
+            "No stargate links Pochven to the rest of New Eden and the "
+            "region is cyno-jammed, so the crossing is made with a "
+            "Triglavian filament -- a consumable that lands you somewhere "
+            "random, not a leg that can be planned. Inbound you get a "
+            "random system in the clade or class you bought; outbound a "
+            f"Proximity filament drops you within "
+            f"{pdata.PROXIMITY_FILAMENT_LY} ly of where you left.",
+
+            "Plan the two halves separately.",
+        ))
 
     def is_avoided(self, system_id: int) -> bool:
         return system_id in self.avoided_ids
@@ -2765,6 +2828,10 @@ class MainWindow(QMainWindow):
         skills = self.ship.current_skills()
         origin = self.route.waypoints[0].system
         dest = self.route.waypoints[-1].system
+        trig = self.pochven_waypoint_error([origin, dest])
+        if trig:
+            QMessageBox.warning(self, "Gate assist", trig)
+            return
         self.route.set_busy(True)
         w = Worker(router.analyze_gate_assist, self.universe, ship, skills,
                    origin, dest, gate_pref=self.route.gate_pref(),

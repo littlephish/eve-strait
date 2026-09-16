@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from ..data.universe import System, Universe
+from ..data import pochven as pochven_data
+from ..data.universe import POCHVEN_REGION_ID, System, Universe
 from .theme import TEXT
 
 _IGNORE_XF = QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
@@ -106,6 +107,21 @@ class MapView(QGraphicsView):
         self._hover_id = None
         self._sov_lookup = None
 
+        # Systems the map is pretending do not exist. Only Pochven ever lands
+        # here today, but the mechanism is deliberately just "a set of ids":
+        # every overlay goes through _vis_pos(), so hiding a system hides its
+        # dot, its rings, its glow and its hover target in one move rather
+        # than needing each layer to learn about Triglavian space.
+        self._hidden: frozenset[int] = frozenset()
+        # Last argument handed to each data-driven overlay, so toggling the
+        # hidden set can rebuild them from what they were already showing
+        # instead of asking the window to re-fetch anything.
+        self._kill_data: dict = {}
+        self._noted_ids: list = []
+        self._avoided_ids: set = set()
+        self._alts: list = []
+        self._here_id = None
+
         # The View menu flips these and every redraw re-applies them, so a
         # background intel refresh can't bring a layer the user switched off
         # back to life. Kill rings are off by default: nearly 3000 systems
@@ -125,8 +141,39 @@ class MapView(QGraphicsView):
         self._heat_max = 0.0
         self._heat_values: dict[int, float] = {}
 
+        self._inset_place()
         self._build()
         self._build_hover()
+
+    def _inset_place(self):
+        """Work out the translation that parks Pochven off the side of the map.
+
+        Stores (dx, dy) and the resulting box. A translation and nothing else,
+        so distances inside the inset are real distances -- see data/pochven.py
+        for why that is not negotiable on this particular map.
+        """
+        min_x, min_z, max_x, max_z = self.universe.bounds
+        pxs = [self.universe.systems[i].x for i in self.universe.pochven_ids]
+        pys = [-self.universe.systems[i].z for i in self.universe.pochven_ids]
+        if not pxs:
+            self._inset_offset = (0.0, 0.0)
+            self._inset_box = None
+            return
+        # universe.bounds is (min_x, min_z, max_x, max_z); the map draws -z as
+        # y, which flips and swaps the vertical pair.
+        kspace = (min_x, -max_z, max_x, -min_z)
+        pochven = (min(pxs), min(pys), max(pxs), max(pys))
+        self._inset_offset = pochven_data.inset_offset(kspace, pochven)
+        dx, dy = self._inset_offset
+        pad = pochven_data.INSET_PAD_LY
+        self._inset_box = QRectF(
+            min(pxs) + dx - pad, min(pys) + dy - pad,
+            (max(pxs) - min(pxs)) + 2 * pad, (max(pys) - min(pys)) + 2 * pad)
+
+    def _inset_pos(self, sysm: System) -> QPointF:
+        """A Pochven system's seat: its real map position, translated."""
+        dx, dy = self._inset_offset
+        return QPointF(sysm.x + dx, -sysm.z + dy)
 
     def _build_hover(self):
         self._hover_ring = QGraphicsEllipseItem(-7, -7, 14, 14)
@@ -163,6 +210,10 @@ class MapView(QGraphicsView):
         # One path per security step (-1 == null) so links carry the same
         # colour scale as the systems they connect.
         paths: dict[int, QPainterPath] = {}
+        # Pochven's internal gates are real, but they only ever link Pochven to
+        # itself. Batched separately so hiding the region can drop them without
+        # rebuilding the other ~13k segments.
+        trig_paths: dict[int, QPainterPath] = {}
         seen: set[tuple[int, int]] = set()
         for a_id, neighbours in self.universe.gates.items():
             a = systems.get(a_id)
@@ -182,26 +233,36 @@ class MapView(QGraphicsView):
                 # risk of taking the gate.
                 sec = min(a.security, b.security)
                 key = -1 if sec <= 0.0 else max(0, min(10, int(round(sec * 10))))
-                path = paths.get(key)
+                bucket = trig_paths if (a.pochven or b.pochven) else paths
+                path = bucket.get(key)
                 if path is None:
-                    path = paths[key] = QPainterPath()
-                path.moveTo(a.x, -a.z)
-                path.lineTo(b.x, -b.z)
+                    path = bucket[key] = QPainterPath()
+                pa, pb = self._pos[a_id], self._pos[b_id]
+                path.moveTo(pa)
+                path.lineTo(pb)
 
+        def draw(source, into):
+            for key, path in sorted(source.items()):
+                if path.isEmpty():
+                    continue
+                colour = QColor(_NULL_COLOR if key < 0 else _SEC_COLORS[key])
+                colour.setAlpha(120)      # dimmed so system dots stay dominant
+                item = QGraphicsPathItem(path)
+                pen = QPen(colour, 0.9)
+                pen.setCosmetic(True)      # constant width regardless of zoom
+                item.setPen(pen)
+                item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                item.setZValue(-2)         # under region labels and dots
+                self.scene_obj.addItem(item)
+                into.append(item)
+
+        # Both lists feed the "gates" layer toggle; the Pochven half answers to
+        # the region toggle as well, so it needs to be addressable on its own.
+        self._pochven_link_items = []
         self._gate_items = []
-        for key, path in sorted(paths.items()):
-            if path.isEmpty():
-                continue
-            colour = QColor(_NULL_COLOR if key < 0 else _SEC_COLORS[key])
-            colour.setAlpha(120)          # dimmed so system dots stay dominant
-            item = QGraphicsPathItem(path)
-            pen = QPen(colour, 0.9)
-            pen.setCosmetic(True)          # constant width regardless of zoom
-            item.setPen(pen)
-            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            item.setZValue(-2)             # under region labels and dots
-            self.scene_obj.addItem(item)
-            self._gate_items.append(item)
+        draw(paths, self._gate_items)
+        draw(trig_paths, self._pochven_link_items)
+        self._gate_items = self._gate_items + self._pochven_link_items
 
     def set_sov_lookup(self, fn):
         """Install a callable(system_id) -> owner name, shown on hover."""
@@ -220,6 +281,7 @@ class MapView(QGraphicsView):
         for item in getattr(self, "_kill_items", ()):
             self.scene_obj.removeItem(item)
         self._kill_items = []
+        self._kill_data = kills or {}
         if not kills:
             return
 
@@ -232,7 +294,7 @@ class MapView(QGraphicsView):
             ship = counts.get("ship", 0)
             if ship < 1:
                 continue
-            p = self._pos.get(sid)
+            p = self._vis_pos(sid)
             if p is None:
                 continue
             for i, (threshold, radius, _) in enumerate(bands):
@@ -263,7 +325,8 @@ class MapView(QGraphicsView):
         for item in getattr(self, "_here_items", ()):
             self.scene_obj.removeItem(item)
         self._here_items = []
-        p = self._pos.get(system_id)
+        self._here_id = system_id
+        p = self._vis_pos(system_id)
         if p is None:
             return
         for radius, width in ((9.0, 2.0), (13.0, 1.0)):
@@ -287,7 +350,7 @@ class MapView(QGraphicsView):
         (plus margin) is already outside the viewport, so panning/zooming
         the map manually while it's live isn't fought on every poll.
         """
-        p = self._pos.get(system_id)
+        p = self._vis_pos(system_id)
         if p is None:
             return
         self.ensureVisible(QRectF(p.x() - 1, p.y() - 1, 2, 2), margin, margin)
@@ -309,8 +372,9 @@ class MapView(QGraphicsView):
             self.scene_obj.removeItem(item)
         self._cyno_rings = []
         self._cyno_items = []
-        for alt in alts or ():
-            p = self._pos.get(alt.system_id)
+        self._alts = list(alts or ())
+        for alt in self._alts:
+            p = self._vis_pos(alt.system_id)
             if p is None:
                 continue
             ring = QGraphicsEllipseItem(-11.0, -11.0, 22.0, 22.0)
@@ -357,8 +421,15 @@ class MapView(QGraphicsView):
         """
         if not self._pos:
             return None
-        xs = [p.x() for p in self._pos.values()]
-        ys = [p.y() for p in self._pos.values()]
+        # Real systems only: the inset sits outside New Eden by construction,
+        # and letting it stretch this box would drag sovereign territory out
+        # across empty scene space to reach it.
+        real = [p for sid, p in self._pos.items()
+                if sid not in self.universe.pochven_ids]
+        if not real:
+            return None
+        xs = [p.x() for p in real]
+        ys = [p.y() for p in real]
         m = self.SOV_BOX_MARGIN_LY
         return QRectF(min(xs) - m, min(ys) - m,
                       max(xs) - min(xs) + 2 * m, max(ys) - min(ys) + 2 * m)
@@ -663,8 +734,9 @@ class MapView(QGraphicsView):
         for item in getattr(self, "_note_items", ()):
             self.scene_obj.removeItem(item)
         self._note_items = []
-        for sid in system_ids:
-            p = self._pos.get(sid)
+        self._noted_ids = list(system_ids or ())
+        for sid in self._noted_ids:
+            p = self._vis_pos(sid)
             if p is None:
                 continue
             tag = QGraphicsEllipseItem(-2.6, -2.6, 5.2, 5.2)
@@ -687,8 +759,9 @@ class MapView(QGraphicsView):
         for item in getattr(self, "_avoid_items", ()):
             self.scene_obj.removeItem(item)
         self._avoid_items = []
-        for sid in system_ids:
-            p = self._pos.get(sid)
+        self._avoided_ids = set(system_ids or ())
+        for sid in self._avoided_ids:
+            p = self._vis_pos(sid)
             if p is None:
                 continue
             for dx, dy in ((-5, -5, ), (-5, 5)):
@@ -983,7 +1056,7 @@ class MapView(QGraphicsView):
         w = self.viewport().width()
         h = self.viewport().height()
         for sid, colour, radius in self._glow:
-            pos = self._pos.get(sid)
+            pos = self._vis_pos(sid)
             if pos is None:
                 continue
             v = self.mapFromScene(pos)
@@ -1029,11 +1102,56 @@ class MapView(QGraphicsView):
         if name == "heat":
             self._apply_heat()
             return
+        if name == "pochven":
+            # Not just chrome: hiding the inset also has to drop its systems
+            # from hit-testing and from every marker layer.
+            self.set_pochven_hidden(not visible)
+            return
         for item in self._items_for(name):
             item.setVisible(bool(visible))
+        self._apply_hidden()
 
     def overlay_visible(self, name: str) -> bool:
         return self._overlay_on.get(name, True)
+
+    def _vis_pos(self, sid):
+        """Where to draw system ``sid``, or None if it is hidden.
+
+        Every overlay builder asks this instead of self._pos directly, which
+        is what stops a kill ring, note tag or heat glow being left floating
+        over an otherwise empty region.
+        """
+        return None if sid in self._hidden else self._pos.get(sid)
+
+    def set_pochven_hidden(self, hidden: bool):
+        """Show or hide the Pochven inset.
+
+        Purely cosmetic now. Whether a route may cross the Pochven border is
+        not a view setting and never was -- it falls out of System.jumpable
+        plus the fact that no stargate crosses -- so this only decides whether
+        the box is drawn. Hiding it also drops the region from hit-testing and
+        from every marker layer, so nothing is left floating in an empty box.
+        """
+        wanted = self.universe.pochven_ids if hidden else frozenset()
+        if wanted == self._hidden:
+            return
+        self._hidden = wanted
+        visible = not hidden
+        for item in self._items_for("pochven"):
+            item.setVisible(visible)
+        # Replay the data-driven layers so any marker that was sitting on a
+        # Pochven system disappears with it (and comes back with it).
+        self.set_kill_activity(self._kill_data)
+        self.set_noted(self._noted_ids)
+        self.set_avoided(self._avoided_ids)
+        self.set_cyno_alts(self._alts)
+        self.set_current_location(self._here_id)
+        self._recompute_heat()
+        if self._hover_id in self._hidden:
+            self._hover_id = None
+            self._hover_ring.hide()
+            self._hover_text.hide()
+        self.viewport().update()
 
     def _items_for(self, name: str):
         return {
@@ -1047,6 +1165,10 @@ class MapView(QGraphicsView):
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
             "cyno_alts": getattr(self, "_cyno_items", ()),
+            # Everything that belongs to the inset: its dots, its internal
+            # gate mesh, its border and its labels.
+            "pochven": (list(getattr(self, "_pochven_items", ()))
+                        + list(getattr(self, "_pochven_link_items", ()))),
         }.get(name, ())
 
     def _apply_visibility(self, name: str):
@@ -1056,12 +1178,96 @@ class MapView(QGraphicsView):
         for item in self._items_for(name):
             item.setVisible(False)
 
+    def _apply_hidden(self):
+        """Re-hide the inset after a layer toggle switched part of it back on.
+
+        Pochven's gate segments are in _gate_items too, so "turn all layers
+        on" would otherwise draw its gate mesh inside a hidden box.
+        """
+        if not self._hidden:
+            return
+        for item in self._items_for("pochven"):
+            item.setVisible(False)
+
+    # Inset chrome colours: cool grey, deliberately not on the security scale
+    # so the box reads as an annotation rather than as more space.
+    INSET_EDGE = QColor(120, 140, 180, 110)
+    INSET_TITLE = QColor(150, 172, 210, 210)
+    # How far past the outermost system a clade name sits. Must stay under
+    # INSET_PAD_LY or the labels push outside the box they belong to.
+    INSET_LABEL_MARGIN_LY = 2.0
+
+    def _inset_label(self, text: str, at: QPointF, size: int, bold: bool,
+                     dy_px: float):
+        """A label centred on a scene point.
+
+        Centring has to be done in pixels via _anchor_px, not in setPos: these
+        ignore transformations, so their bounding rect is in screen pixels
+        while their position is in light years, and mixing the two makes the
+        offset grow with the zoom level.
+        """
+        t = QGraphicsSimpleTextItem(text)
+        t.setBrush(QBrush(self.INSET_TITLE))
+        f = QFont()
+        f.setPointSize(size)
+        f.setBold(bold)
+        t.setFont(f)
+        t.setZValue(-1)
+        br = t.boundingRect()
+        _anchor_px(t, at, -br.width() / 2, -br.height() / 2 + dy_px)
+        self.scene_obj.addItem(t)
+        self._pochven_items.append(t)
+
+    def _build_inset(self):
+        """The Alaska box: a border and a caption saying what was moved.
+
+        No clade labels. In real geometry Pochven's three clades are
+        interleaved rather than clustered, so a label at each clade's centroid
+        would draw a grouping that does not exist -- the exact kind of
+        invented structure this layout was changed to stop.
+        """
+        from PySide6.QtWidgets import QGraphicsRectItem
+
+        box = self._inset_box
+        if box is None:
+            return
+        rect = QGraphicsRectItem(box)
+        pen = QPen(self.INSET_EDGE, 1.2, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        rect.setPen(pen)
+        rect.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        rect.setZValue(-3)          # under the gate mesh and the dots
+        self.scene_obj.addItem(rect)
+        self._pochven_items.append(rect)
+
+        # Captioned above the box rather than inside it: at real geometry
+        # there is no reliable empty middle to drop a title into.
+        top = QPointF(box.center().x(), box.top())
+        self._inset_label("POCHVEN", top, 11, True, -22.0)
+        self._inset_label("moved from its real position · shown at map scale",
+                          top, 8, False, -8.0)
+
     def _build(self):
+        # Seats before anything that draws: the gate mesh, the dots and the
+        # inset chrome all read _pos, and Pochven's seats are not its real
+        # coordinates.
+        self._pochven_items = []
+        for s in self.universe.systems.values():
+            if s.pochven:
+                # Real coordinates stay on the System itself -- the
+                # Proximity-filament search needs them -- but the map seats
+                # Pochven in its inset rather than scattering 27 unreachable
+                # systems through everyone's trade routes.
+                self._pos[s.id] = self._inset_pos(s)
+            else:
+                self._pos[s.id] = QPointF(s.x, -s.z)   # north up
+
         self._build_gate_links()
+        self._build_inset()
 
         # Region labels (behind everything).
         self._region_items = []
-        for name, x, z in self.universe.regions:
+        for name, x, z, region_id in self.universe.regions:
             t = QGraphicsSimpleTextItem(name)
             t.setBrush(QBrush(QColor(120, 140, 180, 140)))
             f = QFont()
@@ -1071,12 +1277,19 @@ class MapView(QGraphicsView):
             t.setPos(x, -z)
             t.setFlag(_IGNORE_XF, True)
             t.setZValue(-1)
+            if region_id == POCHVEN_REGION_ID:
+                # The inset draws its own title where the systems actually
+                # are; a second "Pochven" floating over empty real space
+                # where they used to be would only be confusing.
+                continue
             self.scene_obj.addItem(t)
             self._region_items.append(t)
 
         for s in self.universe.systems.values():
-            x, y = s.x, -s.z  # north up
-            self._pos[s.id] = QPointF(x, y)
+            seat = self._pos.get(s.id)
+            if seat is None:
+                continue
+            x, y = seat.x(), seat.y()
             dot = QGraphicsEllipseItem(-2.0, -2.0, 4.0, 4.0)
             dot.setPos(x, y)
             brush = QBrush(_sec_color(s.security))
@@ -1088,6 +1301,8 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(dot)
             self._dots[s.id] = dot
             self._sec_brushes[s.id] = brush
+            if s.pochven:
+                self._pochven_items.append(dot)
         # Intel can land before the dots exist; now that they do, paint any
         # heat values that were waiting.
         self._recompute_heat()
@@ -1267,6 +1482,10 @@ class MapView(QGraphicsView):
         scene_pt = self.mapToScene(view_pos.toPoint())
         best_id, best_d2 = None, None
         for sid, p in self._pos.items():
+            # A hidden system is not a click target: right-clicking empty
+            # space where Pochven used to be must not offer it as a waypoint.
+            if sid in self._hidden:
+                continue
             d2 = (p.x() - scene_pt.x()) ** 2 + (p.y() - scene_pt.y()) ** 2
             if best_d2 is None or d2 < best_d2:
                 best_d2, best_id = d2, sid

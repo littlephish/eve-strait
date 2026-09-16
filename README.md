@@ -186,6 +186,24 @@ The route panel offers: *no docking filter*, *require docking for my hull*, and
 - A **light‑year scale bar** sits at the bottom‑left and rescales as you zoom, so map distance
   can be read directly against your jump range.
 - The blue circle is your reach from the selected waypoint; blue dots are systems inside it.
+- **Pochven is drawn as an inset**, in a box off the right-hand edge of the map - the way an
+  atlas puts Alaska in a corner. Its 27 systems kept their original coordinates (Niarja still
+  sits on the old Amarr/Jita corridor) but nothing travels across the border any more: no
+  stargate links Pochven to New Eden, and a region-wide cyno jammer means nothing can jump in.
+  Drawn in place they look like 27 perfectly good null-sec landing spots, and a jump planner
+  will cheerfully route straight through one - **Maila → Senda → Oshaima** is two jumps for a
+  carrier and is not flyable. The box is a **pure translation at map scale**: Pochven's real
+  ~28 ly shape, moved and nothing else. No rescaling and no re-layout, so the scale bar and the
+  jump-range circle stay honest over it and every distance you measure inside the box is a real
+  distance - the only thing that moved is *where* the region sits, which the box says on its
+  own caption. Toggle with **View → Map layers → Pochven inset**; that is cosmetic only.
+- **You can route inside Pochven, never across its border.** Intra-Pochven routes are planned
+  normally (by stargate - no cyno can be lit in there, so no jump legs), and your pilot's
+  location marker tracks into the inset like anywhere else. A route with one waypoint inside
+  and one outside is refused with an explanation, because the crossing is a *filament*: a
+  consumable that drops you somewhere random, not a leg that can be planned. One exception
+  falls out of the rules and is correct - a capital already stranded inside **can** jump out,
+  because the jammer stops a cyno being lit in Pochven, not a drive being activated there.
 
 ### Sovereignty
 

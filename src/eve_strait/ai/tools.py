@@ -68,6 +68,8 @@ def _describe(app, s) -> dict:
                   "low-sec" if s.security > 0.0 else "null-sec"),
         "region": uni.region_names.get(s.region_id, str(s.region_id)),
         "can_jump_into": s.jumpable,
+        "pochven": s.pochven or None,
+        "reachable_only_by": "Triglavian filament" if s.pochven else None,
         "sovereignty": sov[0] if sov else None,
         "avoided": app.is_avoided(s.id),
         "your_note": app.note_for(s.id) or None,
@@ -172,6 +174,8 @@ def get_setup(app) -> str:
 def systems_in_jump_range(app, name: str) -> str:
     s = _resolve(app, name)
     rng = app.ship.reach_range()
+    # within_range's jumpable_only filter already drops Pochven: no cyno can
+    # be lit there, so it is not a place you can jump to.
     out = [{"name": t.name, "ly": round(d, 2), "security": round(t.security, 2)}
            for t, d in app.universe.within_range(s, rng)]
     out.sort(key=lambda r: r["ly"])
@@ -277,6 +281,13 @@ def auto_route(app) -> str:
         from ..data import docking
         dest = app.route.waypoints[-1].system
         ship = app.ship.current_ship()
+        # Same reason the high-sec guard is duplicated here: _auto_route's own
+        # copy is a blocking modal, which through the bridge would hang this
+        # call on a click nobody in the conversation can give.
+        trig = app.pochven_waypoint_error(
+            [wp.system for wp in app.route.waypoints])
+        if trig:
+            return "Can't auto-route: " + trig
         if dest.security >= 0.5 and not docking.can_use_highsec_gates(ship):
             return (f"Can't auto-route: {dest.name} is high-sec. Capitals "
                     "cannot enter high-sec (no high-sec gates, and jump "

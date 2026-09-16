@@ -279,7 +279,9 @@ class SystemInfoDialog(QDialog):
             if window:
                 rows.append(("Vulnerable", f"{window} EVE time"))
         rows.append(("Jump target",
-                     "yes" if system.jumpable else "no (high-sec)"))
+                     "yes" if system.jumpable else
+                     "no (cyno-jammed, filament only)" if system.pochven else
+                     "no (high-sec)"))
         lay.addLayout(self._grid(rows))
 
         # -- activity ------------------------------------------------------

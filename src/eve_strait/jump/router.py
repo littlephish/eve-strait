@@ -142,9 +142,12 @@ def simulate(
         cooldown_remaining = max(0.0, cooldown_remaining - wait)
 
         res = mechanics.evaluate_jump(ship, skills, dist, fatigue)
-        # You CAN jump out of high-sec; you cannot jump INTO high-sec (no cyno
-        # can be lit there). So only the destination's security matters.
-        if not dst.jumpable:
+        # You CAN jump out of a system that bars cynos; you cannot jump INTO
+        # one. So only the destination matters -- and it can bar them for two
+        # different reasons, which the pilot needs told apart.
+        if dst.pochven:
+            reason = "Pochven is cyno-jammed (filament only)"
+        elif not dst.jumpable:
             reason = "can't jump into hi-sec"
         elif not res.in_range:
             reason = "out of range"

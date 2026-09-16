@@ -9,11 +9,17 @@ import requests
 
 from .. import config
 from ..config import JUMPABLE_SECURITY_MAX, LY_METERS, SDE_CSV_PATH, SDE_CSV_URL
+from . import pochven
 from .ships import SHIPS_BY_NAME
 
 # Region IDs >= 11000000 are wormhole/abyssal/void space (no gates, no static
 # geometry we care about for jumps); keep known space only.
 _KSPACE_MAX_REGION = 11_000_000
+
+# Re-exported so callers that think in terms of the map keep importing from
+# here; the facts themselves (clades, filament ranges, inset layout) live in
+# data/pochven.py.
+POCHVEN_REGION_ID = pochven.REGION_ID
 
 # Spatial grid cell size (light years) for fast range queries.
 _GRID_CELL = 5.0
@@ -32,8 +38,27 @@ class System:
 
     @property
     def jumpable(self) -> bool:
-        """A jump drive can only land in security < 0.5."""
-        return self.security < JUMPABLE_SECURITY_MAX
+        """Can a cyno be lit here -- i.e. may a jump drive *land* here?
+
+        Two separate game rules, one question. High-sec has never allowed a
+        cyno, and Pochven is jammed region-wide. Both mean the same thing to a
+        route: you may jump *out* of such a system, never *into* one.
+
+        Expressing Pochven here rather than as an avoid-list entry is what
+        makes every border case correct at once, with no special cases in the
+        router: k-space to Pochven is impossible (nothing may land), Pochven
+        to Pochven by jump is impossible (same), Pochven to k-space is fine
+        (a stranded capital jumps out to a cyno lit outside), and an ordinary
+        route can never launder itself through the region. Add that no
+        stargate crosses the border and Pochven is its own component of the
+        travel graph, for free.
+        """
+        return self.security < JUMPABLE_SECURITY_MAX and not self.pochven
+
+    @property
+    def pochven(self) -> bool:
+        """Triglavian space: reachable only by filament, never by gate/jump."""
+        return self.region_id == POCHVEN_REGION_ID
 
 
 @dataclass(frozen=True)
@@ -53,7 +78,10 @@ class Universe:
                  region_names: dict[int, str] | None = None):
         self.systems = systems
         self._by_name = {s.name.lower(): s for s in systems.values()}
-        # (name, x_ly, z_ly) region label anchors.
+        # Triglavian space, precomputed once: callers ask this on every route
+        # and every repaint, and it never changes for a given SDE.
+        self.pochven_ids = frozenset(s.id for s in systems.values() if s.pochven)
+        # (name, x_ly, z_ly, region_id) region label anchors.
         self.regions = regions or []
         self.region_names = region_names or {}
         # Stargate adjacency: system_id -> set of gate-connected system_ids.
@@ -301,9 +329,12 @@ def _parse_regions(path):
                     names[rid] = row["regionName"]
                     if rid >= _KSPACE_MAX_REGION:
                         continue
+                    # The id rides along so the map can hide one region's
+                    # label without matching on its name.
                     labels.append((row["regionName"],
                                    float(row["x"]) / LY_METERS,
-                                   float(row["z"]) / LY_METERS))
+                                   float(row["z"]) / LY_METERS,
+                                   rid))
                 except (KeyError, ValueError):
                     continue
     except OSError:

@@ -112,6 +112,36 @@ These are gameplay invariants, not implementation details — don't break them w
 - Capitals cannot use high-sec gates at all; only jump freighters / subcaps can gate the
   final high-sec leg.
 - Titan bridge range is 6 ly, Black Ops covert bridge 8 ly.
+- **Pochven (region 10000070) is its own component of the travel graph**, and this is enforced
+  by exactly one rule: `System.jumpable` is False there, because the region is cyno-jammed.
+  Combined with the SDE's own topology (verified: *zero* stargates cross the border) that one
+  rule produces every correct case with no special-casing in the router - k-space→Pochven
+  impossible, Pochven→Pochven by gate only, **Pochven→k-space fine by jump** (the jammer stops
+  a cyno being *lit* inside, not a drive being *activated* there, so a stranded capital can
+  jump out), and no ordinary route can launder itself through the region.
+  - Do **not** re-add Pochven to `MainWindow.avoid_systems()`. It was implemented that way
+    once and it was wrong twice over: it made a game rule into a user preference, and the
+    router deliberately exempts the *destination* from `avoid`, so it never blocked an
+    endpoint anyway. `MainWindow.pochven_waypoint_error()` still exists, but only to name the
+    border crossing instead of returning a bare "no route found" - correctness does not
+    depend on it.
+  - Nothing in the SDE rows marks Pochven out: its systems are ordinary null-sec at their
+    original coordinates, in the middle of empire space. That is why the map draws them as an
+    **inset** (`MapView._inset_place`, offset from `pochven.inset_offset`). `System.x/y/z`
+    stay real regardless - only `MapView._pos` is displaced.
+  - **The inset is a pure translation at 1:1 scale.** Not a re-layout, not a rescale. On this
+    map position is distance and distance is jump range, all under one scale bar, so a
+    schematic inset would invite reading light-year figures off it that are fiction. An
+    earlier version laid the systems out by their gate graph and drew a tidy ring; Pochven is
+    really a ~28 ly scatter with its three clades *interleaved*, and that ring was a subway
+    diagram sitting under a scale bar. `tests/test_pochven.py` asserts the distance-preserving
+    property directly - if you change the placement, keep that test passing or kill the scale
+    bar over the box.
+  - Crossing the border is a filament: a consumable that lands you somewhere random, not a
+    leg, and it is not modelled as one. Only the outbound Proximity filament depends on where
+    you are (`pochven.PROXIMITY_FILAMENT_LY`, 2.5 ly), which is why real coordinates have to
+    survive the inset.
+  - Regression tests: `tests/test_pochven.py`.
 - Core formulas (see README "How the numbers work"):
   - Max jump range: `base_range_ly × (1 + 0.20 × Jump Drive Calibration)`
   - Fuel/ly: `base_iso × (1 − 0.10·JFC) × (freighter ? 1 − 0.10·JF : 1)`
