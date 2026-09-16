@@ -15,7 +15,7 @@ from .. import config
 from ..data.universe import Universe
 from ..esi import auth, images
 from ..esi.client import EsiClient
-from ..jump import router
+from ..jump import ansiblex, router
 from .map_view import MapView
 from .panels.character_panel import CharacterPanel
 from .panels.route_panel import RoutePanel
@@ -118,6 +118,9 @@ class MainWindow(QMainWindow):
         self._wanderer_data: dict = {}
         self._hole_data: dict = {}
         self.sov_names: dict[int, str] = {}
+        # {alliance_id: capital system_id}, which sets Ansiblex zones.
+        self.sov_capitals: dict[int, int] = {}
+        self._zone_focus_alliance: int | None = None
         self._built = False
 
         self._status = QLabel("Loading New Eden map data...")
@@ -301,15 +304,94 @@ class MainWindow(QMainWindow):
         result = result or {}
         self.sov_owners = result.get("owners", {})
         self.sov_names = result.get("names", {})
+        self.sov_capitals = result.get("capitals", {})
         if self.sov_owners:
             self.statusBar().showMessage(
                 f"Sovereignty loaded for {len(self.sov_owners)} systems.", 5000)
         if self.map_view:
             self.map_view.set_sov_lookup(self.sov_label)
+            self.refresh_ansiblex_zones()
             # Only rebuild if the layer is actually on; baking costs a second
             # of worker time and an off layer should cost nothing.
             if self.act_layers["sov"].isChecked():
                 self.refresh_sov_territory()
+
+    def ansiblex_zones(self, only_alliance: int | None = None) -> dict:
+        """{system_id: zone} for every system whose holder has a capital.
+
+        The zone is measured from the holder's OWN capital, which is what
+        makes this drawable for every alliance at once: one holder per system,
+        so one zone per system and no overlap.
+
+        Systems held by a corporation or a faction have no capital and so no
+        zone -- they stay unshaded rather than being guessed at.
+
+        ``only_alliance`` restricts the result to one holder. Focus mode needs
+        that: drawing one alliance's range rings over everybody's shading puts
+        another alliance's zone-5 system inside the focused alliance's zone-1
+        ring, which is true but reads as a contradiction.
+        """
+        if not (self.universe and self.sov_owners and self.sov_capitals):
+            return {}
+        caps = {aid: self.universe.systems[sid]
+                for aid, sid in self.sov_capitals.items()
+                if sid in self.universe.systems}
+        out = {}
+        for sid, (owner_id, kind) in self.sov_owners.items():
+            if kind != "alliance":
+                continue
+            if only_alliance is not None and owner_id != only_alliance:
+                continue
+            cap = caps.get(owner_id)
+            sysm = self.universe.systems.get(sid)
+            if cap is None or sysm is None:
+                continue
+            out[sid] = ansiblex.zone_for(Universe.distance_ly(sysm, cap))
+        return out
+
+    def refresh_ansiblex_zones(self):
+        if not self.map_view:
+            return
+        if not self.act_layers["zones"].isChecked():
+            self.map_view.set_ansiblex_zones(None)
+            return
+        self.map_view.set_ansiblex_zones(self.ansiblex_zones())
+
+    def show_zone_focus(self, system_id: int):
+        """Draw the 5/10/15/20 ly rings for whoever holds this system."""
+        if not (self.map_view and self.universe):
+            return
+        owner = (self.sov_owners or {}).get(system_id)
+        if not owner or owner[1] != "alliance":
+            self.statusBar().showMessage(
+                "No alliance holds that system, so it has no capital.", 4000)
+            return
+        cap_id = (self.sov_capitals or {}).get(owner[0])
+        cap = self.universe.systems.get(cap_id) if cap_id else None
+        if cap is None:
+            self.statusBar().showMessage(
+                f"{self.sov_names.get(owner[0], 'That alliance')} holds no "
+                f"capital system.", 4000)
+            return
+        # Shade only this alliance while its rings are up, so everything the
+        # rings enclose is measured from the capital they are drawn around.
+        self.map_view.set_ansiblex_zones(self.ansiblex_zones(owner[0]))
+        self.map_view.set_zone_focus(cap)
+        self._zone_focus_alliance = owner[0]
+        here = self.universe.systems.get(system_id)
+        dist = Universe.distance_ly(here, cap) if here else 0.0
+        zone = ansiblex.zone_for(dist)
+        self.statusBar().showMessage(
+            f"{self.sov_names.get(owner[0], 'Alliance')} capital: {cap.name}. "
+            f"{here.name if here else '?'} is {dist:.1f} ly out - zone {zone}.",
+            8000)
+
+    def clear_zone_focus(self):
+        """Drop the rings and restore every alliance's shading."""
+        self._zone_focus_alliance = None
+        if self.map_view:
+            self.map_view.set_zone_focus(None)
+            self.refresh_ansiblex_zones()
 
     def sov_label(self, system_id: int):
         """Short owner label for map hover, e.g. 'Goonswarm Federation'."""
@@ -1295,6 +1377,10 @@ class MainWindow(QMainWindow):
         ("sov", "Sovereignty territory", False,
          "Fill null-sec space by who holds it. Off by default: it is the "
          "heaviest layer to draw."),
+        ("zones", "Ansiblex capacitor zones", False,
+         "Shade each system by its own holder's Ansiblex zone - green is "
+         "free movement, red is the 15x band. Shows every alliance at once, "
+         "because a system has only one holder and so only one zone."),
         ("cyno_alts", "My cyno alts", True,
          "Ring and name the systems where one of your own characters is "
          "sitting in a cyno-fitted ship. Populated by Scan my characters, "
@@ -1348,6 +1434,12 @@ class MainWindow(QMainWindow):
             # Territory is baked lazily the first time it is switched on.
             if key == "sov" and visible and not self.map_view._sov_items:
                 self.refresh_sov_territory()
+            # Zones likewise: computing 2,700 distances for a layer nobody
+            # switched on is work for nothing.
+            if key == "zones" and visible:
+                self.refresh_ansiblex_zones()
+            elif key == "zones":
+                self.clear_zone_focus()
         self._save_settings()
 
     def _set_all_layers(self, on: bool):
@@ -2143,6 +2235,18 @@ class MainWindow(QMainWindow):
                 f"Wormhole information ({len(holes)})" if len(holes) > 1
                 else "Wormhole information")
         act_info = menu.addAction("Show station info")
+        # Only where an alliance holds the system and has a capital -- an
+        # entry that usually reports "nothing to show" teaches people to
+        # ignore it.
+        owner = (self.sov_owners or {}).get(sid)
+        act_zone = None
+        if (owner and owner[1] == "alliance"
+                and (self.sov_capitals or {}).get(owner[0])):
+            act_zone = menu.addAction(
+                "Show Ansiblex zones for this alliance")
+        act_zone_clear = None
+        if self._zone_focus_alliance is not None:
+            act_zone_clear = menu.addAction("Clear Ansiblex zone focus")
         act_wp, wp_actions = self._add_waypoint_menu(menu)
         act_avoid = menu.addAction(
             "Stop avoiding this system" if self.is_avoided(sid)
@@ -2161,6 +2265,10 @@ class MainWindow(QMainWindow):
             self.route.show_system_info(sid)
         elif chosen == act_info:
             self.route.show_station_info(sid)
+        elif act_zone is not None and chosen == act_zone:
+            self.show_zone_focus(sid)
+        elif act_zone_clear is not None and chosen == act_zone_clear:
+            self.clear_zone_focus()
         elif chosen == act_wp:
             self.set_ingame_waypoint(sid)
         elif chosen in wp_actions:

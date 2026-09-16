@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..data import pochven as pochven_data
 from ..data.universe import POCHVEN_REGION_ID, System, Universe
+from ..jump.ansiblex import ZONE_BOUNDS
 from .theme import TEXT
 
 _IGNORE_XF = QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
@@ -314,6 +315,88 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(item)
             self._kill_items.append(item)
         self._apply_visibility("kills")
+
+    # Ansiblex capacitor zones, cheap to expensive. Read as a cost ramp: green
+    # is free movement, red is the 15x band.
+    ZONE_COLOUR = {1: QColor(61, 220, 132, 220), 2: QColor(181, 232, 83, 210),
+                   3: QColor(242, 199, 68, 205), 4: QColor(242, 133, 61, 205),
+                   5: QColor(224, 65, 62, 210)}
+    ZONE_DOT_LY = 0.42
+
+    def set_ansiblex_zones(self, zones: dict | None):
+        """Shade each system by its own holder's Ansiblex capacitor zone.
+
+        ``zones`` is {system_id: 1..5}. Every system has exactly one sov
+        holder, so exactly one capital and exactly one zone -- which is why
+        this can show all 75 alliances at once where overlapping range circles
+        could not. At 20 ly a single zone-4 disk spans a fifth of a ~89 ly
+        cluster; seventy-five of them is an unreadable wash.
+
+        One batched path per zone, like the kill bands: five scene items for
+        ~2,700 systems.
+        """
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in getattr(self, "_zone_items", ()):
+            self.scene_obj.removeItem(item)
+        self._zone_items = []
+        self._zone_data = zones or {}
+        if not zones:
+            return
+
+        r = self.ZONE_DOT_LY
+        paths = {z: QPainterPath() for z in self.ZONE_COLOUR}
+        for sid, zone in zones.items():
+            if zone not in paths:
+                continue
+            p = self._vis_pos(sid)
+            if p is None:
+                continue
+            paths[zone].addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
+        for zone, path in paths.items():
+            if path.isEmpty():
+                continue
+            item = QGraphicsPathItem(path)
+            item.setBrush(QBrush(self.ZONE_COLOUR[zone]))
+            item.setPen(QPen(Qt.PenStyle.NoPen))
+            item.setZValue(-2.0)      # over the sov fill, under the gate mesh
+            self.scene_obj.addItem(item)
+            self._zone_items.append(item)
+        self._apply_visibility("zones")
+
+    def set_zone_focus(self, origin, colour=None):
+        """Draw one alliance's explicit 5/10/15/20 ly zone boundaries.
+
+        The gradient answers "how expensive is this ground"; the rings answer
+        "where exactly does the next band start" for a single alliance. Only
+        ever one at a time -- that is the whole reason the rings are readable.
+
+        ``origin`` is the capital System, or None to clear.
+        """
+        for item in getattr(self, "_zone_ring_items", ()):
+            self.scene_obj.removeItem(item)
+        self._zone_ring_items = []
+        if origin is None or origin.id not in self._pos:
+            return
+        p = self._vis_pos(origin.id)
+        if p is None:
+            return
+        for bound, zone in zip(ZONE_BOUNDS, (1, 2, 3, 4)):
+            ring = QGraphicsEllipseItem(p.x() - bound, p.y() - bound,
+                                        2 * bound, 2 * bound)
+            edge = QColor(colour) if colour else QColor(self.ZONE_COLOUR[zone])
+            edge.setAlpha(190)
+            pen = QPen(edge, 1.3)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            ring.setPen(pen)
+            ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            ring.setZValue(-1.9)
+            ring.setToolTip(
+                f"{origin.name}: zone {zone} ends at {bound:g} ly")
+            self.scene_obj.addItem(ring)
+            self._zone_ring_items.append(ring)
 
     def set_kill_lookup(self, fn):
         """callable(system_id) -> dict of kill counts, shown on hover."""
@@ -1165,6 +1248,8 @@ class MapView(QGraphicsView):
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
             "cyno_alts": getattr(self, "_cyno_items", ()),
+            "zones": (list(getattr(self, "_zone_items", ()))
+                      + list(getattr(self, "_zone_ring_items", ()))),
             # Everything that belongs to the inset: its dots, its internal
             # gate mesh, its border and its labels.
             "pochven": (list(getattr(self, "_pochven_items", ()))
