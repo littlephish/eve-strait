@@ -117,6 +117,34 @@ def gate_allowed(ship: Ship, security: float) -> bool:
     return security < JUMPABLE_SECURITY_MAX
 
 
+# Hull classes barred from Ansiblex jump bridges by the Cradle of War update
+# (2026-09-22). Capitals and supercapitals lose access entirely; the Rorqual
+# ("Capital Industrial") is CCP's sole industrial exception.
+#
+# Enumerated by hull_class rather than derived from ship_category(), because
+# the Rorqual is a CAPITAL by category and still permitted -- category is the
+# wrong axis for this rule.
+ANSIBLEX_BANNED_HULLS = frozenset({
+    "Carrier",
+    "Command Carrier",
+    "Dreadnought",
+    "Lancer Dreadnought",
+    "Force Auxiliary",
+    "Supercarrier",
+    "Titan",
+})
+
+
+def ansiblex_allowed(ship: Ship) -> bool:
+    """May this hull traverse an Ansiblex jump bridge?
+
+    Jump freighters and Black Ops keep access -- both appear in CCP's
+    capacitor cost table (JF at 1.00 TJ, Black Ops at 18.00), and neither is
+    a capital for this purpose.
+    """
+    return ship.hull_class not in ANSIBLEX_BANNED_HULLS
+
+
 @dataclass
 class DockCheck:
     can_dock: bool
