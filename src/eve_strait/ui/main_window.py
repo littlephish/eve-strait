@@ -2295,6 +2295,7 @@ class MainWindow(QMainWindow):
                    minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   my_alliance_id=self.my_alliance_id,
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
@@ -2506,7 +2507,7 @@ class MainWindow(QMainWindow):
         avoid_page = dlg.add_page("Avoided systems", AvoidDialog(dlg, avoid_names))
 
         bridge_page = dlg.add_page("Ansiblex", AnsiblexDialog(
-            dlg, config.get_bridges()))
+            dlg, config.get_bridges(), self.my_alliance_id))
         bridge_page.btn_esi.clicked.connect(
             lambda: self._load_ansiblex_esi(bridge_page))
         bridge_page.btn_search.clicked.connect(
@@ -2597,7 +2598,7 @@ class MainWindow(QMainWindow):
         notes.append(msg)
 
     def _apply_bridges(self, page, notes):
-        pairs = page.pairs()
+        pairs = page.records()
         if not self.universe:
             return
         resolved = self.universe.set_bridges(pairs)
@@ -2696,13 +2697,13 @@ class MainWindow(QMainWindow):
 
     def _edit_bridges(self):
         from .dialogs import AnsiblexDialog
-        dlg = AnsiblexDialog(self, config.get_bridges())
+        dlg = AnsiblexDialog(self, config.get_bridges(), self.my_alliance_id)
         dlg.btn_esi.clicked.connect(lambda: self._load_ansiblex_esi(dlg))
         dlg.btn_search.clicked.connect(lambda: self._search_ansiblex(dlg))
         dlg.search_field.returnPressed.connect(lambda: self._search_ansiblex(dlg))
         if not dlg.exec():
             return
-        pairs = dlg.pairs()
+        pairs = dlg.records()
         if self.universe:
             resolved = self.universe.set_bridges(pairs)
             bad = len(pairs) - len(resolved)
@@ -2737,7 +2738,7 @@ class MainWindow(QMainWindow):
         """Adopt queued Ansiblex links whose owner is your corp or alliance."""
         if not self._ansiblex_pending or not self.universe:
             return 0
-        known = {tuple(sorted(p)) for p in config.get_bridges()}
+        known = {tuple(sorted((r["a"], r["b"]))) for r in config.get_bridges()}
         new_pairs, still_pending = [], []
         for owner_id, (a_raw, b_raw) in self._ansiblex_pending:
             _, label = self.owner_relation_cached(owner_id)
@@ -2753,7 +2754,11 @@ class MainWindow(QMainWindow):
             if not a or not b or tuple(sorted((a.name, b.name))) in known:
                 continue
             known.add(tuple(sorted((a.name, b.name))))
-            new_pairs.append([a.name, b.name])
+            # The gate was adopted only because its owner is your corp or
+            # alliance, so your alliance is the correct owner to record.
+            new_pairs.append({"a": a.name, "b": b.name,
+                              "alliance_id": self.my_alliance_id,
+                              "source": "esi"})
         self._ansiblex_pending = still_pending
         if not new_pairs:
             return 0
@@ -2837,6 +2842,7 @@ class MainWindow(QMainWindow):
                    origin, dest, gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   my_alliance_id=self.my_alliance_id,
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),

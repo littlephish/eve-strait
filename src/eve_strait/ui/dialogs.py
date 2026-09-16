@@ -525,8 +525,25 @@ class GateAssistDialog(QDialog):
 class AnsiblexDialog(QDialog):
     """Manage Ansiblex jump-gate links (one pair per line)."""
 
-    def __init__(self, parent, pairs: list[list[str]]):
+    def __init__(self, parent, records, my_alliance_id: int | None = None):
         super().__init__(parent)
+        # Owners are kept aside rather than shown in the editable text, which
+        # is a plain list of links. records() re-attaches them by name pair, so
+        # editing one line never silently drops another line's owner.
+        self._known = {}
+        rows = []
+        for rec in records or ():
+            if isinstance(rec, dict):
+                a, b = rec.get("a"), rec.get("b")
+                alliance_id = rec.get("alliance_id")
+            else:
+                a, b = rec
+                alliance_id = None
+            if not a or not b:
+                continue
+            self._known[frozenset((a, b))] = alliance_id
+            rows.append((a, b, alliance_id))
+        self._my_alliance_id = my_alliance_id
         self.setWindowTitle("Ansiblex jump gates")
         self.setMinimumWidth(520)
         v = QVBoxLayout(self)
@@ -540,8 +557,12 @@ class AnsiblexDialog(QDialog):
             "<b>Load from ESI</b> pulls your corporation's gates and adopts any "
             "owned by <b>your corp or alliance</b> that turn up while browsing "
             "systems. Gates owned by anyone else are ignored, since only the "
-            "owning alliance can use them. Lines you type here are always kept."))
-        self.box = QPlainTextEdit("\n".join(f"{a} <-> {b}" for a, b in pairs))
+            "owning alliance can use them. Lines you type here are always kept.<br><br>"
+            "Since <b>Cradle of War</b> (22 Sep 2026) capitals and supercapitals "
+            "cannot use an Ansiblex at all - the Rorqual excepted - and a gate "
+            "may only be used by the alliance that owns it."))
+        self.box = QPlainTextEdit(
+            "\n".join(f"{a} <-> {b}" for a, b, _owner in rows))
         self.box.setPlaceholderText("HB-5L3 <-> SF-XJS")
         self.box.setFixedHeight(180)
         v.addWidget(self.box)
@@ -561,6 +582,7 @@ class AnsiblexDialog(QDialog):
         load_row = QHBoxLayout()
         self.status = QLabel("")
         self.status.setWordWrap(True)
+        self.status.setText(self._owner_summary(rows))
         load_row.addWidget(self.status, 1)
         self.btn_esi = QPushButton("Load from ESI")
         self.btn_esi.setToolTip(
@@ -589,6 +611,38 @@ class AnsiblexDialog(QDialog):
         if errors:
             msg += "  " + errors[0]
         self.status.setText(msg)
+
+    def _owner_summary(self, rows) -> str:
+        """Say how many links cannot be checked against your alliance.
+
+        Silence would be wrong here: an unknown owner is routed over, so the
+        user should know the check did not happen rather than assume it did.
+        """
+        unknown = sum(1 for _a, _b, owner in rows if owner is None)
+        other = sum(1 for _a, _b, owner in rows
+                    if owner is not None and self._my_alliance_id
+                    and owner != self._my_alliance_id)
+        bits = []
+        if unknown:
+            bits.append(f"{unknown} link(s) have an unknown owner - still "
+                        f"routed, but not checked against your alliance")
+        if other:
+            bits.append(f"{other} link(s) belong to another alliance and "
+                        f"cannot be used")
+        return ".  ".join(bits)
+
+    def records(self) -> list[dict]:
+        """Edited links as records, re-attaching owners by name pair.
+
+        A line the user edited or typed has no known owner, so it becomes a
+        manual entry -- which stays routable. Untouched lines keep theirs.
+        """
+        out = []
+        for a, b in self.pairs():
+            alliance_id = self._known.get(frozenset((a, b)))
+            out.append({"a": a, "b": b, "alliance_id": alliance_id,
+                        "source": "esi" if alliance_id else "manual"})
+        return out
 
     def pairs(self) -> list[list[str]]:
         out = []

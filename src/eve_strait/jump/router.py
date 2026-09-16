@@ -493,7 +493,7 @@ def gate_runs(systems, modes):
 
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                        use_wormholes=False,
+                        my_alliance_id=None, use_wormholes=False,
                         haven=None, jammed=None, danger=None,
                         can_land=None, avoid=None, strategy="min_time"):
     """Quantify what stargates buy you on this route.
@@ -506,6 +506,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         res = plan_multimodal(universe, ship, skills, origin, destination,
                               minimize=minimize, gate_pref=gate_pref,
                               jump_cost=cost, use_ansiblex=use_ansiblex,
+                              my_alliance_id=my_alliance_id,
                               use_wormholes=holes,
                               haven=haven, jammed=jammed, danger=danger,
                               can_land=can_land, avoid=avoid)
@@ -552,6 +553,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         probe = plan_multimodal(universe, ship, skills, origin, destination,
                                 minimize="jumps", gate_pref=gate_pref,
                                 jump_cost=jump_cost, use_ansiblex=use_ansiblex,
+                                my_alliance_id=my_alliance_id,
                                 can_land=can_land, avoid=avoid,
                                 avoid_edges=set(edges))
         annotated.append({
@@ -588,7 +590,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
 
 def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                  use_wormholes=False,
+                  my_alliance_id=None, use_wormholes=False,
                   haven=None, jammed=None, danger=None,
                   can_land=None, avoid=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
@@ -602,6 +604,7 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
                               gate_pref=gate_pref, jump_cost=jump_cost,
                               use_ansiblex=use_ansiblex,
+                              my_alliance_id=my_alliance_id,
                               use_wormholes=use_wormholes, haven=haven,
                               jammed=jammed, danger=danger,
                               can_land=can_land, avoid=avoid)
