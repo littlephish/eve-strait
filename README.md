@@ -222,9 +222,20 @@ through.
 
 Only gates owned by **your corporation or alliance** are adopted, since only the owning
 alliance can use them; anything else is ignored. Lines you type by hand are always kept.
-Ansiblex legs cost one activation at any distance and burn no ship fuel (the structure pays),
-but still apply **jump fatigue and a reactivation timer**. Turn the whole network on or off
-with **Use Ansiblex network**.
+Ansiblex legs cost one activation at any distance and burn no ship fuel (the structure pays
+from its capacitor), but still apply **jump fatigue and a reactivation timer**. Turn the whole
+network on or off with **Use Ansiblex network**.
+
+Since the **Cradle of War** update (22 September 2026), **capitals and supercapitals cannot
+use Ansiblex gates at all** - carriers, command carriers, dreadnoughts, lancer dreadnoughts,
+force auxiliaries, supercarriers and titans. The **Rorqual** is the only capital-class
+exception, and jump freighters and Black Ops keep full access. An ineligible hull is simply
+never routed over a bridge.
+
+Gate access is also **alliance-only**: a gate may be used only by members of the alliance that
+owns it, so coalition and renter sharing ended with the same update. This applies to Ansiblex
+gates and nothing else - docking rights, titan and Black Ops bridges, and every other
+structure are unchanged.
 
 ### Route options
 

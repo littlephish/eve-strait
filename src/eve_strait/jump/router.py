@@ -362,10 +362,15 @@ def plan_multimodal(
                     prev[gid] = (nid, "gate")
                     heapq.heappush(pq, (nc, gid))
 
-        # Ansiblex jump-gate edges: one activation covers any distance, and
-        # capitals can use them. Not blocked by "only jumps" -- an Ansiblex is
-        # a jump, not a stargate.
-        for bid in (universe.bridges.get(nid, ()) if use_ansiblex else ()):
+        # Ansiblex jump-gate edges: one activation covers any distance. Not
+        # blocked by "only jumps" -- an Ansiblex is a jump, not a stargate.
+        #
+        # Since Cradle of War (2026-09-22) capitals and supercapitals may not
+        # use them at all, the Rorqual excepted. An ineligible hull simply has
+        # no edge here, the same shape as a wormhole too small to enter.
+        bridges = (universe.bridges.get(nid, ())
+                   if use_ansiblex and docking.ansiblex_allowed(ship) else ())
+        for bid in bridges:
             b = universe.systems.get(bid)
             if (b is None or blocked(bid) or edge_banned(nid, bid)
                     or not docking.gate_allowed(ship, b.security)):
