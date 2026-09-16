@@ -36,3 +36,33 @@ def test_malformed_rows_are_dropped(monkeypatch):
 def test_missing_key_is_empty(monkeypatch):
     monkeypatch.setattr(config, "load_config", lambda: {})
     assert config.get_bridges() == []
+
+
+from eve_strait.data.universe import System, Universe
+
+REGION = 10_000_001
+
+
+def _uni():
+    systems = {
+        1: System(id=1, name="Aaa", x=0.0, y=0.0, z=0.0, security=-0.5,
+                  region_id=REGION, constellation_id=1),
+        2: System(id=2, name="Bbb", x=20.0, y=0.0, z=0.0, security=-0.5,
+                  region_id=REGION, constellation_id=1),
+    }
+    return Universe(systems, gates={})
+
+
+def test_set_bridges_records_owner():
+    u = _uni()
+    u.set_bridges([{"a": "Aaa", "b": "Bbb", "alliance_id": 99,
+                    "source": "esi"}])
+    assert u.bridges == {1: {2}, 2: {1}}
+    assert u.bridge_owner[(1, 2)] == 99
+
+
+def test_set_bridges_accepts_legacy_pairs():
+    u = _uni()
+    u.set_bridges([["Aaa", "Bbb"]])
+    assert u.bridges == {1: {2}, 2: {1}}
+    assert u.bridge_owner[(1, 2)] is None
