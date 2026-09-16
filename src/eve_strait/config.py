@@ -60,6 +60,17 @@ for _d in (DATA_DIR, CACHE_DIR):
 # ESI / SSO endpoints
 # ---------------------------------------------------------------------------
 ESI_BASE = "https://esi.evetech.net/latest"
+
+# ESI is migrating off the /latest route set onto compatibility-dated routes,
+# and the two are disjoint: /sovereignty/systems exists only on the dated base
+# and /sovereignty/map/ only under /latest. Paths listed in COMPAT_PATHS go to
+# the dated base; everything else keeps the versioned one.
+#
+# The date is pinned deliberately. Leaving it off returns the legacy route set,
+# and floating it would let CCP change our route shapes without a release.
+ESI_COMPAT_BASE = "https://esi.evetech.net"
+ESI_COMPATIBILITY_DATE = "2026-08-18"
+COMPAT_PATHS = frozenset({"/sovereignty/systems"})
 SSO_AUTHORIZE = "https://login.eveonline.com/v2/oauth/authorize"
 SSO_TOKEN = "https://login.eveonline.com/v2/oauth/token"
 SSO_ISSUER = "login.eveonline.com"
