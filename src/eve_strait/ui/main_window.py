@@ -2510,6 +2510,8 @@ class MainWindow(QMainWindow):
             dlg, config.get_bridges(), self.my_alliance_id))
         bridge_page.btn_esi.clicked.connect(
             lambda: self._load_ansiblex_esi(bridge_page))
+        bridge_page.btn_resolve.clicked.connect(
+            lambda: self._resolve_ansiblex_owners(bridge_page))
         bridge_page.btn_search.clicked.connect(
             lambda: self._search_ansiblex(bridge_page))
         bridge_page.search_field.returnPressed.connect(
@@ -2699,6 +2701,8 @@ class MainWindow(QMainWindow):
         from .dialogs import AnsiblexDialog
         dlg = AnsiblexDialog(self, config.get_bridges(), self.my_alliance_id)
         dlg.btn_esi.clicked.connect(lambda: self._load_ansiblex_esi(dlg))
+        dlg.btn_resolve.clicked.connect(
+            lambda: self._resolve_ansiblex_owners(dlg))
         dlg.btn_search.clicked.connect(lambda: self._search_ansiblex(dlg))
         dlg.search_field.returnPressed.connect(lambda: self._search_ansiblex(dlg))
         if not dlg.exec():
@@ -2789,6 +2793,51 @@ class MainWindow(QMainWindow):
 
         w.finished_ok.connect(done)
         w.failed.connect(lambda m: (dlg.btn_esi.setEnabled(True),
+                                    dlg.status.setText(m)))
+        self._run(w)
+
+    def _resolve_ansiblex_owners(self, dlg):
+        """Fill in the owner of every link that does not have one.
+
+        On demand only: each link costs a structure search plus a structure
+        read against the rate-limit budget, so this must never run on load.
+        """
+        if not self.token:
+            dlg.status.setText("Log in with EVE first.")
+            return
+        if not self.esi:
+            self.esi = EsiClient(self.token, config.get_client_id())
+        todo = [(a, b) for a, b in dlg.pairs()
+                if dlg._known.get(frozenset((a, b))) is None]
+        if not todo:
+            dlg.status.setText("Every link already has a known owner.")
+            return
+        dlg.btn_resolve.setEnabled(False)
+        dlg.status.setText(f"Resolving {len(todo)} link(s)…")
+
+        def work(progress=None):
+            found = {}
+            for i, (a, b) in enumerate(todo, start=1):
+                if progress:
+                    progress(f"Resolving {i}/{len(todo)}: {a} » {b}")
+                corp_id = self.esi.ansiblex_owner(a, b)
+                if not corp_id:
+                    continue
+                details = self.esi.owner_details(corp_id) or {}
+                alliance_id = details.get("alliance_id")
+                if alliance_id:
+                    found[frozenset((a, b))] = alliance_id
+            return found
+
+        w = Worker(work)
+        w.progress.connect(dlg.status.setText)
+
+        def done(found):
+            dlg.btn_resolve.setEnabled(True)
+            dlg.apply_owners(found or {}, self.my_alliance_id)
+
+        w.finished_ok.connect(done)
+        w.failed.connect(lambda m: (dlg.btn_resolve.setEnabled(True),
                                     dlg.status.setText(m)))
         self._run(w)
 

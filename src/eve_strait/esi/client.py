@@ -502,6 +502,26 @@ class EsiClient:
                 out.append([parsed[0], parsed[1]])
         return out
 
+    def ansiblex_owner(self, a: str, b: str, limit: int = 5) -> int | None:
+        """Owning corporation of the gate linking two systems, if visible.
+
+        Gates are auto-named "<origin> » <destination>", so the link names the
+        structure -- but either end may be the origin, hence both orderings.
+
+        Structure search only returns what this character can *see*. None
+        therefore means "could not confirm", never "does not exist": a gate we
+        cannot see is probably one we cannot use, but that is evidence rather
+        than proof, so callers must warn rather than delete.
+        """
+        for name in (f"{a} » {b}", f"{b} » {a}"):
+            for sid in self.search_structures(name)[:limit]:
+                data = self.structure(sid)
+                if not data or data.get("type_id") != ANSIBLEX_TYPE_ID:
+                    continue
+                if parse_ansiblex_name(data.get("name", "")):
+                    return data.get("owner_id")
+        return None
+
     def starbases(self, progress=None) -> dict:
         """Your corporation's POS control towers, by solar system.
 

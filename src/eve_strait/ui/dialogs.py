@@ -584,6 +584,12 @@ class AnsiblexDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setText(self._owner_summary(rows))
         load_row.addWidget(self.status, 1)
+        self.btn_resolve = QPushButton("Resolve owners")
+        self.btn_resolve.setToolTip(
+            "Look up who owns each link whose owner is unknown, so routing can "
+            "tell whether your alliance may use it. Costs one ESI search per "
+            "link, so it is never done automatically.")
+        load_row.addWidget(self.btn_resolve)
         self.btn_esi = QPushButton("Load from ESI")
         self.btn_esi.setToolTip(
             "Discover your corporation's Ansiblex gates via ESI. Each gate is "
@@ -630,6 +636,18 @@ class AnsiblexDialog(QDialog):
             bits.append(f"{other} link(s) belong to another alliance and "
                         f"cannot be used")
         return ".  ".join(bits)
+
+    def apply_owners(self, owners: dict, my_alliance_id: int | None = None):
+        """Merge resolved owners in, keyed by the unordered name pair."""
+        self._known.update(owners)
+        if my_alliance_id is not None:
+            self._my_alliance_id = my_alliance_id
+        rows = [(a, b, self._known.get(frozenset((a, b))))
+                for a, b in self.pairs()]
+        found = sum(1 for _a, _b, owner in rows if owner is not None)
+        self.status.setText(
+            f"Resolved {found} of {len(rows)} link(s).  "
+            + self._owner_summary(rows))
 
     def records(self) -> list[dict]:
         """Edited links as records, re-attaching owners by name pair.
