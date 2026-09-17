@@ -514,6 +514,40 @@ def gate_runs(systems, modes):
     return runs
 
 
+def collapse_gate_legs(legs) -> list[tuple["Leg", int]]:
+    """Group contiguous gate legs, for display only.
+
+    Returns [(leg, count)]. The merged leg carries the run's first source and
+    its last destination, so one row reads "A -> D, gate x3".
+
+    Only gates collapse. Two wormholes in a row are two distinct holes, each
+    needing its own signature to fly, and two jumps each cost their own fuel
+    and fatigue -- merging either would hide the thing the row exists to say.
+    """
+    from dataclasses import replace
+
+    out: list[tuple[Leg, int]] = []
+    run: list[Leg] = []
+
+    def flush():
+        if not run:
+            return
+        merged = replace(run[0], dst=run[-1].dst,
+                         distance_ly=sum(l.distance_ly for l in run),
+                         fatigue_after_min=run[-1].fatigue_after_min)
+        out.append((merged, len(run)))
+        run.clear()
+
+    for leg in legs:
+        if leg.mode == "gate":
+            run.append(leg)
+            continue
+        flush()
+        out.append((leg, 1))
+    flush()
+    return out
+
+
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
                         my_alliance_id=None, use_wormholes=False,

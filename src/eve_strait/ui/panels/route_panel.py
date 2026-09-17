@@ -970,8 +970,11 @@ class RoutePanel(QWidget):
 
     # ---- results ----------------------------------------------------------
     def display_plan(self, plan):
-        self.table.setRowCount(len(plan.legs))
-        for i, leg in enumerate(plan.legs):
+        # Contiguous gate hops become one row: a capital route can gate twenty
+        # times between two jumps, and listing each buries the jumps.
+        rows = router.collapse_gate_legs(plan.legs)
+        self.table.setRowCount(len(rows))
+        for i, (leg, count) in enumerate(rows):
             if leg.mode == "hole":
                 # Which hub, and the signature to search for at this end --
                 # without those the leg cannot actually be flown.
@@ -989,7 +992,9 @@ class RoutePanel(QWidget):
                         f"{leg.cooldown_min:.1f}m",
                         f"{leg.fatigue_after_min:.0f}m", "✓"]
             elif leg.mode == "gate":
-                vals = ["gate", leg.src.name, leg.dst.name, f"{leg.distance_ly:.1f}",
+                label = "gate" if count == 1 else f"gate ×{count}"
+                vals = [label, leg.src.name, leg.dst.name,
+                        f"{leg.distance_ly:.1f}",
                         "-", "-", f"{leg.fatigue_after_min:.0f}m", "✓"]
             else:
                 ok = "✓" if leg.in_range else f"✗ {leg.reason}"
