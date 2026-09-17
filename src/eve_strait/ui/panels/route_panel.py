@@ -267,7 +267,9 @@ class RoutePanel(QWidget):
             "Connections are scanned by volunteers and expire within hours — "
             "check before you commit.")
         compressible(self.chk_holes)
-        self.chk_holes.toggled.connect(self._emit_changed)
+        # Seeded from the box's own initial state so the two cannot drift.
+        self._holes_pref = self.chk_holes.isChecked()
+        self.chk_holes.toggled.connect(self._on_holes_toggled)
         sec_jumps.add(self.chk_holes)
 
         # What the pilot will accept from a scouted hole, on top of the mass
@@ -524,15 +526,42 @@ class RoutePanel(QWidget):
         return self.chk_holes.isChecked() or self.gate_pref() == "fast"
 
     def _sync_hole_toggle(self):
-        """Show that Fastest has taken the choice out of the user's hands."""
+        """Make the checkbox tell the truth about what routing will do.
+
+        Under "Fastest" wormholes are forced on. This used to disable the box
+        and leave it *unticked*, so the one state the user could see said
+        "off" while the router was already using holes -- and the box could
+        not be clicked to correct it. Ticked-and-disabled is the honest
+        rendering of "on, and not your choice right now".
+
+        The user's own preference is remembered separately, so coming back
+        off Fastest restores what they actually chose rather than the value
+        Fastest imposed.
+        """
         forced = self.gate_pref() == "fast"
+        want = True if forced else getattr(self, "_holes_pref", False)
+        # Block signals: this is the UI catching up with a decision already
+        # made, not the user changing their mind, and re-emitting would
+        # rewrite the preference we are restoring.
+        blocked = self.chk_holes.blockSignals(True)
+        self.chk_holes.setChecked(want)
+        self.chk_holes.blockSignals(blocked)
         self.chk_holes.setEnabled(not forced)
         # Appending the reason to the label made it the widest thing in the
         # panel, which set the panel's minimum width and pushed Find off the
         # edge. The tooltip carries it instead.
         self.chk_holes.setToolTip(
-            "Always on while Gates is set to Fastest."
+            "Always on while Gates is set to Fastest — a wormhole is a gate "
+            "that happens to be temporary, so the fastest route has to be "
+            "allowed to use one.\nPick another Gates setting to choose for "
+            "yourself."
             if forced else self._HOLES_TIP)
+
+    def _on_holes_toggled(self, on: bool):
+        """Remember a choice the user actually made, then re-plan."""
+        if self.chk_holes.isEnabled():
+            self._holes_pref = bool(on)
+        self._emit_changed()
 
     def set_hole_status(self, total: int, passable: int, hull: str,
                         stale: bool = False):
