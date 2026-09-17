@@ -212,6 +212,59 @@ def edge_age_minutes(info) -> float | None:
     return max(ages) * 60.0
 
 
+# The longest any natural wormhole lives. B274 (hi-sec) tops out at 24 hours
+# and most types manage 16, so nothing a user rejects today can still be there
+# tomorrow. Used as the ceiling on how long "ignore this hole" stays in force.
+MAX_LIFETIME_HOURS = 24.0
+
+
+def ignore_expiry(info, now: float | None = None) -> float:
+    """When a decision to ignore this hole stops meaning anything.
+
+    Capped at the longest a wormhole can live, and shortened to the hole's
+    own remaining life where EVE-Scout reported one -- a hole with three
+    hours left cannot still be refused in four.
+    """
+    now = time.time() if now is None else now
+    hours = (info or {}).get("hours")
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        hours = MAX_LIFETIME_HOURS
+    hours = max(0.0, min(hours, MAX_LIFETIME_HOURS))
+    return now + hours * 3600.0
+
+
+def active_ignores(ignored, hole_info, now: float | None = None) -> set:
+    """Which ignore entries still apply, as a set of id pairs.
+
+    Two ways an entry stops applying, and the second is the subtle one:
+
+    * it expired -- the hole it referred to cannot still be open;
+    * the signature at that pair has changed. The same two systems can be
+      joined again by a completely different hole, and the user never
+      rejected *that* one. Without this check an ignore would quietly
+      outlive its subject and refuse a perfectly good connection.
+
+    An entry with no recorded signature (a Wanderer edge, which carries
+    none) falls back to matching on the pair alone.
+    """
+    now = time.time() if now is None else now
+    out = set()
+    for pair, entry in (ignored or {}).items():
+        if entry.get("until", 0) <= now:
+            continue
+        sig = entry.get("sig")
+        if sig:
+            current = ((hole_info or {}).get(pair) or {}).get("sigs") or {}
+            # Absent from hole_info means the hole is gone; keep the entry
+            # until it expires rather than resurrecting it on a stale replan.
+            if current and sig not in current.values():
+                continue
+        out.add(pair)
+    return out
+
+
 def usable(info, *, max_age_min=None, allow_eol=True,
            allow_reduced_mass=True) -> bool:
     """Does this edge pass the pilot's own standards?

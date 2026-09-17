@@ -1,6 +1,8 @@
 """Main window: owns shared state (universe, ESI) and coordinates the panels."""
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
@@ -111,10 +113,14 @@ class MainWindow(QMainWindow):
         self.my_alliance_id: int | None = None
         self.incursion_systems: set[int] = set()
         self.avoided_ids: set[int] = set()
-        # Specific connections the user has rejected, as sorted id pairs.
-        # Distinct from avoided_ids: the system is fine, this link is not --
-        # a hole they know has collapsed, or one they simply do not trust.
-        self.ignored_edges: set[tuple[int, int]] = set()
+        # Specific connections the user has rejected: {pair: {until, sig}}.
+        # Distinct from avoided_ids -- the system is fine, this link is not.
+        #
+        # Timestamped because a wormhole is not permanent. No natural hole
+        # outlives 24 hours, so a rejection that never expired would outlive
+        # its subject and then silently refuse whatever new hole happened to
+        # join the same two systems.
+        self.ignored_edges: dict[tuple[int, int], dict] = {}
         self._ansiblex_pending: list = []
         self.docking_rights_ids: set[int] = set()
         self.starbase_systems: dict[int, int] = {}
@@ -366,6 +372,20 @@ class MainWindow(QMainWindow):
             return []
         return [sid for sid in (self.sov_capitals or {}).values()
                 if sid in self.universe.systems]
+
+    def _refresh_wormholes_now(self):
+        """Re-read every wormhole source, ignoring the cache.
+
+        Both sources, not just EVE-Scout: a Wanderer map is your own chain
+        and goes stale just as fast. The 15-minute cache is there to spare a
+        volunteer-run service on every replan, which is exactly the wrong
+        behaviour when somebody has explicitly asked whether a hole is still
+        there.
+        """
+        self.statusBar().showMessage("Refreshing wormhole connections…", 4000)
+        self._fetch_wormholes(force=True)
+        if config.get_wanderer_map():
+            self._fetch_wanderer(force=True)
 
     def _on_hole_filters_changed(self):
         """Rebuild the wormhole set, then re-plan over what survived."""
@@ -1324,11 +1344,18 @@ class MainWindow(QMainWindow):
         for text, slot in (
             ("Settings...", self._open_settings),
             ("Reload map data", self._reload_map),
+            ("Refresh wormhole connections", self._refresh_wormholes_now),
             ("Log out", self._logout),
             ("Quit", self.close),
         ):
             a = QAction(text, self)
             a.triggered.connect(slot)
+            if text.startswith("Refresh wormhole"):
+                a.setShortcut("F5")
+                a.setToolTip(
+                    "Re-read EVE-Scout and your Wanderer map now, ignoring "
+                    "the 15-minute cache. Connections expire in hours, so "
+                    "check before committing a freighter.")
             m.addAction(a)
 
         help_menu = self.menuBar().addMenu("&Help")
@@ -2297,7 +2324,8 @@ class MainWindow(QMainWindow):
             touching = {p for p in self.universe.hole_info if sid in p}
             act_ignore = menu.addAction(
                 "Stop ignoring this wormhole"
-                if touching & self.ignored_edges else "Ignore this wormhole")
+                if touching & self.active_ignores()
+                else "Ignore this wormhole")
         act_info = menu.addAction("Show station info")
         # Only where an alliance holds the system and has a capital -- an
         # entry that usually reports "nothing to show" teaches people to
@@ -2350,18 +2378,45 @@ class MainWindow(QMainWindow):
         Per-edge rather than per-system: the system stays perfectly routable
         by gate or jump, it is only this connection that is refused.
         """
+        from ..esi import evescout
+
         touching = {p for p in self.universe.hole_info if system_id in p}
         if not touching:
             return
-        if touching & self.ignored_edges:
-            self.ignored_edges -= touching
+        if touching & self.active_ignores():
+            for pair in touching:
+                self.ignored_edges.pop(pair, None)
             msg = "Wormhole restored to routing."
         else:
-            self.ignored_edges |= touching
-            msg = ("Wormhole ignored for routing. Right-click again to "
-                   "restore it.")
-        self.statusBar().showMessage(msg, 6000)
+            longest = 0.0
+            for pair in touching:
+                info = self.universe.hole_info.get(pair) or {}
+                until = evescout.ignore_expiry(info)
+                self.ignored_edges[pair] = {
+                    "until": until,
+                    # Pinned to the signature so that when this hole dies and
+                    # another links the same pair, the new one is not refused
+                    # on the strength of a decision about a different hole.
+                    "sig": (info.get("sigs") or {}).get(system_id),
+                }
+                longest = max(longest, until)
+            hours = max(0.0, (longest - time.time()) / 3600.0)
+            msg = (f"Wormhole ignored for routing, expiring in "
+                   f"{hours:.0f}h — no hole outlives that. Right-click "
+                   f"again to restore it now.")
+        self.statusBar().showMessage(msg, 8000)
         self._recalc()
+
+    def active_ignores(self) -> set:
+        """Ignore entries still in force, pruning as a side effect."""
+        from ..esi import evescout
+
+        info = self.universe.hole_info if self.universe else {}
+        live = evescout.active_ignores(self.ignored_edges, info)
+        if len(live) != len(self.ignored_edges):
+            self.ignored_edges = {k: v for k, v in self.ignored_edges.items()
+                                  if k in live}
+        return live
 
     def holes_in(self, system_id: int) -> list[dict]:
         """Scouted EVE-Scout connections with one end in this system."""
@@ -2489,7 +2544,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    my_alliance_id=self.my_alliance_id,
-                   avoid_edges=self.ignored_edges,
+                   avoid_edges=self.active_ignores(),
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
@@ -3086,7 +3141,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    my_alliance_id=self.my_alliance_id,
-                   avoid_edges=self.ignored_edges,
+                   avoid_edges=self.active_ignores(),
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
