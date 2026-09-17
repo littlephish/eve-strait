@@ -1378,9 +1378,10 @@ class MainWindow(QMainWindow):
          "Fill null-sec space by who holds it. Off by default: it is the "
          "heaviest layer to draw."),
         ("zones", "Ansiblex capacitor zones", False,
-         "Shade each system by its own holder's Ansiblex zone - green is "
-         "free movement, red is the 15x band. Shows every alliance at once, "
-         "because a system has only one holder and so only one zone."),
+         "Colour each sov system by how far it sits from its OWN alliance's "
+         "capital - green is the free zone, red the 15x band. Space with no "
+         "alliance holder greys out, and this overrides the heat map while "
+         "it is on. Right-click a system for that alliance's range rings."),
         ("cyno_alts", "My cyno alts", True,
          "Ring and name the systems where one of your own characters is "
          "sitting in a cyno-fitted ship. Populated by Scan my characters, "

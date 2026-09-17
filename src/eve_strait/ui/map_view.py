@@ -318,59 +318,50 @@ class MapView(QGraphicsView):
 
     # Ansiblex capacitor zones, cheap to expensive. Read as a cost ramp: green
     # is free movement, red is the 15x band.
-    ZONE_COLOUR = {1: QColor(61, 220, 132, 220), 2: QColor(181, 232, 83, 210),
-                   3: QColor(242, 199, 68, 205), 4: QColor(242, 133, 61, 205),
-                   5: QColor(224, 65, 62, 210)}
-    ZONE_DOT_LY = 0.42
+    ZONE_COLOUR = {1: QColor(61, 220, 132, 235), 2: QColor(181, 232, 83, 230),
+                   3: QColor(242, 199, 68, 230), 4: QColor(242, 133, 61, 230),
+                   5: QColor(224, 65, 62, 235)}
+    # Anything with no zone while the layer is on: unowned space, and space
+    # held by a corporation or faction, which have no capital to measure from.
+    ZONE_UNZONED = QColor(70, 78, 88, 190)
 
     def set_ansiblex_zones(self, zones: dict | None):
-        """Shade each system by its own holder's Ansiblex capacitor zone.
+        """Shade systems by their own holder's Ansiblex capacitor zone.
 
-        ``zones`` is {system_id: 1..5}. Every system has exactly one sov
-        holder, so exactly one capital and exactly one zone -- which is why
-        this can show all 75 alliances at once where overlapping range circles
-        could not. At 20 ly a single zone-4 disk spans a fifth of a ~89 ly
-        cluster; seventy-five of them is an unreadable wash.
+        ``zones`` is {system_id: 1..5}, computed from true 3D light-year
+        distance to that holder's own capital.
 
-        One batched path per zone, like the kill bands: five scene items for
-        ~2,700 systems.
+        **Recolours the existing dots rather than adding anything.** The first
+        version drew a filled halo per system and cost 600 ms a frame against
+        a 27 ms baseline -- 2,700 sub-ellipses in five filled paths. Painting
+        brushes onto dots the scene already draws costs nothing measurable.
+
+        Only systems an alliance actually holds get a colour. That is the
+        point rather than a limitation: the zone sets the cost of an Ansiblex,
+        gates live in the alliance's own space, and empty space between
+        holdings has no zone to be in.
         """
-        from PySide6.QtGui import QPainterPath
-        from PySide6.QtWidgets import QGraphicsPathItem
-
-        for item in getattr(self, "_zone_items", ()):
-            self.scene_obj.removeItem(item)
-        self._zone_items = []
+        self._zone_brushes = {
+            sid: QBrush(self.ZONE_COLOUR[z])
+            for sid, z in (zones or {}).items() if z in self.ZONE_COLOUR
+        }
         self._zone_data = zones or {}
-        if not zones:
-            return
-
-        r = self.ZONE_DOT_LY
-        paths = {z: QPainterPath() for z in self.ZONE_COLOUR}
-        for sid, zone in zones.items():
-            if zone not in paths:
-                continue
-            p = self._vis_pos(sid)
-            if p is None:
-                continue
-            paths[zone].addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
-        for zone, path in paths.items():
-            if path.isEmpty():
-                continue
-            item = QGraphicsPathItem(path)
-            item.setBrush(QBrush(self.ZONE_COLOUR[zone]))
-            item.setPen(QPen(Qt.PenStyle.NoPen))
-            item.setZValue(-2.0)      # over the sov fill, under the gate mesh
-            self.scene_obj.addItem(item)
-            self._zone_items.append(item)
-        self._apply_visibility("zones")
+        self._repaint_dots()
 
     def set_zone_focus(self, origin, colour=None):
-        """Draw one alliance's explicit 5/10/15/20 ly zone boundaries.
+        """Draw one alliance's 5/10/15/20 ly boundaries around its capital.
 
-        The gradient answers "how expensive is this ground"; the rings answer
-        "where exactly does the next band start" for a single alliance. Only
-        ever one at a time -- that is the whole reason the rings are readable.
+        **These circles are an outer bound, not the zone.** The map is a 2D
+        projection that drops the y axis, and New Eden is 22.8 ly deep, so a
+        drawn circle flatters distance: measured across all 75 capitals, 8% of
+        what a circle encloses is actually out of that range, the worst case
+        by 9.3 ly -- nearly two whole bands.
+
+        The error only ever runs one way. Projected distance can never exceed
+        true distance, so nothing genuinely within N ly can fall outside the
+        N ly circle. That makes a ring honest as "nothing beyond this is in
+        range", and useless as "everything inside this is". The dot colours
+        carry the truth; the rings are orientation.
 
         ``origin`` is the capital System, or None to clear.
         """
@@ -1169,11 +1160,34 @@ class MapView(QGraphicsView):
         return f"{num} {self._heat_unit}".strip()
 
     def _apply_heat(self):
-        """Repaint the dots as either the heat ramp or security colours."""
-        on = bool(self._heat_brushes) and self._overlay_on.get("heat", True)
+        self._repaint_dots()
+
+    def _repaint_dots(self):
+        """Decide what colour every system dot carries.
+
+        Three layers want the same pixel, so they queue rather than fight:
+
+            Ansiblex zones > heat map > security
+
+        Zones win while on because switching them on is an explicit request
+        for that one question, and two ramps on one dot answers neither.
+
+        While zones are on, everything without one is greyed rather than left
+        on the security scale. The zone ramp runs green to red and so does
+        security, so leaving them side by side makes a hi-sec system and a
+        free-zone system the same green -- the layer stops being readable at
+        all. Greying the remainder is what makes "coloured" mean "zoned".
+        """
+        zones_on = (bool(getattr(self, "_zone_brushes", None))
+                    and self._overlay_on.get("zones", True))
+        heat_on = bool(self._heat_brushes) and self._overlay_on.get("heat", True)
+        zone_brushes = getattr(self, "_zone_brushes", {})
         cold = QBrush(self._HEAT_COLD)
+        unzoned = QBrush(self.ZONE_UNZONED)
         for sid, dot in self._dots.items():
-            if on:
+            if zones_on:
+                dot.setBrush(zone_brushes.get(sid, unzoned))
+            elif heat_on:
                 dot.setBrush(self._heat_brushes.get(sid, cold))
             else:
                 dot.setBrush(self._sec_brushes[sid])
@@ -1182,9 +1196,13 @@ class MapView(QGraphicsView):
     def set_overlay_visible(self, name: str, visible: bool):
         """Show or hide one map layer by name."""
         self._overlay_on[name] = bool(visible)
-        if name == "heat":
-            self._apply_heat()
-            return
+        if name in ("heat", "zones"):
+            # Both live in the dot brush rather than in items of their own,
+            # so visibility is a repaint, not a setVisible. Zones also own
+            # ring items, which fall through to the generic path below.
+            self._repaint_dots()
+            if name == "heat":
+                return
         if name == "pochven":
             # Not just chrome: hiding the inset also has to drop its systems
             # from hit-testing and from every marker layer.
@@ -1248,8 +1266,8 @@ class MapView(QGraphicsView):
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
             "cyno_alts": getattr(self, "_cyno_items", ()),
-            "zones": (list(getattr(self, "_zone_items", ()))
-                      + list(getattr(self, "_zone_ring_items", ()))),
+            # Dot colours are repainted, not hidden; only the rings are items.
+            "zones": getattr(self, "_zone_ring_items", ()),
             # Everything that belongs to the inset: its dots, its internal
             # gate mesh, its border and its labels.
             "pochven": (list(getattr(self, "_pochven_items", ()))
