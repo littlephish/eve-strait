@@ -15,22 +15,26 @@ def test_max_lifetime_is_the_longest_a_wormhole_lives():
     assert evescout.MAX_LIFETIME_HOURS == 24.0
 
 
-def test_expiry_defaults_to_the_ceiling():
+def test_expiry_defaults_to_the_ceiling_plus_grace():
     now = 1_000_000.0
     got = evescout.ignore_expiry({}, now=now)
-    assert got == now + 24 * 3600
+    assert got == now + 25 * 3600
 
 
-def test_expiry_never_outlives_the_hole_itself():
-    """A hole with 3 hours left cannot matter in 4."""
+def test_expiry_tracks_the_hole_plus_an_hour_of_grace():
+    """Remaining hours is an estimate, so hold it an hour past the estimate."""
     now = 1_000_000.0
     got = evescout.ignore_expiry({"hours": 3}, now=now)
-    assert got == now + 3 * 3600
+    assert got == now + 4 * 3600
 
 
 def test_reported_life_longer_than_the_ceiling_is_capped():
     now = 1_000_000.0
-    assert evescout.ignore_expiry({"hours": 99}, now=now) == now + 24 * 3600
+    assert evescout.ignore_expiry({"hours": 99}, now=now) == now + 25 * 3600
+
+
+def test_grace_is_an_hour():
+    assert evescout.IGNORE_GRACE_HOURS == 1.0
 
 
 def test_active_ignores_drops_expired_entries():

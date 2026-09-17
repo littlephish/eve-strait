@@ -254,11 +254,13 @@ class MainWindow(QMainWindow):
         turnur = self.universe.by_name("Turnur")
         edges = dict(evescout.graph(conns, turnur.id if turnur else None))
 
+        # Both sources routinely describe the same hole. Merge them field by
+        # field rather than keeping whichever record is roomier: picking one
+        # wholesale discarded the other's end-of-life and mass status, which
+        # is exactly what the safety filters below read.
         for key, info in wanderer.edges(getattr(self, "_wanderer_data", {}) or {},
                                         self.universe.systems).items():
-            old = edges.get(key)
-            if old is None or info["max_t"] > old["max_t"]:
-                edges[key] = info
+            edges[key] = evescout.merge_edge(edges.get(key), info)
 
         # Drop the holes the pilot has said they will not fly: too stale, end
         # of life, or mass-reduced. Filtered here rather than in the router so

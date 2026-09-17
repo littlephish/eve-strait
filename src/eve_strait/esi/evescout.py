@@ -217,13 +217,21 @@ def edge_age_minutes(info) -> float | None:
 # tomorrow. Used as the ceiling on how long "ignore this hole" stays in force.
 MAX_LIFETIME_HOURS = 24.0
 
+# Held past the hole's expected death before releasing an ignore. Remaining
+# hours is an estimate from a volunteer's last look, and a hole that outlives
+# it by a few minutes would otherwise pop straight back into routing -- which
+# is precisely the moment the user is least expecting to be routed over it.
+# Erring long costs nothing: the hole is gone either way.
+IGNORE_GRACE_HOURS = 1.0
+
 
 def ignore_expiry(info, now: float | None = None) -> float:
     """When a decision to ignore this hole stops meaning anything.
 
-    Capped at the longest a wormhole can live, and shortened to the hole's
-    own remaining life where EVE-Scout reported one -- a hole with three
-    hours left cannot still be refused in four.
+    Capped at the longest a wormhole can live and shortened to the hole's own
+    remaining life where EVE-Scout reported one -- a hole with three hours
+    left cannot still be refused in five -- then held an extra hour, because
+    the reported life is an estimate rather than a guarantee.
     """
     now = time.time() if now is None else now
     hours = (info or {}).get("hours")
@@ -231,7 +239,7 @@ def ignore_expiry(info, now: float | None = None) -> float:
         hours = float(hours)
     except (TypeError, ValueError):
         hours = MAX_LIFETIME_HOURS
-    hours = max(0.0, min(hours, MAX_LIFETIME_HOURS))
+    hours = max(0.0, min(hours, MAX_LIFETIME_HOURS)) + IGNORE_GRACE_HOURS
     return now + hours * 3600.0
 
 
@@ -262,6 +270,70 @@ def active_ignores(ignored, hole_info, now: float | None = None) -> set:
             if current and sig not in current.values():
                 continue
         out.add(pair)
+    return out
+
+
+# Worst-first, so merging two reports of the same hole keeps the warning
+# rather than the reassurance. Anything not listed is unknown, and unknown
+# never overrides a known value.
+_LIFE_RANK = {"end of life": 2, "fresh": 1}
+_MASS_RANK = {"critical": 3, "reduced": 2, "fresh": 1}
+
+
+def _worst(a, b, rank):
+    """Whichever of two statuses is more cautious, ignoring unknowns."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if rank.get(a, 0) >= rank.get(b, 0) else b
+
+
+def merge_edge(a: dict | None, b: dict | None) -> dict:
+    """Combine two sources' views of the same connection.
+
+    Field by field, rather than picking one record wholesale. The old
+    behaviour kept whichever had the larger ``max_t`` and discarded the
+    rest, which lost exactly the fields the safety filters read: a hole a
+    Wanderer map had marked end-of-life and mass-critical passed both
+    filters because the surviving EVE-Scout record carried neither key.
+
+    The rules, and why:
+
+    * ``max_t`` takes the larger. Wanderer's default for an unidentified
+      hole is a deliberately conservative 62,000 t -- a "don't know", not a
+      measurement -- so a figure derived from a known type code beats it.
+    * ``life`` and ``mass`` take the more cautious *known* value. A warning
+      one source has and the other lacks is information, not disagreement.
+    * timestamps come from whichever record is fresher, because the
+      question they answer is "when did anyone last confirm this".
+    * ``sigs`` combine: EVE-Scout has them, Wanderer does not, and either
+      end's signature is worth having.
+    * ``hops`` takes the smaller -- the shorter way through the same pair.
+    """
+    if not a:
+        return dict(b or {})
+    if not b:
+        return dict(a or {})
+
+    age_a, age_b = edge_age_minutes(a), edge_age_minutes(b)
+    if age_b is not None and (age_a is None or age_b < age_a):
+        fresher, staler = b, a
+    else:
+        fresher, staler = a, b
+
+    out = dict(staler)
+    out.update({k: v for k, v in fresher.items() if v is not None})
+    out["max_t"] = max(a.get("max_t") or 0, b.get("max_t") or 0)
+    out["hops"] = min(a.get("hops") or 1, b.get("hops") or 1)
+    out["life"] = _worst(a.get("life"), b.get("life"), _LIFE_RANK)
+    out["mass"] = _worst(a.get("mass"), b.get("mass"), _MASS_RANK)
+    out["sigs"] = {**(staler.get("sigs") or {}), **(fresher.get("sigs") or {})}
+    for field in ("updated_at", "updated_at_all"):
+        if fresher.get(field) is not None:
+            out[field] = fresher[field]
+    out["sources"] = sorted({*(a.get("sources") or [a.get("via")]),
+                             *(b.get("sources") or [b.get("via")])} - {None})
     return out
 
 
