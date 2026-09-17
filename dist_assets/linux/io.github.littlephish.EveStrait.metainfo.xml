@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.littlephish.EveStrait</id>
+  <name>Eve-Strait</name>
+  <summary>Plan capital and jump freighter routes in EVE Online</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.littlephish">
+    <name>littlephish</name>
+  </developer>
+  <description>
+    <p>
+      A route planner for EVE Online capitals and jump freighters. It draws a
+      pannable, zoomable map of New Eden, shows your jump range, and plans
+      routes across stargates, jump drives, Ansiblex jump gates and scouted
+      wormholes, computing fuel and jump-fatigue timing for every leg.
+    </p>
+    <p>
+      Routes are explained rather than merely produced: every leg says how it
+      is travelled, what it costs, and — for a wormhole — which signature to
+      warp to and how long ago anyone last confirmed it was there.
+    </p>
+    <p>
+      Signing in to EVE is optional. The map, ranges, fuel and routing all
+      work without it; signing in adds the stations and structures your own
+      characters can dock at.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.littlephish.EveStrait.desktop</launchable>
+  <url type="homepage">https://github.com/littlephish/eve-strait</url>
+  <url type="bugtracker">https://github.com/littlephish/eve-strait/issues</url>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/littlephish/eve-strait/main/docs/screenshot.png</image>
+      <caption>Planning a jump freighter route out of Jita</caption>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.1.0" date="2026-09-17"/>
+  </releases>
+</component>

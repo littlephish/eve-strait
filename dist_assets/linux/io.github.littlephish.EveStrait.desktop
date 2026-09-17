@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Eve-Strait
+GenericName=EVE Online Route Planner
+Comment=Plan capital and jump freighter routes in EVE Online
+Exec=eve-strait
+Icon=io.github.littlephish.EveStrait
+Terminal=false
+Categories=Game;StrategyGame;
+Keywords=EVE;Online;jump;capital;freighter;route;wormhole;Ansiblex;
+StartupWMClass=eve-strait
