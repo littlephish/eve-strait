@@ -1537,19 +1537,33 @@ class MapView(QGraphicsView):
         self.scene_obj.addItem(c)
         self._overlay.append(c)
 
-    def draw_route(self, waypoints: list[System], modes: list[str], in_range: list[bool]):
+    # One entry per leg mode, so a route says what kind of travel each hop is
+    # without clicking anything. Dashed for a wormhole because it is
+    # temporary; solid and heavy for an Ansiblex because it is infrastructure,
+    # in the same purple refresh_bridges() draws the network with.
+    ROUTE_PENS = {
+        "gate":   ("#7fb2ff", 1.2, Qt.PenStyle.DotLine),
+        "bridge": ("#b266ff", 2.0, Qt.PenStyle.SolidLine),
+        "hole":   ("#58d2a0", 1.8, Qt.PenStyle.DashLine),
+        "jump":   ("#e0e0e0", 1.6, Qt.PenStyle.SolidLine),
+    }
+    # A jump the ship cannot actually make, whatever its mode.
+    ROUTE_BAD = ("#ff5555", 1.6, Qt.PenStyle.DashLine)
+
+    def draw_route(self, waypoints: list[System], modes: list[str],
+                   in_range: list[bool]):
         for i, (a, b) in enumerate(zip(waypoints, waypoints[1:])):
             pa, pb = self._pos[a.id], self._pos[b.id]
             line = QGraphicsLineItem(pa.x(), pa.y(), pb.x(), pb.y())
             mode = modes[i] if i < len(modes) else "jump"
-            if mode == "gate":
-                pen = QPen(QColor("#7fb2ff"), 1.2)
-                pen.setStyle(Qt.PenStyle.DotLine)
-            elif in_range[i]:
-                pen = QPen(QColor("#e0e0e0"), 1.6)
-            else:
-                pen = QPen(QColor("#ff5555"), 1.6)
-                pen.setStyle(Qt.PenStyle.DashLine)
+            # Only a jump can be out of range. A gate, bridge or hole either
+            # exists for this hull or was never offered as an edge at all.
+            bad = mode == "jump" and i < len(in_range) and not in_range[i]
+            colour, width, style = (
+                self.ROUTE_BAD if bad
+                else self.ROUTE_PENS.get(mode, self.ROUTE_PENS["jump"]))
+            pen = QPen(QColor(colour), width)
+            pen.setStyle(style)
             pen.setCosmetic(True)
             line.setPen(pen)
             line.setZValue(3)
