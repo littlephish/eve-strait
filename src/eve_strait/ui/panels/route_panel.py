@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...jump import router
 from ..collapsible import Section
 from ..theme import TEXT_MUTED, WARN, compressible, pad, shrinkable
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
@@ -1004,9 +1005,8 @@ class RoutePanel(QWidget):
             hrs = plan.total_time_min / 60.0
             warn = ("" if plan.all_in_range else
                     "   ⚠ some legs invalid (range / hi-sec) - use Auto-route to bridge")
-            bridges = f", {plan.bridges} ansiblex" if plan.bridges else ""
             self.totals.setText(
-                f"{plan.jumps} jump(s), {plan.gates} gate(s){bridges} · "
+                f"{router.compose(plan)} · "
                 f"{plan.total_fuel:,} isotopes · time ≈ {plan.total_time_min:.0f} min "
                 f"({hrs:.1f} h) · peak fatigue {plan.peak_fatigue_min:.0f}m · "
                 f"peak reactivation {plan.peak_reactivation_min:.1f}m{warn}")

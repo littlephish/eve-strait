@@ -52,6 +52,29 @@ class RoutePlan:
         return sum(1 for leg in self.legs if leg.mode == "hole")
 
 
+# Display order and noun for each leg mode. Ordered by how much a reader
+# cares: what you flew, then what carried you.
+_MODE_NOUNS = (("jump", "jump"), ("gate", "gate"),
+               ("bridge", "ansiblex"), ("hole", "wormhole"))
+
+
+def compose(plan: "RoutePlan") -> str:
+    """What this route is made of, e.g. "12 jumps, 3 gates, 1 wormhole".
+
+    Modes that do not appear are left out rather than printed as zero: a
+    plain gate route should not advertise the wormholes it did not use.
+    """
+    counts: dict[str, int] = {}
+    for leg in plan.legs:
+        counts[leg.mode] = counts.get(leg.mode, 0) + 1
+    parts = []
+    for mode, noun in _MODE_NOUNS:
+        n = counts.get(mode, 0)
+        if n:
+            parts.append(f"{n} {noun}" + ("s" if n != 1 else ""))
+    return ", ".join(parts)
+
+
 def simulate(
     ship: Ship,
     skills: Skills,
