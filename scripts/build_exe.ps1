@@ -111,7 +111,9 @@ try {
     }
     # Cheap when already satisfied, and this is what picks up a version bump
     # or a newly added dependency without needing -Clean for every change.
-    & $py -m pip install --quiet PySide6 requests nuitka zstandard ordered-set
+    # Pinned to match .github/workflows/release.yml, so a local build and
+    # a tagged release are compiled by the same Nuitka.
+    & $py -m pip install --quiet PySide6 requests nuitka==4.2.1 zstandard ordered-set
     # Install the project itself so Nuitka can locate the package to include.
     & $py -m pip install --quiet .
     $env:VIRTUAL_ENV = Join-Path $build ".venv"
