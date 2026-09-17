@@ -59,6 +59,19 @@ CHARACTER_INDEPENDENT = {
 }
 
 
+
+def url_for(path: str) -> tuple[str, dict]:
+    """Full URL and any extra query parameters for an ESI path.
+
+    Compatibility-dated routes live on a different base from the /latest set
+    and the date is mandatory there, so the two cannot share a builder.
+    """
+    if path in config.COMPAT_PATHS:
+        return (f"{config.ESI_COMPAT_BASE}{path}",
+                {"compatibility_date": config.ESI_COMPATIBILITY_DATE})
+    return f"{config.ESI_BASE}{path}", {}
+
+
 class Response:
     """Uniform result whether it came from sqlite or the wire."""
 
@@ -101,13 +114,16 @@ class EsiTransport:
         return None if route_key(path) in CHARACTER_INDEPENDENT else character_id
 
     def cache_status(self, path, params=None, character_id=None):
+        url, extra = url_for(path)
         return self.cache.status(
-            cache_key("GET", f"{config.ESI_BASE}{path}", params,
+            cache_key("GET", url, {**(params or {}), **extra},
                       self._cache_identity(path, character_id)))
 
     def get(self, path, *, params=None, character_id=None, headers=None,
             priority="interactive", force=False, timeout=30) -> Response:
-        url = f"{config.ESI_BASE}{path}"
+        url, extra = url_for(path)
+        if extra:
+            params = {**(params or {}), **extra}
         cacheable = self._cacheable(path)
         key = cache_key("GET", url, params,
                         self._cache_identity(path, character_id))
@@ -185,7 +201,9 @@ class EsiTransport:
         Returns the raw requests.Response, because every POST caller here
         already handles it that way and none of them want caching.
         """
-        url = f"{config.ESI_BASE}{path}"
+        url, extra = url_for(path)
+        if extra:
+            params = {**(params or {}), **extra}
         decision = self.governor.check(path, character_id, "interactive")
         if decision.action == "wait" and decision.seconds <= MAX_INTERACTIVE_WAIT:
             self._sleep(decision.seconds)

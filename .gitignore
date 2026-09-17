@@ -24,3 +24,9 @@ config.json
 
 # Rust updater build output (update.exe is built in CI, never committed)
 updater/target/
+
+# Throwaway map renders dropped in the repo root while iterating on a layer.
+# Anchored to the root on purpose: docs/screenshot.png and the app icon are
+# both committed, so a blanket *.png would silently swallow the next one.
+/ZONES_*.png
+/OPTION_*.png

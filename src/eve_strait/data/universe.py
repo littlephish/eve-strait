@@ -86,8 +86,12 @@ class Universe:
         self.region_names = region_names or {}
         # Stargate adjacency: system_id -> set of gate-connected system_ids.
         self.gates = gates or {}
-        # Ansiblex jump-gate adjacency (player-built, user-configured).
+        # Ansiblex jump-gate adjacency (player-built, user-configured), plus
+        # the owning alliance per edge keyed by the sorted id pair. Ownership
+        # decides usability: since Cradle of War a gate may be used only by
+        # its own alliance. None means "not known", which stays routable.
         self.bridges: dict[int, set[int]] = {}
+        self.bridge_owner: dict[tuple[int, int], int | None] = {}
         # Scouted Thera/Turnur wormholes: adjacency plus per-edge detail, the
         # latter keyed by the sorted id pair. Detail is kept because a
         # wormhole leg is useless without it -- which hub it runs through and
@@ -127,23 +131,39 @@ class Universe:
         return cls(systems, regions, gates, region_names)
 
     # -- Ansiblex jump gates ------------------------------------------------
-    def set_bridges(self, pairs) -> list[list[str]]:
-        """Install Ansiblex links from [nameA, nameB] pairs.
+    def set_bridges(self, records) -> list[dict]:
+        """Install Ansiblex links from records or legacy [a, b] name pairs.
 
-        Returns the pairs that resolved, so callers can report bad names.
+        Returns the records that resolved, so callers can report bad names.
+        ``bridge_owner`` maps the sorted id pair to the owning alliance, or to
+        None where the owner is not known -- a hand-typed gate, or one stored
+        before owners were recorded.
         """
         bridges: dict[int, set[int]] = {}
-        resolved: list[list[str]] = []
-        for pair in pairs or ():
-            if len(pair) != 2:
+        owner: dict[tuple[int, int], int | None] = {}
+        resolved: list[dict] = []
+        for row in records or ():
+            if isinstance(row, dict):
+                a_raw, b_raw = row.get("a"), row.get("b")
+                alliance_id = row.get("alliance_id")
+                source = row.get("source") or "manual"
+            elif isinstance(row, (list, tuple)) and len(row) == 2:
+                a_raw, b_raw = row
+                alliance_id, source = None, "manual"
+            else:
                 continue
-            a, b = self.match_system(pair[0]), self.match_system(pair[1])
+            if not a_raw or not b_raw:
+                continue
+            a, b = self.match_system(a_raw), self.match_system(b_raw)
             if a is None or b is None or a.id == b.id:
                 continue
             bridges.setdefault(a.id, set()).add(b.id)
             bridges.setdefault(b.id, set()).add(a.id)
-            resolved.append([a.name, b.name])
+            owner[(a.id, b.id) if a.id < b.id else (b.id, a.id)] = alliance_id
+            resolved.append({"a": a.name, "b": b.name,
+                             "alliance_id": alliance_id, "source": source})
         self.bridges = bridges
+        self.bridge_owner = owner
         return resolved
 
     # -- scouted wormholes --------------------------------------------------

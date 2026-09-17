@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from ...data import docking
 from ...data.ships import Ship
 from ..collapsible import Section
-from ..theme import GUTTER, TEXT_MUTED, pad
+from ..theme import GUTTER, TEXT_MUTED, WARN, pad
 
 _ROLE_SYS = Qt.ItemDataRole.UserRole
 _STATUS_ICON = {"ok": "✓", "risky": "⚠", "no docking": "✗"}
@@ -232,8 +232,21 @@ class CharacterPanel(QWidget):
         return page
 
     # -- cyno alts ----------------------------------------------------------
+    def set_cyno_remembered(self, age: str):
+        """Label a list restored from disk as remembered, not current.
+
+        Uses the same line as the live freshness label, in the warning
+        colour: the difference between "scanned two minutes ago" and
+        "remembered from yesterday" decides whether you can trust it.
+        """
+        self.lbl_cyno_age.setText(f"⚠ remembered from {age} — rescan to confirm")
+        self.lbl_cyno_age.setStyleSheet(f"color:{WARN}; font-size:11px;")
+
     def set_cyno_freshness(self, fetched_at, expires_at):
         """Show when the cached asset data was read and when it expires."""
+        # Clear any "remembered" styling: this is live data again.
+        self.lbl_cyno_age.setStyleSheet(
+            f"color:{TEXT_MUTED}; font-size:11px;")
         if not fetched_at:
             self.lbl_cyno_age.setText("")
             return

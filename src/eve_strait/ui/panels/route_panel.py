@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...jump import router
 from ..collapsible import Section
 from ..theme import TEXT_MUTED, WARN, compressible, pad, shrinkable
 from ..models import DockOption, Waypoint, docks_for_system, effective_dock
@@ -35,6 +36,67 @@ from ..models import DockOption, Waypoint, docks_for_system, effective_dock
 _ROLE_SYS = Qt.ItemDataRole.UserRole
 _ROLE_UID = Qt.ItemDataRole.UserRole + 1
 _STATUS_ICON = {True: "✓", False: "✗"}
+
+
+def _hole_label(info, src_id, dst_id) -> str:
+    """The signatures to fly this leg, in the order you need them.
+
+    A wormhole leg is unflyable without these: you cannot warp to a hole you
+    cannot find on scan. A Thera crossing needs two -- the one where you are
+    standing and the one *inside Thera* that leads onward -- and the arrival
+    signature is shown after the arrow so you can confirm you came out at
+    the right hole, and find it again on the way back.
+    """
+    from ...esi import evescout
+
+    steps = evescout.crossing(info or {}, src_id, dst_id)
+    parts = [sig or "sig ?" for _where, sig in steps]
+    arrive = evescout.arrival_sig(info or {}, dst_id)
+    via = (info or {}).get("via", "wormhole").lower()
+    label = " → ".join(parts)
+    if arrive:
+        label += f" ⇒ {arrive}"
+    return f"{via} {label}"
+
+
+def _hole_age(info) -> str:
+    """How long ago this wormhole was last scanned, for the leg table.
+
+    An unknown timestamp reads "age ?" and never "0m". Presenting a hole
+    nobody has confirmed as freshly scouted is the one lie this column
+    exists to avoid.
+    """
+    from ...esi import evescout
+
+    minutes = evescout.edge_age_minutes(info or {})
+    if minutes is None:
+        return "age ?"
+    if minutes < 90:
+        return f"{minutes:.0f}m old"
+    return f"{minutes / 60:.1f}h old"
+
+
+def _bridge_cost(ship, dest, capital) -> str:
+    """Ansiblex capacitor cost for this activation, as zone and TJ.
+
+    Needs the owning alliance's capital to know the zone, and a hull this
+    app models per-class to know the base cost. Either missing yields "-"
+    or "? TJ" rather than a number: a wrong multiplier is worse than an
+    absent one, and 0 TJ is a real answer that only zone 1 earns.
+    """
+    from ...data.universe import Universe
+    from ...jump import ansiblex
+
+    if ship is None or dest is None or capital is None:
+        return "-"
+    distance = Universe.distance_ly(dest, capital)
+    zone = ansiblex.zone_for(distance)
+    tj = ansiblex.capacitor_cost(ship.hull_class, distance)
+    if tj is None:
+        return f"zone {zone}, ? TJ"
+    if tj == 0:
+        return f"zone {zone}, free"
+    return f"zone {zone}, {tj:g} TJ"
 
 
 class RoutePanel(QWidget):
@@ -47,6 +109,9 @@ class RoutePanel(QWidget):
     changed = Signal()
     autoroute_requested = Signal()
     gate_assist_requested = Signal()
+    # Distinct from `changed`: these alter which edges exist at all, so the
+    # wormhole set has to be rebuilt, not merely re-planned over.
+    hole_filters_changed = Signal()
     dotlan_imported = Signal(object)     # data.dotlan.DotlanRoute
 
     def __init__(self, ctx):
@@ -223,8 +288,49 @@ class RoutePanel(QWidget):
             "Connections are scanned by volunteers and expire within hours — "
             "check before you commit.")
         compressible(self.chk_holes)
-        self.chk_holes.toggled.connect(self._emit_changed)
+        # Seeded from the box's own initial state so the two cannot drift.
+        self._holes_pref = self.chk_holes.isChecked()
+        self.chk_holes.toggled.connect(self._on_holes_toggled)
         sec_jumps.add(self.chk_holes)
+
+        # What the pilot will accept from a scouted hole, on top of the mass
+        # limit the hull already enforces.
+        self.spin_hole_age = QSpinBox()
+        self.spin_hole_age.setRange(0, 1440)
+        self.spin_hole_age.setSingleStep(15)
+        self.spin_hole_age.setValue(0)
+        self.spin_hole_age.setPrefix("     Max scan age ")
+        self.spin_hole_age.setSuffix(" min")
+        self.spin_hole_age.setSpecialValueText("     Max scan age: any")
+        self.spin_hole_age.setToolTip(
+            "Ignore scouted holes nobody has looked at for this long.\n"
+            "0 accepts any age. A hole with no timestamp counts as unknown "
+            "and is dropped whenever a limit is set — asking for fresh data "
+            "means unknown does not qualify.")
+        compressible(self.spin_hole_age)
+        self.spin_hole_age.valueChanged.connect(self._emit_hole_filters)
+        sec_jumps.add(self.spin_hole_age)
+
+        self.chk_hole_eol = QCheckBox("     Allow end-of-life wormholes")
+        self.chk_hole_eol.setChecked(True)
+        self.chk_hole_eol.setToolTip(
+            "An end-of-life hole may collapse within hours.\n"
+            "EVE-Scout does not report lifetime, so this only affects holes "
+            "from a Wanderer map.")
+        compressible(self.chk_hole_eol)
+        self.chk_hole_eol.toggled.connect(self._emit_hole_filters)
+        sec_jumps.add(self.chk_hole_eol)
+
+        self.chk_hole_mass = QCheckBox("     Allow mass-reduced wormholes")
+        self.chk_hole_mass.setChecked(True)
+        self.chk_hole_mass.setToolTip(
+            "A reduced or critical hole may collapse on the next ship "
+            "through — possibly yours.\n"
+            "EVE-Scout does not report mass status, so this only affects "
+            "holes from a Wanderer map.")
+        compressible(self.chk_hole_mass)
+        self.chk_hole_mass.toggled.connect(self._emit_hole_filters)
+        sec_jumps.add(self.chk_hole_mass)
         # Filled in by set_hole_status() once the connections are fetched.
         self.lbl_holes = QLabel("")
         self.lbl_holes.setWordWrap(True)
@@ -419,6 +525,16 @@ class RoutePanel(QWidget):
     def use_ansiblex(self) -> bool:
         return self.chk_ansiblex.isChecked()
 
+    def _emit_hole_filters(self, *_):
+        self.hole_filters_changed.emit()
+
+    def hole_filters(self) -> dict:
+        """Wormhole standards, as keyword arguments for evescout.usable."""
+        age = self.spin_hole_age.value()
+        return {"max_age_min": age or None,
+                "allow_eol": self.chk_hole_eol.isChecked(),
+                "allow_reduced_mass": self.chk_hole_mass.isChecked()}
+
     def use_wormholes(self) -> bool:
         """Whether the planner may route over scouted wormholes.
 
@@ -431,15 +547,42 @@ class RoutePanel(QWidget):
         return self.chk_holes.isChecked() or self.gate_pref() == "fast"
 
     def _sync_hole_toggle(self):
-        """Show that Fastest has taken the choice out of the user's hands."""
+        """Make the checkbox tell the truth about what routing will do.
+
+        Under "Fastest" wormholes are forced on. This used to disable the box
+        and leave it *unticked*, so the one state the user could see said
+        "off" while the router was already using holes -- and the box could
+        not be clicked to correct it. Ticked-and-disabled is the honest
+        rendering of "on, and not your choice right now".
+
+        The user's own preference is remembered separately, so coming back
+        off Fastest restores what they actually chose rather than the value
+        Fastest imposed.
+        """
         forced = self.gate_pref() == "fast"
+        want = True if forced else getattr(self, "_holes_pref", False)
+        # Block signals: this is the UI catching up with a decision already
+        # made, not the user changing their mind, and re-emitting would
+        # rewrite the preference we are restoring.
+        blocked = self.chk_holes.blockSignals(True)
+        self.chk_holes.setChecked(want)
+        self.chk_holes.blockSignals(blocked)
         self.chk_holes.setEnabled(not forced)
         # Appending the reason to the label made it the widest thing in the
         # panel, which set the panel's minimum width and pushed Find off the
         # edge. The tooltip carries it instead.
         self.chk_holes.setToolTip(
-            "Always on while Gates is set to Fastest."
+            "Always on while Gates is set to Fastest — a wormhole is a gate "
+            "that happens to be temporary, so the fastest route has to be "
+            "allowed to use one.\nPick another Gates setting to choose for "
+            "yourself."
             if forced else self._HOLES_TIP)
+
+    def _on_holes_toggled(self, on: bool):
+        """Remember a choice the user actually made, then re-plan."""
+        if self.chk_holes.isEnabled():
+            self._holes_pref = bool(on)
+        self._emit_changed()
 
     def set_hole_status(self, total: int, passable: int, hull: str,
                         stale: bool = False):
@@ -969,26 +1112,37 @@ class RoutePanel(QWidget):
 
     # ---- results ----------------------------------------------------------
     def display_plan(self, plan):
-        self.table.setRowCount(len(plan.legs))
-        for i, leg in enumerate(plan.legs):
+        # Contiguous gate hops become one row: a capital route can gate twenty
+        # times between two jumps, and listing each buries the jumps.
+        rows = router.collapse_gate_legs(plan.legs)
+        ship = self.ctx.current_ship()
+        capital = getattr(self.ctx, "my_capital_system", None)
+        self.table.setRowCount(len(rows))
+        for i, (leg, count) in enumerate(rows):
             if leg.mode == "hole":
                 # Which hub, and the signature to search for at this end --
                 # without those the leg cannot actually be flown.
                 info = (self.ctx.universe.hole_between(leg.src.id, leg.dst.id)
                         if getattr(self.ctx, "universe", None) else None)
-                via = (info or {}).get("via", "wormhole")
-                sig = (info or {}).get("sigs", {}).get(leg.src.id)
-                label = f"{via.lower()} {sig}" if sig else via.lower()
+                label = _hole_label(info, leg.src.id, leg.dst.id)
+                # Scan age goes in the Fuel column, which a hole never uses:
+                # a wormhole costs no isotopes, and how long ago somebody
+                # last looked at it matters far more to whether it is there.
                 vals = [label, leg.src.name, leg.dst.name,
-                        f"{leg.distance_ly:.2f}", "-", "-",
+                        f"{leg.distance_ly:.2f}", _hole_age(info), "-",
                         f"{leg.fatigue_after_min:.0f}m", "✓"]
             elif leg.mode == "bridge":
+                # Capacitor cost is the structure's, not the ship's, so it
+                # goes in the Fuel column where a bridge showed "-".
                 vals = ["ansiblex", leg.src.name, leg.dst.name,
-                        f"{leg.distance_ly:.2f}", "-",
+                        f"{leg.distance_ly:.2f}",
+                        _bridge_cost(ship, leg.dst, capital),
                         f"{leg.cooldown_min:.1f}m",
                         f"{leg.fatigue_after_min:.0f}m", "✓"]
             elif leg.mode == "gate":
-                vals = ["gate", leg.src.name, leg.dst.name, f"{leg.distance_ly:.1f}",
+                label = "gate" if count == 1 else f"gate ×{count}"
+                vals = [label, leg.src.name, leg.dst.name,
+                        f"{leg.distance_ly:.1f}",
                         "-", "-", f"{leg.fatigue_after_min:.0f}m", "✓"]
             else:
                 ok = "✓" if leg.in_range else f"✗ {leg.reason}"
@@ -1004,9 +1158,8 @@ class RoutePanel(QWidget):
             hrs = plan.total_time_min / 60.0
             warn = ("" if plan.all_in_range else
                     "   ⚠ some legs invalid (range / hi-sec) - use Auto-route to bridge")
-            bridges = f", {plan.bridges} ansiblex" if plan.bridges else ""
             self.totals.setText(
-                f"{plan.jumps} jump(s), {plan.gates} gate(s){bridges} · "
+                f"{router.compose(plan)} · "
                 f"{plan.total_fuel:,} isotopes · time ≈ {plan.total_time_min:.0f} min "
                 f"({hrs:.1f} h) · peak fatigue {plan.peak_fatigue_min:.0f}m · "
                 f"peak reactivation {plan.peak_reactivation_min:.1f}m{warn}")

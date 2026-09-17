@@ -52,6 +52,29 @@ class RoutePlan:
         return sum(1 for leg in self.legs if leg.mode == "hole")
 
 
+# Display order and noun for each leg mode. Ordered by how much a reader
+# cares: what you flew, then what carried you.
+_MODE_NOUNS = (("jump", "jump"), ("gate", "gate"),
+               ("bridge", "ansiblex"), ("hole", "wormhole"))
+
+
+def compose(plan: "RoutePlan") -> str:
+    """What this route is made of, e.g. "12 jumps, 3 gates, 1 wormhole".
+
+    Modes that do not appear are left out rather than printed as zero: a
+    plain gate route should not advertise the wormholes it did not use.
+    """
+    counts: dict[str, int] = {}
+    for leg in plan.legs:
+        counts[leg.mode] = counts.get(leg.mode, 0) + 1
+    parts = []
+    for mode, noun in _MODE_NOUNS:
+        n = counts.get(mode, 0)
+        if n:
+            parts.append(f"{n} {noun}" + ("s" if n != 1 else ""))
+    return ", ".join(parts)
+
+
 def simulate(
     ship: Ship,
     skills: Skills,
@@ -266,6 +289,7 @@ def plan_multimodal(
     gate_pref: str = "fast",
     jump_cost: float | None = None,
     use_ansiblex: bool = True,
+    my_alliance_id: int | None = None,
     use_wormholes: bool = False,
     haven=None,
     haven_penalty: float = 0.35,
@@ -283,7 +307,11 @@ def plan_multimodal(
       * a jump may originate anywhere (including high-sec) but can only
         *land in* security < 0.5 (no cyno can be lit in high-sec);
       * capitals/supers cannot use high-sec gates at all (only jump freighters
-        and other subcap hulls may gate through high-sec).
+        and other subcap hulls may gate through high-sec);
+      * capitals/supers cannot use an Ansiblex at all, the Rorqual excepted;
+      * an Ansiblex may be used only by the alliance that owns it. An owner we
+        do not know is trusted rather than blocked -- a hand-typed gate is the
+        user asserting access we cannot verify.
 
     Returns (systems, modes) where modes[i] is how leg i (systems[i]->[i+1])
     is travelled ("jump" or "gate"), or None if unreachable.
@@ -362,13 +390,26 @@ def plan_multimodal(
                     prev[gid] = (nid, "gate")
                     heapq.heappush(pq, (nc, gid))
 
-        # Ansiblex jump-gate edges: one activation covers any distance, and
-        # capitals can use them. Not blocked by "only jumps" -- an Ansiblex is
-        # a jump, not a stargate.
-        for bid in (universe.bridges.get(nid, ()) if use_ansiblex else ()):
+        # Ansiblex jump-gate edges: one activation covers any distance. Not
+        # blocked by "only jumps" -- an Ansiblex is a jump, not a stargate.
+        #
+        # Since Cradle of War (2026-09-22) capitals and supercapitals may not
+        # use them at all, the Rorqual excepted. An ineligible hull simply has
+        # no edge here, the same shape as a wormhole too small to enter.
+        bridges = (universe.bridges.get(nid, ())
+                   if use_ansiblex and docking.ansiblex_allowed(ship) else ())
+        for bid in bridges:
             b = universe.systems.get(bid)
+            # Access is alliance-only since Cradle of War. An owner we do not
+            # know is trusted rather than blocked -- a hand-typed gate is the
+            # user asserting access we have no way to verify, and refusing it
+            # would break their setup on upgrade.
+            owner = universe.bridge_owner.get(
+                (nid, bid) if nid < bid else (bid, nid))
             if (b is None or blocked(bid) or edge_banned(nid, bid)
-                    or not docking.gate_allowed(ship, b.security)):
+                    or not docking.gate_allowed(ship, b.security)
+                    or (owner is not None and my_alliance_id is not None
+                        and owner != my_alliance_id)):
                 continue
             nc = c + w_gate
             if nc < best.get(bid, float("inf")):
@@ -473,11 +514,46 @@ def gate_runs(systems, modes):
     return runs
 
 
+def collapse_gate_legs(legs) -> list[tuple["Leg", int]]:
+    """Group contiguous gate legs, for display only.
+
+    Returns [(leg, count)]. The merged leg carries the run's first source and
+    its last destination, so one row reads "A -> D, gate x3".
+
+    Only gates collapse. Two wormholes in a row are two distinct holes, each
+    needing its own signature to fly, and two jumps each cost their own fuel
+    and fatigue -- merging either would hide the thing the row exists to say.
+    """
+    from dataclasses import replace
+
+    out: list[tuple[Leg, int]] = []
+    run: list[Leg] = []
+
+    def flush():
+        if not run:
+            return
+        merged = replace(run[0], dst=run[-1].dst,
+                         distance_ly=sum(l.distance_ly for l in run),
+                         fatigue_after_min=run[-1].fatigue_after_min)
+        out.append((merged, len(run)))
+        run.clear()
+
+    for leg in legs:
+        if leg.mode == "gate":
+            run.append(leg)
+            continue
+        flush()
+        out.append((leg, 1))
+    flush()
+    return out
+
+
 def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                        use_wormholes=False,
+                        my_alliance_id=None, use_wormholes=False,
                         haven=None, jammed=None, danger=None,
-                        can_land=None, avoid=None, strategy="min_time"):
+                        can_land=None, avoid=None, avoid_edges=None,
+                        strategy="min_time"):
     """Quantify what stargates buy you on this route.
 
     Compares a pure jump route against the best jump+gate route, so you can
@@ -488,9 +564,11 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         res = plan_multimodal(universe, ship, skills, origin, destination,
                               minimize=minimize, gate_pref=gate_pref,
                               jump_cost=cost, use_ansiblex=use_ansiblex,
+                              my_alliance_id=my_alliance_id,
                               use_wormholes=holes,
                               haven=haven, jammed=jammed, danger=danger,
-                              can_land=can_land, avoid=avoid)
+                              can_land=can_land, avoid=avoid,
+                              avoid_edges=avoid_edges)
         if res is None:
             return None
         return _plan_stats(ship, skills, res[0], res[1], strategy)
@@ -534,6 +612,7 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
         probe = plan_multimodal(universe, ship, skills, origin, destination,
                                 minimize="jumps", gate_pref=gate_pref,
                                 jump_cost=jump_cost, use_ansiblex=use_ansiblex,
+                                my_alliance_id=my_alliance_id,
                                 can_land=can_land, avoid=avoid,
                                 avoid_edges=set(edges))
         annotated.append({
@@ -570,9 +649,9 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
 
 def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
-                  use_wormholes=False,
+                  my_alliance_id=None, use_wormholes=False,
                   haven=None, jammed=None, danger=None,
-                  can_land=None, avoid=None):
+                  can_land=None, avoid=None, avoid_edges=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
     consecutive pair with jumps/gates. Every input waypoint is preserved as an
     anchor. Returns (systems, modes) or None if any leg is unreachable."""
@@ -584,9 +663,11 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
         res = plan_multimodal(universe, ship, skills, a, b, minimize=minimize,
                               gate_pref=gate_pref, jump_cost=jump_cost,
                               use_ansiblex=use_ansiblex,
+                              my_alliance_id=my_alliance_id,
                               use_wormholes=use_wormholes, haven=haven,
                               jammed=jammed, danger=danger,
-                              can_land=can_land, avoid=avoid)
+                              can_land=can_land, avoid=avoid,
+                              avoid_edges=avoid_edges)
         if res is None:
             return None
         segs, segmodes = res           # segs[0] == a, segs[-1] == b

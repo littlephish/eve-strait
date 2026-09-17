@@ -1,6 +1,8 @@
 """Main window: owns shared state (universe, ESI) and coordinates the panels."""
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
@@ -15,7 +17,7 @@ from .. import config
 from ..data.universe import Universe
 from ..esi import auth, images
 from ..esi.client import EsiClient
-from ..jump import router
+from ..jump import ansiblex, router
 from .map_view import MapView
 from .panels.character_panel import CharacterPanel
 from .panels.route_panel import RoutePanel
@@ -111,6 +113,14 @@ class MainWindow(QMainWindow):
         self.my_alliance_id: int | None = None
         self.incursion_systems: set[int] = set()
         self.avoided_ids: set[int] = set()
+        # Specific connections the user has rejected: {pair: {until, sig}}.
+        # Distinct from avoided_ids -- the system is fine, this link is not.
+        #
+        # Timestamped because a wormhole is not permanent. No natural hole
+        # outlives 24 hours, so a rejection that never expired would outlive
+        # its subject and then silently refuse whatever new hole happened to
+        # join the same two systems.
+        self.ignored_edges: dict[tuple[int, int], dict] = {}
         self._ansiblex_pending: list = []
         self.docking_rights_ids: set[int] = set()
         self.starbase_systems: dict[int, int] = {}
@@ -118,6 +128,9 @@ class MainWindow(QMainWindow):
         self._wanderer_data: dict = {}
         self._hole_data: dict = {}
         self.sov_names: dict[int, str] = {}
+        # {alliance_id: capital system_id}, which sets Ansiblex zones.
+        self.sov_capitals: dict[int, int] = {}
+        self._zone_focus_alliance: int | None = None
         self._built = False
 
         self._status = QLabel("Loading New Eden map data...")
@@ -137,6 +150,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_character_list()
         self._load_cached_dockables()
+        self._load_cached_cyno_alts()
         if self.token:
             self._fetch_contacts()
             self._fetch_starbases()
@@ -241,11 +255,20 @@ class MainWindow(QMainWindow):
         turnur = self.universe.by_name("Turnur")
         edges = dict(evescout.graph(conns, turnur.id if turnur else None))
 
+        # Both sources routinely describe the same hole. Merge them field by
+        # field rather than keeping whichever record is roomier: picking one
+        # wholesale discarded the other's end-of-life and mass status, which
+        # is exactly what the safety filters below read.
         for key, info in wanderer.edges(getattr(self, "_wanderer_data", {}) or {},
                                         self.universe.systems).items():
-            old = edges.get(key)
-            if old is None or info["max_t"] > old["max_t"]:
-                edges[key] = info
+            edges[key] = evescout.merge_edge(edges.get(key), info)
+
+        # Drop the holes the pilot has said they will not fly: too stale, end
+        # of life, or mass-reduced. Filtered here rather than in the router so
+        # a rejected hole vanishes from the map too -- a ring you are told to
+        # ignore is worse than no ring.
+        prefs = self.route.hole_filters()
+        edges = {k: v for k, v in edges.items() if evescout.usable(v, **prefs)}
 
         n = self.universe.set_wormholes(edges)
         # Which hubs each system connects to, for the map tooltip.
@@ -301,15 +324,153 @@ class MainWindow(QMainWindow):
         result = result or {}
         self.sov_owners = result.get("owners", {})
         self.sov_names = result.get("names", {})
+        self.sov_capitals = result.get("capitals", {})
         if self.sov_owners:
             self.statusBar().showMessage(
                 f"Sovereignty loaded for {len(self.sov_owners)} systems.", 5000)
         if self.map_view:
             self.map_view.set_sov_lookup(self.sov_label)
+            self.refresh_ansiblex_zones()
             # Only rebuild if the layer is actually on; baking costs a second
             # of worker time and an off layer should cost nothing.
             if self.act_layers["sov"].isChecked():
                 self.refresh_sov_territory()
+
+    def ansiblex_zones(self, only_alliance: int | None = None) -> dict:
+        """{system_id: zone} for every system whose holder has a capital.
+
+        The zone is measured from the holder's OWN capital, which is what
+        makes this drawable for every alliance at once: one holder per system,
+        so one zone per system and no overlap.
+
+        Systems held by a corporation or a faction have no capital and so no
+        zone -- they stay unshaded rather than being guessed at.
+
+        ``only_alliance`` restricts the result to one holder. Focus mode needs
+        that: drawing one alliance's range rings over everybody's shading puts
+        another alliance's zone-5 system inside the focused alliance's zone-1
+        ring, which is true but reads as a contradiction.
+        """
+        if not (self.universe and self.sov_owners and self.sov_capitals):
+            return {}
+        caps = {aid: self.universe.systems[sid]
+                for aid, sid in self.sov_capitals.items()
+                if sid in self.universe.systems}
+        out = {}
+        for sid, (owner_id, kind) in self.sov_owners.items():
+            if kind != "alliance":
+                continue
+            if only_alliance is not None and owner_id != only_alliance:
+                continue
+            cap = caps.get(owner_id)
+            sysm = self.universe.systems.get(sid)
+            if cap is None or sysm is None:
+                continue
+            out[sid] = ansiblex.zone_for(Universe.distance_ly(sysm, cap))
+        return out
+
+    def capital_system_ids(self) -> list[int]:
+        """Capital systems that exist on the map, for the HQ markers."""
+        if not self.universe:
+            return []
+        return [sid for sid in (self.sov_capitals or {}).values()
+                if sid in self.universe.systems]
+
+    def _refresh_wormholes_now(self):
+        """Re-read every wormhole source, ignoring the cache.
+
+        Both sources, not just EVE-Scout: a Wanderer map is your own chain
+        and goes stale just as fast. The 15-minute cache is there to spare a
+        volunteer-run service on every replan, which is exactly the wrong
+        behaviour when somebody has explicitly asked whether a hole is still
+        there.
+        """
+        self.statusBar().showMessage("Refreshing wormhole connections…", 4000)
+        self._fetch_wormholes(force=True)
+        if config.get_wanderer_map():
+            self._fetch_wanderer(force=True)
+
+    def _on_hole_filters_changed(self):
+        """Rebuild the wormhole set, then re-plan over what survived."""
+        if not self.universe:
+            return
+        self._install_wormholes()
+        self._recalc()
+
+    @property
+    def my_capital_system(self):
+        """This character's alliance's capital, which sets Ansiblex zones.
+
+        None when not logged in, or when the alliance holds no sovereignty.
+        Callers must show the cost as unknown rather than assume zone 1,
+        which would price every activation at free.
+        """
+        if not (self.universe and self.my_alliance_id):
+            return None
+        sid = (self.sov_capitals or {}).get(self.my_alliance_id)
+        return self.universe.systems.get(sid) if sid else None
+
+    def refresh_ansiblex_zones(self):
+        if not self.map_view:
+            return
+        if not self.act_layers["zones"].isChecked():
+            self.map_view.set_ansiblex_zones(None)
+            return
+        focus = self._zone_focus_alliance
+        if focus is not None:
+            cap_id = (self.sov_capitals or {}).get(focus)
+            self.map_view.set_ansiblex_zones(
+                self.ansiblex_zones(focus), [cap_id] if cap_id else [])
+        else:
+            self.map_view.set_ansiblex_zones(
+                self.ansiblex_zones(), self.capital_system_ids())
+
+    def show_zone_focus(self, system_id: int):
+        """Draw the 5/10/15/20 ly rings for whoever holds this system."""
+        if not (self.map_view and self.universe):
+            return
+        owner = (self.sov_owners or {}).get(system_id)
+        if not owner or owner[1] != "alliance":
+            self.statusBar().showMessage(
+                "No alliance holds that system, so it has no capital.", 4000)
+            return
+        cap_id = (self.sov_capitals or {}).get(owner[0])
+        cap = self.universe.systems.get(cap_id) if cap_id else None
+        if cap is None:
+            self.statusBar().showMessage(
+                f"{self.sov_names.get(owner[0], 'That alliance')} holds no "
+                f"capital system.", 4000)
+            return
+        # Asking for an alliance's zones IS asking for the zone layer. It is
+        # off by default, and without this the rings drew over an uncoloured
+        # map -- four dashed circles and no data, which is worse than nothing.
+        # Set the focus first: switching the layer on triggers a refresh, and
+        # that refresh should already know it is meant to be focused.
+        self._zone_focus_alliance = owner[0]
+        act = self.act_layers["zones"]
+        if not act.isChecked():
+            act.setChecked(True)          # fires _toggle_layer -> refresh
+        else:
+            self.refresh_ansiblex_zones()
+        self.map_view.set_zone_focus(cap)
+        self.map_view.set_zone_caption(
+            f"Ansiblex zones — {self.sov_names.get(owner[0], 'alliance')}"
+            f", capital {cap.name}")
+        here = self.universe.systems.get(system_id)
+        dist = Universe.distance_ly(here, cap) if here else 0.0
+        zone = ansiblex.zone_for(dist)
+        self.statusBar().showMessage(
+            f"{self.sov_names.get(owner[0], 'Alliance')} capital: {cap.name}. "
+            f"{here.name if here else '?'} is {dist:.1f} ly out - zone {zone}.",
+            8000)
+
+    def clear_zone_focus(self):
+        """Drop the rings and restore every alliance's shading."""
+        self._zone_focus_alliance = None
+        if self.map_view:
+            self.map_view.set_zone_focus(None)
+            self.map_view.set_zone_caption("")
+            self.refresh_ansiblex_zones()
 
     def sov_label(self, system_id: int):
         """Short owner label for map hover, e.g. 'Goonswarm Federation'."""
@@ -1186,11 +1347,18 @@ class MainWindow(QMainWindow):
         for text, slot in (
             ("Settings...", self._open_settings),
             ("Reload map data", self._reload_map),
+            ("Refresh wormhole connections", self._refresh_wormholes_now),
             ("Log out", self._logout),
             ("Quit", self.close),
         ):
             a = QAction(text, self)
             a.triggered.connect(slot)
+            if text.startswith("Refresh wormhole"):
+                a.setShortcut("F5")
+                a.setToolTip(
+                    "Re-read EVE-Scout and your Wanderer map now, ignoring "
+                    "the 15-minute cache. Connections expire in hours, so "
+                    "check before committing a freighter.")
             m.addAction(a)
 
         help_menu = self.menuBar().addMenu("&Help")
@@ -1295,6 +1463,11 @@ class MainWindow(QMainWindow):
         ("sov", "Sovereignty territory", False,
          "Fill null-sec space by who holds it. Off by default: it is the "
          "heaviest layer to draw."),
+        ("zones", "Ansiblex capacitor zones", False,
+         "Colour each sov system by how far it sits from its OWN alliance's "
+         "capital - green is the free zone, red the 15x band. Space with no "
+         "alliance holder greys out, and this overrides the heat map while "
+         "it is on. Right-click a system for that alliance's range rings."),
         ("cyno_alts", "My cyno alts", True,
          "Ring and name the systems where one of your own characters is "
          "sitting in a cyno-fitted ship. Populated by Scan my characters, "
@@ -1348,6 +1521,12 @@ class MainWindow(QMainWindow):
             # Territory is baked lazily the first time it is switched on.
             if key == "sov" and visible and not self.map_view._sov_items:
                 self.refresh_sov_territory()
+            # Zones likewise: computing 2,700 distances for a layer nobody
+            # switched on is work for nothing.
+            if key == "zones" and visible:
+                self.refresh_ansiblex_zones()
+            elif key == "zones":
+                self.clear_zone_focus()
         self._save_settings()
 
     def _set_all_layers(self, on: bool):
@@ -1950,6 +2129,7 @@ class MainWindow(QMainWindow):
         self.route.changed.connect(self._on_route_changed)
         self.route.dotlan_imported.connect(self._on_dotlan_imported)
         self.route.autoroute_requested.connect(self._auto_route)
+        self.route.hole_filters_changed.connect(self._on_hole_filters_changed)
         self.route.gate_assist_requested.connect(self._gate_assist)
         self.character.login_requested.connect(self._login)
         # Straight to the page it means, rather than to a settings window the
@@ -2142,7 +2322,26 @@ class MainWindow(QMainWindow):
             act_hole = menu.addAction(
                 f"Wormhole information ({len(holes)})" if len(holes) > 1
                 else "Wormhole information")
+        act_ignore = None
+        if holes:
+            touching = {p for p in self.universe.hole_info if sid in p}
+            act_ignore = menu.addAction(
+                "Stop ignoring this wormhole"
+                if touching & self.active_ignores()
+                else "Ignore this wormhole")
         act_info = menu.addAction("Show station info")
+        # Only where an alliance holds the system and has a capital -- an
+        # entry that usually reports "nothing to show" teaches people to
+        # ignore it.
+        owner = (self.sov_owners or {}).get(sid)
+        act_zone = None
+        if (owner and owner[1] == "alliance"
+                and (self.sov_capitals or {}).get(owner[0])):
+            act_zone = menu.addAction(
+                "Show Ansiblex zones for this alliance")
+        act_zone_clear = None
+        if self._zone_focus_alliance is not None:
+            act_zone_clear = menu.addAction("Clear Ansiblex zone focus")
         act_wp, wp_actions = self._add_waypoint_menu(menu)
         act_avoid = menu.addAction(
             "Stop avoiding this system" if self.is_avoided(sid)
@@ -2159,8 +2358,14 @@ class MainWindow(QMainWindow):
             self.show_wormhole_info(sid)
         elif chosen == act_sysinfo:
             self.route.show_system_info(sid)
+        elif act_ignore is not None and chosen == act_ignore:
+            self.toggle_ignored_hole(sid)
         elif chosen == act_info:
             self.route.show_station_info(sid)
+        elif act_zone is not None and chosen == act_zone:
+            self.show_zone_focus(sid)
+        elif act_zone_clear is not None and chosen == act_zone_clear:
+            self.clear_zone_focus()
         elif chosen == act_wp:
             self.set_ingame_waypoint(sid)
         elif chosen in wp_actions:
@@ -2169,6 +2374,52 @@ class MainWindow(QMainWindow):
             self.toggle_avoid(sid)
         elif act_remove is not None and chosen == act_remove:
             self.route.remove_system(sid)
+
+    def toggle_ignored_hole(self, system_id: int):
+        """Reject, or restore, every scouted hole touching this system.
+
+        Per-edge rather than per-system: the system stays perfectly routable
+        by gate or jump, it is only this connection that is refused.
+        """
+        from ..esi import evescout
+
+        touching = {p for p in self.universe.hole_info if system_id in p}
+        if not touching:
+            return
+        if touching & self.active_ignores():
+            for pair in touching:
+                self.ignored_edges.pop(pair, None)
+            msg = "Wormhole restored to routing."
+        else:
+            longest = 0.0
+            for pair in touching:
+                info = self.universe.hole_info.get(pair) or {}
+                until = evescout.ignore_expiry(info)
+                self.ignored_edges[pair] = {
+                    "until": until,
+                    # Pinned to the signature so that when this hole dies and
+                    # another links the same pair, the new one is not refused
+                    # on the strength of a decision about a different hole.
+                    "sig": (info.get("sigs") or {}).get(system_id),
+                }
+                longest = max(longest, until)
+            hours = max(0.0, (longest - time.time()) / 3600.0)
+            msg = (f"Wormhole ignored for routing, expiring in "
+                   f"{hours:.0f}h — no hole outlives that. Right-click "
+                   f"again to restore it now.")
+        self.statusBar().showMessage(msg, 8000)
+        self._recalc()
+
+    def active_ignores(self) -> set:
+        """Ignore entries still in force, pruning as a side effect."""
+        from ..esi import evescout
+
+        info = self.universe.hole_info if self.universe else {}
+        live = evescout.active_ignores(self.ignored_edges, info)
+        if len(live) != len(self.ignored_edges):
+            self.ignored_edges = {k: v for k, v in self.ignored_edges.items()
+                                  if k in live}
+        return live
 
     def holes_in(self, system_id: int) -> list[dict]:
         """Scouted EVE-Scout connections with one end in this system."""
@@ -2295,6 +2546,8 @@ class MainWindow(QMainWindow):
                    minimize=self.route.minimize(), gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   my_alliance_id=self.my_alliance_id,
+                   avoid_edges=self.active_ignores(),
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
@@ -2506,9 +2759,11 @@ class MainWindow(QMainWindow):
         avoid_page = dlg.add_page("Avoided systems", AvoidDialog(dlg, avoid_names))
 
         bridge_page = dlg.add_page("Ansiblex", AnsiblexDialog(
-            dlg, config.get_bridges()))
+            dlg, config.get_bridges(), self.my_alliance_id))
         bridge_page.btn_esi.clicked.connect(
             lambda: self._load_ansiblex_esi(bridge_page))
+        bridge_page.btn_resolve.clicked.connect(
+            lambda: self._resolve_ansiblex_owners(bridge_page))
         bridge_page.btn_search.clicked.connect(
             lambda: self._search_ansiblex(bridge_page))
         bridge_page.search_field.returnPressed.connect(
@@ -2597,7 +2852,7 @@ class MainWindow(QMainWindow):
         notes.append(msg)
 
     def _apply_bridges(self, page, notes):
-        pairs = page.pairs()
+        pairs = page.records()
         if not self.universe:
             return
         resolved = self.universe.set_bridges(pairs)
@@ -2696,13 +2951,15 @@ class MainWindow(QMainWindow):
 
     def _edit_bridges(self):
         from .dialogs import AnsiblexDialog
-        dlg = AnsiblexDialog(self, config.get_bridges())
+        dlg = AnsiblexDialog(self, config.get_bridges(), self.my_alliance_id)
         dlg.btn_esi.clicked.connect(lambda: self._load_ansiblex_esi(dlg))
+        dlg.btn_resolve.clicked.connect(
+            lambda: self._resolve_ansiblex_owners(dlg))
         dlg.btn_search.clicked.connect(lambda: self._search_ansiblex(dlg))
         dlg.search_field.returnPressed.connect(lambda: self._search_ansiblex(dlg))
         if not dlg.exec():
             return
-        pairs = dlg.pairs()
+        pairs = dlg.records()
         if self.universe:
             resolved = self.universe.set_bridges(pairs)
             bad = len(pairs) - len(resolved)
@@ -2737,7 +2994,7 @@ class MainWindow(QMainWindow):
         """Adopt queued Ansiblex links whose owner is your corp or alliance."""
         if not self._ansiblex_pending or not self.universe:
             return 0
-        known = {tuple(sorted(p)) for p in config.get_bridges()}
+        known = {tuple(sorted((r["a"], r["b"]))) for r in config.get_bridges()}
         new_pairs, still_pending = [], []
         for owner_id, (a_raw, b_raw) in self._ansiblex_pending:
             _, label = self.owner_relation_cached(owner_id)
@@ -2753,7 +3010,11 @@ class MainWindow(QMainWindow):
             if not a or not b or tuple(sorted((a.name, b.name))) in known:
                 continue
             known.add(tuple(sorted((a.name, b.name))))
-            new_pairs.append([a.name, b.name])
+            # The gate was adopted only because its owner is your corp or
+            # alliance, so your alliance is the correct owner to record.
+            new_pairs.append({"a": a.name, "b": b.name,
+                              "alliance_id": self.my_alliance_id,
+                              "source": "esi"})
         self._ansiblex_pending = still_pending
         if not new_pairs:
             return 0
@@ -2784,6 +3045,51 @@ class MainWindow(QMainWindow):
 
         w.finished_ok.connect(done)
         w.failed.connect(lambda m: (dlg.btn_esi.setEnabled(True),
+                                    dlg.status.setText(m)))
+        self._run(w)
+
+    def _resolve_ansiblex_owners(self, dlg):
+        """Fill in the owner of every link that does not have one.
+
+        On demand only: each link costs a structure search plus a structure
+        read against the rate-limit budget, so this must never run on load.
+        """
+        if not self.token:
+            dlg.status.setText("Log in with EVE first.")
+            return
+        if not self.esi:
+            self.esi = EsiClient(self.token, config.get_client_id())
+        todo = [(a, b) for a, b in dlg.pairs()
+                if dlg._known.get(frozenset((a, b))) is None]
+        if not todo:
+            dlg.status.setText("Every link already has a known owner.")
+            return
+        dlg.btn_resolve.setEnabled(False)
+        dlg.status.setText(f"Resolving {len(todo)} link(s)…")
+
+        def work(progress=None):
+            found = {}
+            for i, (a, b) in enumerate(todo, start=1):
+                if progress:
+                    progress(f"Resolving {i}/{len(todo)}: {a} » {b}")
+                corp_id = self.esi.ansiblex_owner(a, b)
+                if not corp_id:
+                    continue
+                details = self.esi.owner_details(corp_id) or {}
+                alliance_id = details.get("alliance_id")
+                if alliance_id:
+                    found[frozenset((a, b))] = alliance_id
+            return found
+
+        w = Worker(work)
+        w.progress.connect(dlg.status.setText)
+
+        def done(found):
+            dlg.btn_resolve.setEnabled(True)
+            dlg.apply_owners(found or {}, self.my_alliance_id)
+
+        w.finished_ok.connect(done)
+        w.failed.connect(lambda m: (dlg.btn_resolve.setEnabled(True),
                                     dlg.status.setText(m)))
         self._run(w)
 
@@ -2837,6 +3143,8 @@ class MainWindow(QMainWindow):
                    origin, dest, gate_pref=self.route.gate_pref(),
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
+                   my_alliance_id=self.my_alliance_id,
+                   avoid_edges=self.active_ignores(),
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
@@ -2916,6 +3224,30 @@ class MainWindow(QMainWindow):
         self._refresh_character_list()
         self._render_character()
 
+    def _load_cached_cyno_alts(self):
+        """Restore the last roll-call so a restart does not lose it.
+
+        Shown with its age rather than as current. Location is near-live only
+        while the app is running; across a restart the alt may have moved,
+        docked or logged off, and a remembered position presented as a live
+        one is the kind of thing that gets a fleet bridged into nothing.
+        """
+        from ..data import cyno as _cyno
+
+        alts, notes, fetched = _cyno.load_alts()
+        if not alts:
+            return
+        self.cyno_alts = alts
+        self._cyno_fetched = fetched
+        age = _cyno.describe_age(fetched)
+        self.character.set_cyno_alts(
+            alts, list(notes) + [f"Remembered from a scan {age}; "
+                                 f"rescan to confirm they are still there."],
+            self._system_name)
+        self.character.set_cyno_remembered(age)
+        if self.map_view:
+            self.map_view.set_cyno_alts(alts)
+
     def _scan_cyno_alts(self, force: bool = False):
         """Roll-call of which linked characters can light a cyno, and where."""
         if not self.tokens:
@@ -2940,8 +3272,12 @@ class MainWindow(QMainWindow):
         self._run(w, "Scanning characters for cynos…")
 
     def _on_cyno_alts(self, result):
+        from ..data import cyno as _cyno
+
         alts, notes = result
         self.cyno_alts = alts
+        self._cyno_fetched = time.time()
+        _cyno.save_alts(alts, notes)
         self.character.set_cyno_scanning(False)
         from ..esi.transport import get_transport
         if self.token:

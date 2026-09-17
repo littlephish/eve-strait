@@ -191,6 +191,213 @@ def describe_age(stamp: str | None) -> str:
     return f"{hours / 24:.1f} days ago"
 
 
+def edge_age_minutes(info) -> float | None:
+    """Minutes since anybody last touched this edge's scan, or None.
+
+    A collapsed Thera crossing is two holes, so it reports the age of the
+    *staler* end: a route is only as trustworthy as its worst link.
+
+    None means unknown, and callers must render it as unknown. Treating a
+    missing timestamp as fresh is how an eight-hour-old hole gets presented
+    as a live one.
+    """
+    stamps = list((info or {}).get("updated_at_all") or [])
+    if not stamps:
+        stamp = (info or {}).get("updated_at")
+        stamps = [stamp] if stamp else []
+    ages = [age_hours(s) for s in stamps]
+    ages = [a for a in ages if a is not None]
+    if not ages:
+        return None
+    return max(ages) * 60.0
+
+
+# The longest any natural wormhole lives. B274 (hi-sec) tops out at 24 hours
+# and most types manage 16, so nothing a user rejects today can still be there
+# tomorrow. Used as the ceiling on how long "ignore this hole" stays in force.
+MAX_LIFETIME_HOURS = 24.0
+
+# Held past the hole's expected death before releasing an ignore. Remaining
+# hours is an estimate from a volunteer's last look, and a hole that outlives
+# it by a few minutes would otherwise pop straight back into routing -- which
+# is precisely the moment the user is least expecting to be routed over it.
+# Erring long costs nothing: the hole is gone either way.
+IGNORE_GRACE_HOURS = 1.0
+
+
+def ignore_expiry(info, now: float | None = None) -> float:
+    """When a decision to ignore this hole stops meaning anything.
+
+    Capped at the longest a wormhole can live and shortened to the hole's own
+    remaining life where EVE-Scout reported one -- a hole with three hours
+    left cannot still be refused in five -- then held an extra hour, because
+    the reported life is an estimate rather than a guarantee.
+    """
+    now = time.time() if now is None else now
+    hours = (info or {}).get("hours")
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        hours = MAX_LIFETIME_HOURS
+    hours = max(0.0, min(hours, MAX_LIFETIME_HOURS)) + IGNORE_GRACE_HOURS
+    return now + hours * 3600.0
+
+
+def active_ignores(ignored, hole_info, now: float | None = None) -> set:
+    """Which ignore entries still apply, as a set of id pairs.
+
+    Two ways an entry stops applying, and the second is the subtle one:
+
+    * it expired -- the hole it referred to cannot still be open;
+    * the signature at that pair has changed. The same two systems can be
+      joined again by a completely different hole, and the user never
+      rejected *that* one. Without this check an ignore would quietly
+      outlive its subject and refuse a perfectly good connection.
+
+    An entry with no recorded signature (a Wanderer edge, which carries
+    none) falls back to matching on the pair alone.
+    """
+    now = time.time() if now is None else now
+    out = set()
+    for pair, entry in (ignored or {}).items():
+        if entry.get("until", 0) <= now:
+            continue
+        sig = entry.get("sig")
+        if sig:
+            current = ((hole_info or {}).get(pair) or {}).get("sigs") or {}
+            # Absent from hole_info means the hole is gone; keep the entry
+            # until it expires rather than resurrecting it on a stale replan.
+            if current and sig not in current.values():
+                continue
+        out.add(pair)
+    return out
+
+
+# Worst-first, so merging two reports of the same hole keeps the warning
+# rather than the reassurance. Anything not listed is unknown, and unknown
+# never overrides a known value.
+_LIFE_RANK = {"end of life": 2, "fresh": 1}
+_MASS_RANK = {"critical": 3, "reduced": 2, "fresh": 1}
+
+
+def _worst(a, b, rank):
+    """Whichever of two statuses is more cautious, ignoring unknowns."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if rank.get(a, 0) >= rank.get(b, 0) else b
+
+
+def merge_edge(a: dict | None, b: dict | None) -> dict:
+    """Combine two sources' views of the same connection.
+
+    Field by field, rather than picking one record wholesale. The old
+    behaviour kept whichever had the larger ``max_t`` and discarded the
+    rest, which lost exactly the fields the safety filters read: a hole a
+    Wanderer map had marked end-of-life and mass-critical passed both
+    filters because the surviving EVE-Scout record carried neither key.
+
+    The rules, and why:
+
+    * ``max_t`` takes the larger. Wanderer's default for an unidentified
+      hole is a deliberately conservative 62,000 t -- a "don't know", not a
+      measurement -- so a figure derived from a known type code beats it.
+    * ``life`` and ``mass`` take the more cautious *known* value. A warning
+      one source has and the other lacks is information, not disagreement.
+    * timestamps come from whichever record is fresher, because the
+      question they answer is "when did anyone last confirm this".
+    * ``sigs`` combine: EVE-Scout has them, Wanderer does not, and either
+      end's signature is worth having.
+    * ``hops`` takes the smaller -- the shorter way through the same pair.
+    """
+    if not a:
+        return dict(b or {})
+    if not b:
+        return dict(a or {})
+
+    age_a, age_b = edge_age_minutes(a), edge_age_minutes(b)
+    if age_b is not None and (age_a is None or age_b < age_a):
+        fresher, staler = b, a
+    else:
+        fresher, staler = a, b
+
+    out = dict(staler)
+    out.update({k: v for k, v in fresher.items() if v is not None})
+    out["max_t"] = max(a.get("max_t") or 0, b.get("max_t") or 0)
+    out["hops"] = min(a.get("hops") or 1, b.get("hops") or 1)
+    out["life"] = _worst(a.get("life"), b.get("life"), _LIFE_RANK)
+    out["mass"] = _worst(a.get("mass"), b.get("mass"), _MASS_RANK)
+    out["sigs"] = {**(staler.get("sigs") or {}), **(fresher.get("sigs") or {})}
+    via = {**(staler.get("via_sigs") or {}), **(fresher.get("via_sigs") or {})}
+    if via:
+        out["via_sigs"] = via
+    for field in ("updated_at", "updated_at_all"):
+        if fresher.get(field) is not None:
+            out[field] = fresher[field]
+    out["sources"] = sorted({*(a.get("sources") or [a.get("via")]),
+                             *(b.get("sources") or [b.get("via")])} - {None})
+    return out
+
+
+def crossing(info, src_id: int, dst_id: int) -> list[tuple]:
+    """The signatures to warp to, in the order you fly them.
+
+    Returns [(where, signature)]. ``where`` is a solar system id, or the hub
+    name for the middle of a two-hop crossing, which is not a system this app
+    knows and so has no id.
+
+    One hop is one step: find that signature and jump. A Thera crossing is
+    two, and the second is the one that used to be missing -- standing in
+    Thera with a dozen signatures on scan, this is the one that goes onward.
+
+    A signature we do not have comes back as None rather than being omitted,
+    so the step is still shown and the gap is visible.
+    """
+    sigs = (info or {}).get("sigs") or {}
+    steps = [(src_id, sigs.get(src_id))]
+    if (info or {}).get("hops", 1) > 1:
+        hub = (info or {}).get("via") or "hub"
+        steps.append((hub, ((info or {}).get("via_sigs") or {}).get(dst_id)))
+    return steps
+
+
+def arrival_sig(info, dst_id: int):
+    """The signature at the far end, as seen once you land.
+
+    Worth showing even though you do not need it to get there: it confirms
+    you came out where you meant to, and it is what you look for on the way
+    back.
+    """
+    return ((info or {}).get("sigs") or {}).get(dst_id)
+
+
+def usable(info, *, max_age_min=None, allow_eol=True,
+           allow_reduced_mass=True) -> bool:
+    """Does this edge pass the pilot's own standards?
+
+    Size and mass *limits* are not here -- fits() already refuses a hole the
+    hull physically cannot enter. These are the judgement calls on top.
+
+    Absence is treated in opposite directions on purpose. An unknown **age**
+    fails a freshness limit, because asking for fresh data is asking to be
+    sure, and a hole nobody has timestamped is exactly the one to distrust.
+    An unknown **life or mass status** passes, because EVE-Scout reports
+    neither, and rejecting on silence would drop every public hole the
+    moment either box was unticked.
+    """
+    if max_age_min is not None:
+        age = edge_age_minutes(info)
+        if age is None or age > max_age_min:
+            return False
+    if not allow_eol and (info or {}).get("life") == "end of life":
+        return False
+    if not allow_reduced_mass and (info or {}).get("mass") in ("reduced",
+                                                              "critical"):
+        return False
+    return True
+
+
 def hulls_that_fit(max_t: int) -> list[str]:
     """Which hull classes can pass a hole of this per-jump mass limit."""
     return [name for name, mass in sorted(MASS_BY_HULL_T.items(),
@@ -236,7 +443,11 @@ def graph(conns, turnur_id: int | None):
                 "wh_types": [c["wh_type"]],
                 "max_t": max_jump_t(c["wh_type"], c["size"]),
                 "sigs": {turnur_id: c["hub_sig"], c["system_id"]: c["far_sig"]},
-                "hours": c["hours"]})
+                "hours": c["hours"],
+                # How long the hole has left, versus how long ago anyone
+                # checked: different questions, both needed to judge a leg.
+                "updated_at": c.get("updated_at"),
+                "updated_at_all": [c.get("updated_at")]})
 
     for i, a in enumerate(thera):
         for b in thera[i + 1:]:
@@ -250,7 +461,16 @@ def graph(conns, turnur_id: int | None):
                              max_jump_t(b["wh_type"], b["size"])),
                 "sigs": {a["system_id"]: a["far_sig"],
                          b["system_id"]: b["far_sig"]},
-                "hours": min(hours) if hours else None})
+                # The signatures as seen from inside Thera, keyed by where
+                # each one leads. Without these the middle of a two-hop
+                # crossing cannot be flown: you arrive in Thera and have no
+                # way to tell which of its many signatures goes onward.
+                "via_sigs": {a["system_id"]: a["hub_sig"],
+                             b["system_id"]: b["hub_sig"]},
+                "hours": min(hours) if hours else None,
+                # Both ends, so edge_age_minutes can report the staler one.
+                "updated_at": a.get("updated_at"),
+                "updated_at_all": [a.get("updated_at"), b.get("updated_at")]})
     return edges
 
 

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from ..data import pochven as pochven_data
 from ..data.universe import POCHVEN_REGION_ID, System, Universe
+from ..jump.ansiblex import ZONE_BOUNDS
 from .theme import TEXT
 
 _IGNORE_XF = QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
@@ -314,6 +315,154 @@ class MapView(QGraphicsView):
             self.scene_obj.addItem(item)
             self._kill_items.append(item)
         self._apply_visibility("kills")
+
+    # Ansiblex capacitor zones, cheap to expensive. Read as a cost ramp: green
+    # is free movement, red is the 15x band.
+    ZONE_COLOUR = {1: QColor(61, 220, 132, 235), 2: QColor(181, 232, 83, 230),
+                   3: QColor(242, 199, 68, 230), 4: QColor(242, 133, 61, 230),
+                   5: QColor(224, 65, 62, 235)}
+    # Anything with no zone while the layer is on: unowned space, and space
+    # held by a corporation or faction, which have no capital to measure from.
+    ZONE_UNZONED = QColor(70, 78, 88, 190)
+
+    # The capital ring. Deliberately off the security scale and off the zone
+    # ramp, so "this is the HQ" cannot be mistaken for a zone or a sec class.
+    ZONE_CAPITAL = QColor(255, 255, 255, 230)
+    ZONE_CAPITAL_LY = 0.75
+    # Gate mesh while zones are on. The mesh is security-coloured, which is
+    # the same green-to-red the zone ramp uses, so left alone it reads as
+    # zone data that is not.
+    ZONE_GATE_DIM = QColor(86, 94, 104, 90)
+
+    def set_ansiblex_zones(self, zones: dict | None, capitals=()):
+        """Shade systems by their own holder's Ansiblex capacitor zone.
+
+        ``zones`` is {system_id: 1..5}, computed from true 3D light-year
+        distance to that holder's own capital.
+
+        **Recolours the existing dots rather than adding anything.** The first
+        version drew a filled halo per system and cost 600 ms a frame against
+        a 27 ms baseline -- 2,700 sub-ellipses in five filled paths. Painting
+        brushes onto dots the scene already draws costs nothing measurable.
+
+        Only systems an alliance actually holds get a colour. That is the
+        point rather than a limitation: the zone sets the cost of an Ansiblex,
+        gates live in the alliance's own space, and empty space between
+        holdings has no zone to be in.
+        """
+        self._zone_brushes = {
+            sid: QBrush(self.ZONE_COLOUR[z])
+            for sid, z in (zones or {}).items() if z in self.ZONE_COLOUR
+        }
+        self._zone_data = zones or {}
+        self._draw_capitals(capitals if zones else ())
+        self._dim_gate_mesh(bool(self._zone_brushes))
+        self._repaint_dots()
+
+    def set_zone_caption(self, text: str = ""):
+        """Headline for the zone key. Empty restores the all-alliances text.
+
+        Focus mode needs this: the ramp alone cannot say *whose* zones are on
+        screen, and one alliance's shading looks identical to everybody's.
+        """
+        self._zone_caption = text or ""
+        self.viewport().update()
+
+    def _draw_capitals(self, capitals):
+        """Ring each alliance capital.
+
+        Without this the HQ is one green dot among the thousand-odd others in
+        its own free zone -- the gradient says how far from the capital you
+        are, and nothing says where the capital is.
+        """
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in getattr(self, "_capital_items", ()):
+            self.scene_obj.removeItem(item)
+        self._capital_items = []
+        r = self.ZONE_CAPITAL_LY
+        path = QPainterPath()
+        for sid in capitals or ():
+            p = self._vis_pos(sid)
+            if p is None:
+                continue
+            path.addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
+        if path.isEmpty():
+            return
+        item = QGraphicsPathItem(path)
+        pen = QPen(self.ZONE_CAPITAL, 1.5)
+        pen.setCosmetic(True)
+        item.setPen(pen)
+        item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        item.setZValue(2.6)               # over the dots it rings
+        self.scene_obj.addItem(item)
+        self._capital_items.append(item)
+        self._apply_visibility("zones")
+
+    def _dim_gate_mesh(self, dim: bool):
+        """Mute the security-coloured gate mesh while zones are on.
+
+        Same reasoning as greying unzoned dots: two green-to-red ramps in one
+        picture and neither can be read. Restores the real pens when the layer
+        goes off, so this never becomes a permanent edit to the mesh.
+        """
+        items = list(getattr(self, "_gate_items", ()))
+        if not items:
+            return
+        if dim:
+            if not getattr(self, "_gate_pens", None):
+                self._gate_pens = [(i, QPen(i.pen())) for i in items]
+            pen = QPen(self.ZONE_GATE_DIM, 0.9)
+            pen.setCosmetic(True)
+            for item in items:
+                item.setPen(pen)
+        elif getattr(self, "_gate_pens", None):
+            for item, pen in self._gate_pens:
+                item.setPen(pen)
+            self._gate_pens = []
+
+    def set_zone_focus(self, origin, colour=None):
+        """Draw one alliance's 5/10/15/20 ly boundaries around its capital.
+
+        **These circles are an outer bound, not the zone.** The map is a 2D
+        projection that drops the y axis, and New Eden is 22.8 ly deep, so a
+        drawn circle flatters distance: measured across all 75 capitals, 8% of
+        what a circle encloses is actually out of that range, the worst case
+        by 9.3 ly -- nearly two whole bands.
+
+        The error only ever runs one way. Projected distance can never exceed
+        true distance, so nothing genuinely within N ly can fall outside the
+        N ly circle. That makes a ring honest as "nothing beyond this is in
+        range", and useless as "everything inside this is". The dot colours
+        carry the truth; the rings are orientation.
+
+        ``origin`` is the capital System, or None to clear.
+        """
+        for item in getattr(self, "_zone_ring_items", ()):
+            self.scene_obj.removeItem(item)
+        self._zone_ring_items = []
+        if origin is None or origin.id not in self._pos:
+            return
+        p = self._vis_pos(origin.id)
+        if p is None:
+            return
+        for bound, zone in zip(ZONE_BOUNDS, (1, 2, 3, 4)):
+            ring = QGraphicsEllipseItem(p.x() - bound, p.y() - bound,
+                                        2 * bound, 2 * bound)
+            edge = QColor(colour) if colour else QColor(self.ZONE_COLOUR[zone])
+            edge.setAlpha(190)
+            pen = QPen(edge, 1.3)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            ring.setPen(pen)
+            ring.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            ring.setZValue(-1.9)
+            ring.setToolTip(
+                f"{origin.name}: zone {zone} ends at {bound:g} ly")
+            self.scene_obj.addItem(ring)
+            self._zone_ring_items.append(ring)
+        self._apply_visibility("zones")
 
     def set_kill_lookup(self, fn):
         """callable(system_id) -> dict of kill counts, shown on hover."""
@@ -1086,11 +1235,34 @@ class MapView(QGraphicsView):
         return f"{num} {self._heat_unit}".strip()
 
     def _apply_heat(self):
-        """Repaint the dots as either the heat ramp or security colours."""
-        on = bool(self._heat_brushes) and self._overlay_on.get("heat", True)
+        self._repaint_dots()
+
+    def _repaint_dots(self):
+        """Decide what colour every system dot carries.
+
+        Three layers want the same pixel, so they queue rather than fight:
+
+            Ansiblex zones > heat map > security
+
+        Zones win while on because switching them on is an explicit request
+        for that one question, and two ramps on one dot answers neither.
+
+        While zones are on, everything without one is greyed rather than left
+        on the security scale. The zone ramp runs green to red and so does
+        security, so leaving them side by side makes a hi-sec system and a
+        free-zone system the same green -- the layer stops being readable at
+        all. Greying the remainder is what makes "coloured" mean "zoned".
+        """
+        zones_on = (bool(getattr(self, "_zone_brushes", None))
+                    and self._overlay_on.get("zones", True))
+        heat_on = bool(self._heat_brushes) and self._overlay_on.get("heat", True)
+        zone_brushes = getattr(self, "_zone_brushes", {})
         cold = QBrush(self._HEAT_COLD)
+        unzoned = QBrush(self.ZONE_UNZONED)
         for sid, dot in self._dots.items():
-            if on:
+            if zones_on:
+                dot.setBrush(zone_brushes.get(sid, unzoned))
+            elif heat_on:
                 dot.setBrush(self._heat_brushes.get(sid, cold))
             else:
                 dot.setBrush(self._sec_brushes[sid])
@@ -1099,9 +1271,16 @@ class MapView(QGraphicsView):
     def set_overlay_visible(self, name: str, visible: bool):
         """Show or hide one map layer by name."""
         self._overlay_on[name] = bool(visible)
-        if name == "heat":
-            self._apply_heat()
-            return
+        if name == "zones":
+            self._dim_gate_mesh(bool(visible)
+                                and bool(getattr(self, "_zone_brushes", None)))
+        if name in ("heat", "zones"):
+            # Both live in the dot brush rather than in items of their own,
+            # so visibility is a repaint, not a setVisible. Zones also own
+            # ring items, which fall through to the generic path below.
+            self._repaint_dots()
+            if name == "heat":
+                return
         if name == "pochven":
             # Not just chrome: hiding the inset also has to drop its systems
             # from hit-testing and from every marker layer.
@@ -1165,6 +1344,10 @@ class MapView(QGraphicsView):
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
             "cyno_alts": getattr(self, "_cyno_items", ()),
+            # Dot colours are repainted, not hidden; the ring items are the
+            # focus circles and the capital markers.
+            "zones": (list(getattr(self, "_zone_ring_items", ()))
+                      + list(getattr(self, "_capital_items", ()))),
             # Everything that belongs to the inset: its dots, its internal
             # gate mesh, its border and its labels.
             "pochven": (list(getattr(self, "_pochven_items", ()))
@@ -1354,19 +1537,33 @@ class MapView(QGraphicsView):
         self.scene_obj.addItem(c)
         self._overlay.append(c)
 
-    def draw_route(self, waypoints: list[System], modes: list[str], in_range: list[bool]):
+    # One entry per leg mode, so a route says what kind of travel each hop is
+    # without clicking anything. Dashed for a wormhole because it is
+    # temporary; solid and heavy for an Ansiblex because it is infrastructure,
+    # in the same purple refresh_bridges() draws the network with.
+    ROUTE_PENS = {
+        "gate":   ("#7fb2ff", 1.2, Qt.PenStyle.DotLine),
+        "bridge": ("#b266ff", 2.0, Qt.PenStyle.SolidLine),
+        "hole":   ("#58d2a0", 1.8, Qt.PenStyle.DashLine),
+        "jump":   ("#e0e0e0", 1.6, Qt.PenStyle.SolidLine),
+    }
+    # A jump the ship cannot actually make, whatever its mode.
+    ROUTE_BAD = ("#ff5555", 1.6, Qt.PenStyle.DashLine)
+
+    def draw_route(self, waypoints: list[System], modes: list[str],
+                   in_range: list[bool]):
         for i, (a, b) in enumerate(zip(waypoints, waypoints[1:])):
             pa, pb = self._pos[a.id], self._pos[b.id]
             line = QGraphicsLineItem(pa.x(), pa.y(), pb.x(), pb.y())
             mode = modes[i] if i < len(modes) else "jump"
-            if mode == "gate":
-                pen = QPen(QColor("#7fb2ff"), 1.2)
-                pen.setStyle(Qt.PenStyle.DotLine)
-            elif in_range[i]:
-                pen = QPen(QColor("#e0e0e0"), 1.6)
-            else:
-                pen = QPen(QColor("#ff5555"), 1.6)
-                pen.setStyle(Qt.PenStyle.DashLine)
+            # Only a jump can be out of range. A gate, bridge or hole either
+            # exists for this hull or was never offered as an edge at all.
+            bad = mode == "jump" and i < len(in_range) and not in_range[i]
+            colour, width, style = (
+                self.ROUTE_BAD if bad
+                else self.ROUTE_PENS.get(mode, self.ROUTE_PENS["jump"]))
+            pen = QPen(QColor(colour), width)
+            pen.setStyle(style)
             pen.setCosmetic(True)
             line.setPen(pen)
             line.setZValue(3)
@@ -1536,13 +1733,76 @@ class MapView(QGraphicsView):
         label = f"{ly:g} ly"
         painter.drawText(QPointF(x0 + width + 8, y0 + 4), label)
 
-        # The dots carry the heat ramp while a heat layer is on, so showing
-        # the security key at the same time would be a lie.
-        if self._heat_brushes and self._overlay_on.get("heat", True):
+        # Whatever owns the dot brush owns the key. Same precedence as
+        # _repaint_dots, or the legend describes a ramp that is not on screen.
+        if (getattr(self, "_zone_brushes", None)
+                and self._overlay_on.get("zones", True)):
+            # Three rows rather than two (caption, swatches, distance ticks),
+            # so it needs more headroom or the ticks land on the scale bar.
+            self._draw_zone_legend(painter, x0, y0 - 40)
+        elif self._heat_brushes and self._overlay_on.get("heat", True):
             self._draw_heat_legend(painter, x0, y0 - 26)
         else:
             self._draw_sec_legend(painter, x0, y0 - 26)
         painter.restore()
+
+    # What each zone costs, for the key. Zone 1 is free, so it gets the word
+    # rather than "x0" -- the whole point of the band.
+    _ZONE_LEGEND = ((1, "free"), (2, "×2"), (3, "×6"),
+                    (4, "×9"), (5, "×15"))
+
+    def _draw_zone_legend(self, painter, x0: float, y_bottom: float):
+        """Key for the Ansiblex zone ramp: each band, its multiplier, its edge.
+
+        Titled, unlike the security key, because this layer replaces the
+        dots' usual meaning and nothing else on screen says so. A user who
+        switched it on two minutes ago needs to be told what they are looking
+        at, not left to infer it from the colours.
+        """
+        sw, h = 34.0, 8.0
+        f = QFont()
+        f.setPointSize(8)
+        painter.setFont(f)
+
+        gap = 2.0
+        edges = []                        # left edge of each swatch, for ticks
+        x = x0
+        for zone, label in self._ZONE_LEGEND:
+            edges.append(x)
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            painter.fillRect(QRectF(x, y_bottom - h, sw, h),
+                             QColor(self.ZONE_COLOUR[zone]))
+            painter.setPen(QPen(QColor("#0d1117")))
+            painter.drawText(QRectF(x, y_bottom - h, sw, h),
+                             Qt.AlignmentFlag.AlignCenter, label)
+            x += sw + gap
+
+        # The unzoned swatch, set apart: it is an absence, not a sixth band.
+        x += 8
+        painter.setPen(QPen(Qt.PenStyle.NoPen))
+        painter.fillRect(QRectF(x, y_bottom - h, sw, h), self.ZONE_UNZONED)
+        painter.setPen(QPen(QColor("#cfe3ff")))
+        painter.drawText(QPointF(x + sw + 5, y_bottom - 1), "no sov")
+
+        painter.setPen(QPen(QColor("#cfe3ff")))
+        painter.drawText(QPointF(x0, y_bottom - h - 4),
+                         getattr(self, "_zone_caption", "")
+                         or ("Ansiblex capacitor zone — ly from each "
+                             "alliance's own capital"))
+
+        # Band edges under the swatches, so the ramp reads as distance and not
+        # only as cheap-to-expensive. Each tick is positioned against the
+        # swatch it belongs to; a hand-spaced string drifts the moment the
+        # swatch width or the font changes, which is exactly what it did.
+        painter.setPen(QPen(QColor("#8b949e")))
+        small = QFont(f)
+        small.setPointSize(7)
+        painter.setFont(small)
+        for edge, tick in zip(edges, ("0", "5", "10", "15", "20+")):
+            painter.drawText(QRectF(edge - sw / 2, y_bottom + 1, sw, 11),
+                             Qt.AlignmentFlag.AlignCenter, tick)
+        painter.drawText(QPointF(edges[-1] + sw * 0.75, y_bottom + 10), "ly")
+        painter.setFont(f)
 
     def _draw_heat_legend(self, painter, x0: float, y_bottom: float):
         """Key for the active heat layer: the ramp, its name and its peak."""
