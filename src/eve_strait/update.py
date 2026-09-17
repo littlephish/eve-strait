@@ -36,6 +36,44 @@ _API = "https://api.github.com/repos/{repo}/releases/latest"
 _EXE_NAME = "eve-strait.exe"
 
 
+def in_flatpak() -> bool:
+    """Running inside a Flatpak sandbox. Set by Flatpak itself."""
+    return bool(os.environ.get("FLATPAK_ID"))
+
+
+def update_check_supported() -> bool:
+    """Whether to look for a newer release at all.
+
+    Anywhere except a Flatpak, where the software centre already tells the
+    user and a second notice is only noise.
+    """
+    return not in_flatpak()
+
+
+def update_install_supported() -> bool:
+    """Whether this build can install an update over itself.
+
+    Windows only. The mechanism swaps a program folder by polling a .exe file
+    lock, with a powershell.exe fallback -- there is no equivalent elsewhere.
+    On macOS it would also be actively harmful: modifying a signed .app in
+    place invalidates its signature, after which Gatekeeper refuses to launch
+    it. Inside a Flatpak the sandbox is read-only and Flatpak does the
+    updating.
+
+    Checking and installing are deliberately separate. macOS can usefully be
+    told a new version exists while never writing over itself.
+    """
+    if in_flatpak():
+        return False
+    return sys.platform == "win32"
+
+
+# Kept as the install predicate under its original name: other modules and
+# the release skill refer to it, and quietly changing what it means is how a
+# guard stops guarding.
+updates_supported = update_install_supported
+
+
 def is_frozen() -> bool:
     """True when running as the compiled standalone build."""
     return bool(getattr(sys, "frozen", False) or globals().get("__compiled__"))
@@ -417,6 +455,10 @@ def apply_and_restart(zip_path: Path, progress=None) -> None:
 
 # -- preferences ------------------------------------------------------------
 def auto_check_enabled() -> bool:
+    # Asked before the setting is read: where checking is unsupported there is
+    # nothing for the setting to mean.
+    if not update_check_supported():
+        return False
     return bool(config.load_config().get("check_updates", True))
 
 

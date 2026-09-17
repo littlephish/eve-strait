@@ -1362,16 +1362,21 @@ class MainWindow(QMainWindow):
             m.addAction(a)
 
         help_menu = self.menuBar().addMenu("&Help")
-        act_upd = QAction("Check for updates...", self)
-        act_upd.triggered.connect(lambda: self._check_updates(explicit=True))
-        help_menu.addAction(act_upd)
         from .. import update as _update
-        self.act_auto_update = QAction("Check for updates at startup", self,
-                                       checkable=True)
-        self.act_auto_update.setChecked(_update.auto_check_enabled())
-        self.act_auto_update.toggled.connect(_update.set_auto_check)
-        help_menu.addAction(self.act_auto_update)
-        help_menu.addSeparator()
+        # Hidden rather than disabled inside a Flatpak: the software centre
+        # already handles updates there, so an update menu is not a feature
+        # this build is missing, it is one that belongs to somebody else.
+        self.act_auto_update = None
+        if _update.update_check_supported():
+            act_upd = QAction("Check for updates...", self)
+            act_upd.triggered.connect(lambda: self._check_updates(explicit=True))
+            help_menu.addAction(act_upd)
+            self.act_auto_update = QAction("Check for updates at startup", self,
+                                           checkable=True)
+            self.act_auto_update.setChecked(_update.auto_check_enabled())
+            self.act_auto_update.toggled.connect(_update.set_auto_check)
+            help_menu.addAction(self.act_auto_update)
+            help_menu.addSeparator()
         act_about = QAction("About Eve-Strait", self)
         act_about.triggered.connect(self._open_about)
         help_menu.addAction(act_about)
