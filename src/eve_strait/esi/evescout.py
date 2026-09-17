@@ -191,6 +191,27 @@ def describe_age(stamp: str | None) -> str:
     return f"{hours / 24:.1f} days ago"
 
 
+def edge_age_minutes(info) -> float | None:
+    """Minutes since anybody last touched this edge's scan, or None.
+
+    A collapsed Thera crossing is two holes, so it reports the age of the
+    *staler* end: a route is only as trustworthy as its worst link.
+
+    None means unknown, and callers must render it as unknown. Treating a
+    missing timestamp as fresh is how an eight-hour-old hole gets presented
+    as a live one.
+    """
+    stamps = list((info or {}).get("updated_at_all") or [])
+    if not stamps:
+        stamp = (info or {}).get("updated_at")
+        stamps = [stamp] if stamp else []
+    ages = [age_hours(s) for s in stamps]
+    ages = [a for a in ages if a is not None]
+    if not ages:
+        return None
+    return max(ages) * 60.0
+
+
 def hulls_that_fit(max_t: int) -> list[str]:
     """Which hull classes can pass a hole of this per-jump mass limit."""
     return [name for name, mass in sorted(MASS_BY_HULL_T.items(),
@@ -236,7 +257,11 @@ def graph(conns, turnur_id: int | None):
                 "wh_types": [c["wh_type"]],
                 "max_t": max_jump_t(c["wh_type"], c["size"]),
                 "sigs": {turnur_id: c["hub_sig"], c["system_id"]: c["far_sig"]},
-                "hours": c["hours"]})
+                "hours": c["hours"],
+                # How long the hole has left, versus how long ago anyone
+                # checked: different questions, both needed to judge a leg.
+                "updated_at": c.get("updated_at"),
+                "updated_at_all": [c.get("updated_at")]})
 
     for i, a in enumerate(thera):
         for b in thera[i + 1:]:
@@ -250,7 +275,10 @@ def graph(conns, turnur_id: int | None):
                              max_jump_t(b["wh_type"], b["size"])),
                 "sigs": {a["system_id"]: a["far_sig"],
                          b["system_id"]: b["far_sig"]},
-                "hours": min(hours) if hours else None})
+                "hours": min(hours) if hours else None,
+                # Both ends, so edge_age_minutes can report the staler one.
+                "updated_at": a.get("updated_at"),
+                "updated_at_all": [a.get("updated_at"), b.get("updated_at")]})
     return edges
 
 
