@@ -399,6 +399,9 @@ class MainWindow(QMainWindow):
         else:
             self.refresh_ansiblex_zones()
         self.map_view.set_zone_focus(cap)
+        self.map_view.set_zone_caption(
+            f"Ansiblex zones — {self.sov_names.get(owner[0], 'alliance')}"
+            f", capital {cap.name}")
         here = self.universe.systems.get(system_id)
         dist = Universe.distance_ly(here, cap) if here else 0.0
         zone = ansiblex.zone_for(dist)
@@ -412,6 +415,7 @@ class MainWindow(QMainWindow):
         self._zone_focus_alliance = None
         if self.map_view:
             self.map_view.set_zone_focus(None)
+            self.map_view.set_zone_caption("")
             self.refresh_ansiblex_zones()
 
     def sov_label(self, system_id: int):

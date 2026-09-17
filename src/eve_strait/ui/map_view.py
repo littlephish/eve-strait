@@ -359,6 +359,15 @@ class MapView(QGraphicsView):
         self._dim_gate_mesh(bool(self._zone_brushes))
         self._repaint_dots()
 
+    def set_zone_caption(self, text: str = ""):
+        """Headline for the zone key. Empty restores the all-alliances text.
+
+        Focus mode needs this: the ramp alone cannot say *whose* zones are on
+        screen, and one alliance's shading looks identical to everybody's.
+        """
+        self._zone_caption = text or ""
+        self.viewport().update()
+
     def _draw_capitals(self, capitals):
         """Ring each alliance capital.
 
@@ -1710,13 +1719,76 @@ class MapView(QGraphicsView):
         label = f"{ly:g} ly"
         painter.drawText(QPointF(x0 + width + 8, y0 + 4), label)
 
-        # The dots carry the heat ramp while a heat layer is on, so showing
-        # the security key at the same time would be a lie.
-        if self._heat_brushes and self._overlay_on.get("heat", True):
+        # Whatever owns the dot brush owns the key. Same precedence as
+        # _repaint_dots, or the legend describes a ramp that is not on screen.
+        if (getattr(self, "_zone_brushes", None)
+                and self._overlay_on.get("zones", True)):
+            # Three rows rather than two (caption, swatches, distance ticks),
+            # so it needs more headroom or the ticks land on the scale bar.
+            self._draw_zone_legend(painter, x0, y0 - 40)
+        elif self._heat_brushes and self._overlay_on.get("heat", True):
             self._draw_heat_legend(painter, x0, y0 - 26)
         else:
             self._draw_sec_legend(painter, x0, y0 - 26)
         painter.restore()
+
+    # What each zone costs, for the key. Zone 1 is free, so it gets the word
+    # rather than "x0" -- the whole point of the band.
+    _ZONE_LEGEND = ((1, "free"), (2, "×2"), (3, "×6"),
+                    (4, "×9"), (5, "×15"))
+
+    def _draw_zone_legend(self, painter, x0: float, y_bottom: float):
+        """Key for the Ansiblex zone ramp: each band, its multiplier, its edge.
+
+        Titled, unlike the security key, because this layer replaces the
+        dots' usual meaning and nothing else on screen says so. A user who
+        switched it on two minutes ago needs to be told what they are looking
+        at, not left to infer it from the colours.
+        """
+        sw, h = 34.0, 8.0
+        f = QFont()
+        f.setPointSize(8)
+        painter.setFont(f)
+
+        gap = 2.0
+        edges = []                        # left edge of each swatch, for ticks
+        x = x0
+        for zone, label in self._ZONE_LEGEND:
+            edges.append(x)
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            painter.fillRect(QRectF(x, y_bottom - h, sw, h),
+                             QColor(self.ZONE_COLOUR[zone]))
+            painter.setPen(QPen(QColor("#0d1117")))
+            painter.drawText(QRectF(x, y_bottom - h, sw, h),
+                             Qt.AlignmentFlag.AlignCenter, label)
+            x += sw + gap
+
+        # The unzoned swatch, set apart: it is an absence, not a sixth band.
+        x += 8
+        painter.setPen(QPen(Qt.PenStyle.NoPen))
+        painter.fillRect(QRectF(x, y_bottom - h, sw, h), self.ZONE_UNZONED)
+        painter.setPen(QPen(QColor("#cfe3ff")))
+        painter.drawText(QPointF(x + sw + 5, y_bottom - 1), "no sov")
+
+        painter.setPen(QPen(QColor("#cfe3ff")))
+        painter.drawText(QPointF(x0, y_bottom - h - 4),
+                         getattr(self, "_zone_caption", "")
+                         or ("Ansiblex capacitor zone — ly from each "
+                             "alliance's own capital"))
+
+        # Band edges under the swatches, so the ramp reads as distance and not
+        # only as cheap-to-expensive. Each tick is positioned against the
+        # swatch it belongs to; a hand-spaced string drifts the moment the
+        # swatch width or the font changes, which is exactly what it did.
+        painter.setPen(QPen(QColor("#8b949e")))
+        small = QFont(f)
+        small.setPointSize(7)
+        painter.setFont(small)
+        for edge, tick in zip(edges, ("0", "5", "10", "15", "20+")):
+            painter.drawText(QRectF(edge - sw / 2, y_bottom + 1, sw, 11),
+                             Qt.AlignmentFlag.AlignCenter, tick)
+        painter.drawText(QPointF(edges[-1] + sw * 0.75, y_bottom + 10), "ly")
+        painter.setFont(f)
 
     def _draw_heat_legend(self, painter, x0: float, y_bottom: float):
         """Key for the active heat layer: the ramp, its name and its peak."""
