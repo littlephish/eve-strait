@@ -111,6 +111,10 @@ class MainWindow(QMainWindow):
         self.my_alliance_id: int | None = None
         self.incursion_systems: set[int] = set()
         self.avoided_ids: set[int] = set()
+        # Specific connections the user has rejected, as sorted id pairs.
+        # Distinct from avoided_ids: the system is fine, this link is not --
+        # a hole they know has collapsed, or one they simply do not trust.
+        self.ignored_edges: set[tuple[int, int]] = set()
         self._ansiblex_pending: list = []
         self.docking_rights_ids: set[int] = set()
         self.starbase_systems: dict[int, int] = {}
@@ -2288,6 +2292,12 @@ class MainWindow(QMainWindow):
             act_hole = menu.addAction(
                 f"Wormhole information ({len(holes)})" if len(holes) > 1
                 else "Wormhole information")
+        act_ignore = None
+        if holes:
+            touching = {p for p in self.universe.hole_info if sid in p}
+            act_ignore = menu.addAction(
+                "Stop ignoring this wormhole"
+                if touching & self.ignored_edges else "Ignore this wormhole")
         act_info = menu.addAction("Show station info")
         # Only where an alliance holds the system and has a capital -- an
         # entry that usually reports "nothing to show" teaches people to
@@ -2317,6 +2327,8 @@ class MainWindow(QMainWindow):
             self.show_wormhole_info(sid)
         elif chosen == act_sysinfo:
             self.route.show_system_info(sid)
+        elif act_ignore is not None and chosen == act_ignore:
+            self.toggle_ignored_hole(sid)
         elif chosen == act_info:
             self.route.show_station_info(sid)
         elif act_zone is not None and chosen == act_zone:
@@ -2331,6 +2343,25 @@ class MainWindow(QMainWindow):
             self.toggle_avoid(sid)
         elif act_remove is not None and chosen == act_remove:
             self.route.remove_system(sid)
+
+    def toggle_ignored_hole(self, system_id: int):
+        """Reject, or restore, every scouted hole touching this system.
+
+        Per-edge rather than per-system: the system stays perfectly routable
+        by gate or jump, it is only this connection that is refused.
+        """
+        touching = {p for p in self.universe.hole_info if system_id in p}
+        if not touching:
+            return
+        if touching & self.ignored_edges:
+            self.ignored_edges -= touching
+            msg = "Wormhole restored to routing."
+        else:
+            self.ignored_edges |= touching
+            msg = ("Wormhole ignored for routing. Right-click again to "
+                   "restore it.")
+        self.statusBar().showMessage(msg, 6000)
+        self._recalc()
 
     def holes_in(self, system_id: int) -> list[dict]:
         """Scouted EVE-Scout connections with one end in this system."""
@@ -2458,6 +2489,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    my_alliance_id=self.my_alliance_id,
+                   avoid_edges=self.ignored_edges,
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),
@@ -3054,6 +3086,7 @@ class MainWindow(QMainWindow):
                    jump_cost=self.route.jump_cost(),
                    use_ansiblex=self.route.use_ansiblex(),
                    my_alliance_id=self.my_alliance_id,
+                   avoid_edges=self.ignored_edges,
                    use_wormholes=self.route.use_wormholes(),
                    haven=self._haven_predicate(ship),
                    jammed=self.jammed_systems(), danger=self.danger_predicate(),

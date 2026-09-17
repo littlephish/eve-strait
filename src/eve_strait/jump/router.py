@@ -552,7 +552,8 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
                         gate_pref="fast", jump_cost=None, use_ansiblex=True,
                         my_alliance_id=None, use_wormholes=False,
                         haven=None, jammed=None, danger=None,
-                        can_land=None, avoid=None, strategy="min_time"):
+                        can_land=None, avoid=None, avoid_edges=None,
+                        strategy="min_time"):
     """Quantify what stargates buy you on this route.
 
     Compares a pure jump route against the best jump+gate route, so you can
@@ -566,7 +567,8 @@ def analyze_gate_assist(universe, ship, skills, origin, destination,
                               my_alliance_id=my_alliance_id,
                               use_wormholes=holes,
                               haven=haven, jammed=jammed, danger=danger,
-                              can_land=can_land, avoid=avoid)
+                              can_land=can_land, avoid=avoid,
+                              avoid_edges=avoid_edges)
         if res is None:
             return None
         return _plan_stats(ship, skills, res[0], res[1], strategy)
@@ -649,7 +651,7 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
                   gate_pref="fast", jump_cost=None, use_ansiblex=True,
                   my_alliance_id=None, use_wormholes=False,
                   haven=None, jammed=None, danger=None,
-                  can_land=None, avoid=None):
+                  can_land=None, avoid=None, avoid_edges=None):
     """Route through an ordered list of REQUIRED waypoints, bridging each
     consecutive pair with jumps/gates. Every input waypoint is preserved as an
     anchor. Returns (systems, modes) or None if any leg is unreachable."""
@@ -664,7 +666,8 @@ def route_through(universe, ship, skills, systems, minimize="jumps",
                               my_alliance_id=my_alliance_id,
                               use_wormholes=use_wormholes, haven=haven,
                               jammed=jammed, danger=danger,
-                              can_land=can_land, avoid=avoid)
+                              can_land=can_land, avoid=avoid,
+                              avoid_edges=avoid_edges)
         if res is None:
             return None
         segs, segmodes = res           # segs[0] == a, segs[-1] == b
