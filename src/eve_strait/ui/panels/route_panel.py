@@ -38,6 +38,27 @@ _ROLE_UID = Qt.ItemDataRole.UserRole + 1
 _STATUS_ICON = {True: "✓", False: "✗"}
 
 
+def _hole_label(info, src_id, dst_id) -> str:
+    """The signatures to fly this leg, in the order you need them.
+
+    A wormhole leg is unflyable without these: you cannot warp to a hole you
+    cannot find on scan. A Thera crossing needs two -- the one where you are
+    standing and the one *inside Thera* that leads onward -- and the arrival
+    signature is shown after the arrow so you can confirm you came out at
+    the right hole, and find it again on the way back.
+    """
+    from ...esi import evescout
+
+    steps = evescout.crossing(info or {}, src_id, dst_id)
+    parts = [sig or "sig ?" for _where, sig in steps]
+    arrive = evescout.arrival_sig(info or {}, dst_id)
+    via = (info or {}).get("via", "wormhole").lower()
+    label = " → ".join(parts)
+    if arrive:
+        label += f" ⇒ {arrive}"
+    return f"{via} {label}"
+
+
 def _hole_age(info) -> str:
     """How long ago this wormhole was last scanned, for the leg table.
 
@@ -1103,9 +1124,7 @@ class RoutePanel(QWidget):
                 # without those the leg cannot actually be flown.
                 info = (self.ctx.universe.hole_between(leg.src.id, leg.dst.id)
                         if getattr(self.ctx, "universe", None) else None)
-                via = (info or {}).get("via", "wormhole")
-                sig = (info or {}).get("sigs", {}).get(leg.src.id)
-                label = f"{via.lower()} {sig}" if sig else via.lower()
+                label = _hole_label(info, leg.src.id, leg.dst.id)
                 # Scan age goes in the Fuel column, which a hole never uses:
                 # a wormhole costs no isotopes, and how long ago somebody
                 # last looked at it matters far more to whether it is there.

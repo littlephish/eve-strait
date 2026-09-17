@@ -329,12 +329,47 @@ def merge_edge(a: dict | None, b: dict | None) -> dict:
     out["life"] = _worst(a.get("life"), b.get("life"), _LIFE_RANK)
     out["mass"] = _worst(a.get("mass"), b.get("mass"), _MASS_RANK)
     out["sigs"] = {**(staler.get("sigs") or {}), **(fresher.get("sigs") or {})}
+    via = {**(staler.get("via_sigs") or {}), **(fresher.get("via_sigs") or {})}
+    if via:
+        out["via_sigs"] = via
     for field in ("updated_at", "updated_at_all"):
         if fresher.get(field) is not None:
             out[field] = fresher[field]
     out["sources"] = sorted({*(a.get("sources") or [a.get("via")]),
                              *(b.get("sources") or [b.get("via")])} - {None})
     return out
+
+
+def crossing(info, src_id: int, dst_id: int) -> list[tuple]:
+    """The signatures to warp to, in the order you fly them.
+
+    Returns [(where, signature)]. ``where`` is a solar system id, or the hub
+    name for the middle of a two-hop crossing, which is not a system this app
+    knows and so has no id.
+
+    One hop is one step: find that signature and jump. A Thera crossing is
+    two, and the second is the one that used to be missing -- standing in
+    Thera with a dozen signatures on scan, this is the one that goes onward.
+
+    A signature we do not have comes back as None rather than being omitted,
+    so the step is still shown and the gap is visible.
+    """
+    sigs = (info or {}).get("sigs") or {}
+    steps = [(src_id, sigs.get(src_id))]
+    if (info or {}).get("hops", 1) > 1:
+        hub = (info or {}).get("via") or "hub"
+        steps.append((hub, ((info or {}).get("via_sigs") or {}).get(dst_id)))
+    return steps
+
+
+def arrival_sig(info, dst_id: int):
+    """The signature at the far end, as seen once you land.
+
+    Worth showing even though you do not need it to get there: it confirms
+    you came out where you meant to, and it is what you look for on the way
+    back.
+    """
+    return ((info or {}).get("sigs") or {}).get(dst_id)
 
 
 def usable(info, *, max_age_min=None, allow_eol=True,
@@ -426,6 +461,12 @@ def graph(conns, turnur_id: int | None):
                              max_jump_t(b["wh_type"], b["size"])),
                 "sigs": {a["system_id"]: a["far_sig"],
                          b["system_id"]: b["far_sig"]},
+                # The signatures as seen from inside Thera, keyed by where
+                # each one leads. Without these the middle of a two-hop
+                # crossing cannot be flown: you arrive in Thera and have no
+                # way to tell which of its many signatures goes onward.
+                "via_sigs": {a["system_id"]: a["hub_sig"],
+                             b["system_id"]: b["hub_sig"]},
                 "hours": min(hours) if hours else None,
                 # Both ends, so edge_age_minutes can report the staler one.
                 "updated_at": a.get("updated_at"),
