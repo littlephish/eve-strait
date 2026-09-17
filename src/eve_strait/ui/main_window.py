@@ -349,13 +349,21 @@ class MainWindow(QMainWindow):
             out[sid] = ansiblex.zone_for(Universe.distance_ly(sysm, cap))
         return out
 
+    def capital_system_ids(self) -> list[int]:
+        """Capital systems that exist on the map, for the HQ markers."""
+        if not self.universe:
+            return []
+        return [sid for sid in (self.sov_capitals or {}).values()
+                if sid in self.universe.systems]
+
     def refresh_ansiblex_zones(self):
         if not self.map_view:
             return
         if not self.act_layers["zones"].isChecked():
             self.map_view.set_ansiblex_zones(None)
             return
-        self.map_view.set_ansiblex_zones(self.ansiblex_zones())
+        self.map_view.set_ansiblex_zones(
+            self.ansiblex_zones(), self.capital_system_ids())
 
     def show_zone_focus(self, system_id: int):
         """Draw the 5/10/15/20 ly rings for whoever holds this system."""
@@ -375,7 +383,8 @@ class MainWindow(QMainWindow):
             return
         # Shade only this alliance while its rings are up, so everything the
         # rings enclose is measured from the capital they are drawn around.
-        self.map_view.set_ansiblex_zones(self.ansiblex_zones(owner[0]))
+        self.map_view.set_ansiblex_zones(
+            self.ansiblex_zones(owner[0]), [cap.id])
         self.map_view.set_zone_focus(cap)
         self._zone_focus_alliance = owner[0]
         here = self.universe.systems.get(system_id)

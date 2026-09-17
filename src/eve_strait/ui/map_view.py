@@ -325,7 +325,16 @@ class MapView(QGraphicsView):
     # held by a corporation or faction, which have no capital to measure from.
     ZONE_UNZONED = QColor(70, 78, 88, 190)
 
-    def set_ansiblex_zones(self, zones: dict | None):
+    # The capital ring. Deliberately off the security scale and off the zone
+    # ramp, so "this is the HQ" cannot be mistaken for a zone or a sec class.
+    ZONE_CAPITAL = QColor(255, 255, 255, 230)
+    ZONE_CAPITAL_LY = 0.75
+    # Gate mesh while zones are on. The mesh is security-coloured, which is
+    # the same green-to-red the zone ramp uses, so left alone it reads as
+    # zone data that is not.
+    ZONE_GATE_DIM = QColor(86, 94, 104, 90)
+
+    def set_ansiblex_zones(self, zones: dict | None, capitals=()):
         """Shade systems by their own holder's Ansiblex capacitor zone.
 
         ``zones`` is {system_id: 1..5}, computed from true 3D light-year
@@ -346,7 +355,63 @@ class MapView(QGraphicsView):
             for sid, z in (zones or {}).items() if z in self.ZONE_COLOUR
         }
         self._zone_data = zones or {}
+        self._draw_capitals(capitals if zones else ())
+        self._dim_gate_mesh(bool(self._zone_brushes))
         self._repaint_dots()
+
+    def _draw_capitals(self, capitals):
+        """Ring each alliance capital.
+
+        Without this the HQ is one green dot among the thousand-odd others in
+        its own free zone -- the gradient says how far from the capital you
+        are, and nothing says where the capital is.
+        """
+        from PySide6.QtGui import QPainterPath
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for item in getattr(self, "_capital_items", ()):
+            self.scene_obj.removeItem(item)
+        self._capital_items = []
+        r = self.ZONE_CAPITAL_LY
+        path = QPainterPath()
+        for sid in capitals or ():
+            p = self._vis_pos(sid)
+            if p is None:
+                continue
+            path.addEllipse(p.x() - r, p.y() - r, 2 * r, 2 * r)
+        if path.isEmpty():
+            return
+        item = QGraphicsPathItem(path)
+        pen = QPen(self.ZONE_CAPITAL, 1.5)
+        pen.setCosmetic(True)
+        item.setPen(pen)
+        item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        item.setZValue(2.6)               # over the dots it rings
+        self.scene_obj.addItem(item)
+        self._capital_items.append(item)
+        self._apply_visibility("zones")
+
+    def _dim_gate_mesh(self, dim: bool):
+        """Mute the security-coloured gate mesh while zones are on.
+
+        Same reasoning as greying unzoned dots: two green-to-red ramps in one
+        picture and neither can be read. Restores the real pens when the layer
+        goes off, so this never becomes a permanent edit to the mesh.
+        """
+        items = list(getattr(self, "_gate_items", ()))
+        if not items:
+            return
+        if dim:
+            if not getattr(self, "_gate_pens", None):
+                self._gate_pens = [(i, QPen(i.pen())) for i in items]
+            pen = QPen(self.ZONE_GATE_DIM, 0.9)
+            pen.setCosmetic(True)
+            for item in items:
+                item.setPen(pen)
+        elif getattr(self, "_gate_pens", None):
+            for item, pen in self._gate_pens:
+                item.setPen(pen)
+            self._gate_pens = []
 
     def set_zone_focus(self, origin, colour=None):
         """Draw one alliance's 5/10/15/20 ly boundaries around its capital.
@@ -1196,6 +1261,9 @@ class MapView(QGraphicsView):
     def set_overlay_visible(self, name: str, visible: bool):
         """Show or hide one map layer by name."""
         self._overlay_on[name] = bool(visible)
+        if name == "zones":
+            self._dim_gate_mesh(bool(visible)
+                                and bool(getattr(self, "_zone_brushes", None)))
         if name in ("heat", "zones"):
             # Both live in the dot brush rather than in items of their own,
             # so visibility is a repaint, not a setVisible. Zones also own
@@ -1266,8 +1334,10 @@ class MapView(QGraphicsView):
             "sov": self._sov_items,
             "holes": getattr(self, "_hole_items", ()),
             "cyno_alts": getattr(self, "_cyno_items", ()),
-            # Dot colours are repainted, not hidden; only the rings are items.
-            "zones": getattr(self, "_zone_ring_items", ()),
+            # Dot colours are repainted, not hidden; the ring items are the
+            # focus circles and the capital markers.
+            "zones": (list(getattr(self, "_zone_ring_items", ()))
+                      + list(getattr(self, "_capital_items", ()))),
             # Everything that belongs to the inset: its dots, its internal
             # gate mesh, its border and its labels.
             "pochven": (list(getattr(self, "_pochven_items", ()))
