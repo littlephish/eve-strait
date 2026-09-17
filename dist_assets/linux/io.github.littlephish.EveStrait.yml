@@ -1,0 +1,66 @@
+# Flatpak manifest for Eve-Strait.
+#
+# Runtime choice, recorded because it is not obvious:
+#
+#   org.kde.Platform provides Qt6, but expects PySide6 built against exactly
+#   that Qt. The PySide6 wheel on PyPI bundles its own Qt, which then fights
+#   the runtime's. Using org.freedesktop.Platform with the wheel sidesteps the
+#   version-matching problem entirely, at the cost of roughly 200 MB of
+#   bundled Qt. Take the simpler, larger option first; revisit only if size
+#   becomes a real objection.
+#
+# Branch: 25.08 rather than 26.08. 26.08 released in August 2026 and is only a
+# couple of patch releases old; 25.08 is at .17, is supported until August
+# 2027, and is what the PySide6 wheels and Flathub tooling have had time to
+# settle against. 24.08 reached its two-year EOL in August 2026 -- do not use
+# it. Bump to 26.08 once it has some mileage.
+#
+# No compilation. The Windows build is a Nuitka program folder because it must
+# run without a Python runtime and because the in-app updater needs a folder
+# it can swap. Neither is true here: the runtime provides Python and Flatpak
+# owns updates.
+app-id: io.github.littlephish.EveStrait
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: eve-strait
+
+finish-args:
+  # Qt needs a display. Both are listed so Wayland is preferred and X11 works.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Needed for: ESI, the solar-system dump from Fuzzwork on first launch,
+  # EVE-Scout, and the OAuth callback this app serves on localhost:8635.
+  - --share=network
+  # Opening the EVE SSO page in the user's own browser, via the portal.
+  - --talk-name=org.freedesktop.portal.OpenURI
+  # Credential storage for mapper logins, so a Tripwire password is never
+  # written to disk in plaintext. keyring picks SecretService here.
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  # Generated, not hand-written. Flathub builds offline, so every dependency
+  # must arrive with a hash rather than being resolved during the build.
+  # Regenerate after any change to pyproject.toml -- see README.md.
+  - python3-requirements.json
+
+  - name: eve-strait
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.desktop
+        ${FLATPAK_DEST}/share/applications/io.github.littlephish.EveStrait.desktop
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.metainfo.xml
+        ${FLATPAK_DEST}/share/metainfo/io.github.littlephish.EveStrait.metainfo.xml
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.svg
+        ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.littlephish.EveStrait.svg
+    sources:
+      # Local iteration builds from the working tree. The published manifest
+      # points at a tag instead -- see FLATHUB.md.
+      - type: dir
+        path: ../..

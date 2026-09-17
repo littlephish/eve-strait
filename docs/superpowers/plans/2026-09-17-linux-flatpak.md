@@ -6,9 +6,20 @@
 
 **Architecture:** No compilation. The Windows build exists as a Nuitka program folder because it has to survive without a Python runtime and because the in-app updater needs a folder it can swap. Inside a Flatpak neither is true: the runtime provides Python, and Flatpak owns updates. So the Flatpak ships plain Python source plus a pip-installed PySide6, which is the idiomatic shape and removes ~880 lines of Windows-bound updater from the delivered product rather than porting it.
 
-**Tech Stack:** `org.freedesktop.Platform` 24.08, `flatpak-builder`, PySide6 wheel, AppStream, `.desktop`.
+**Tech Stack:** `org.freedesktop.Platform` 25.08, `flatpak-builder`, PySide6 wheel, AppStream, `.desktop`.
 
 **Spec:** none — this plan is the design. The portability audit it rests on is in the conversation of 2026-09-17: 17,528 LOC total, ~880 Windows-bound, `config._data_home()` already falls back to `XDG_DATA_HOME`, `ai/bridge.py` already branches `AF_PIPE`/`AF_UNIX`, and no `subprocess` outside `update.py`.
+
+## Runtime branch
+
+**25.08**, verified against freedesktop-sdk's own tags on 2026-09-17.
+
+A new major branch ships each August with a two-year support window, so
+**24.08 reached EOL in August 2026** and must not be used -- it was this
+plan's original choice. 26.08 exists (`freedesktop-sdk-26.08.1`) but is a
+month old; 25.08 is at `.17`, is supported until August 2027, and is what the
+PySide6 wheels and Flathub tooling have had time to settle against. Bump to
+26.08 once it has mileage.
 
 ## Global Constraints
 
@@ -218,7 +229,7 @@ Runtime choice, and the reasoning to record: `org.kde.Platform` provides Qt6 but
 ```yaml
 app-id: io.github.littlephish.EveStrait
 runtime: org.freedesktop.Platform
-runtime-version: '24.08'
+runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 command: eve-strait
 
@@ -273,7 +284,7 @@ hash rather than resolved at build time. Regenerate after any dependency
 change in `pyproject.toml`:
 
     pip install flatpak-pip-generator
-    flatpak-pip-generator --runtime=org.freedesktop.Sdk//24.08 \
+    flatpak-pip-generator --runtime=org.freedesktop.Sdk//25.08 \
         PySide6 requests keyring --output pypi-deps
 
 Build and run locally:
@@ -365,7 +376,7 @@ jobs:
   flatpak:
     runs-on: ubuntu-latest
     container:
-      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
+      image: bilelmoussaoui/flatpak-github-actions:freedesktop-25.08
       options: --privileged
     steps:
       - uses: actions/checkout@v4
