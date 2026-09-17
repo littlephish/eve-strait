@@ -362,8 +362,14 @@ class MainWindow(QMainWindow):
         if not self.act_layers["zones"].isChecked():
             self.map_view.set_ansiblex_zones(None)
             return
-        self.map_view.set_ansiblex_zones(
-            self.ansiblex_zones(), self.capital_system_ids())
+        focus = self._zone_focus_alliance
+        if focus is not None:
+            cap_id = (self.sov_capitals or {}).get(focus)
+            self.map_view.set_ansiblex_zones(
+                self.ansiblex_zones(focus), [cap_id] if cap_id else [])
+        else:
+            self.map_view.set_ansiblex_zones(
+                self.ansiblex_zones(), self.capital_system_ids())
 
     def show_zone_focus(self, system_id: int):
         """Draw the 5/10/15/20 ly rings for whoever holds this system."""
@@ -381,12 +387,18 @@ class MainWindow(QMainWindow):
                 f"{self.sov_names.get(owner[0], 'That alliance')} holds no "
                 f"capital system.", 4000)
             return
-        # Shade only this alliance while its rings are up, so everything the
-        # rings enclose is measured from the capital they are drawn around.
-        self.map_view.set_ansiblex_zones(
-            self.ansiblex_zones(owner[0]), [cap.id])
-        self.map_view.set_zone_focus(cap)
+        # Asking for an alliance's zones IS asking for the zone layer. It is
+        # off by default, and without this the rings drew over an uncoloured
+        # map -- four dashed circles and no data, which is worse than nothing.
+        # Set the focus first: switching the layer on triggers a refresh, and
+        # that refresh should already know it is meant to be focused.
         self._zone_focus_alliance = owner[0]
+        act = self.act_layers["zones"]
+        if not act.isChecked():
+            act.setChecked(True)          # fires _toggle_layer -> refresh
+        else:
+            self.refresh_ansiblex_zones()
+        self.map_view.set_zone_focus(cap)
         here = self.universe.systems.get(system_id)
         dist = Universe.distance_ly(here, cap) if here else 0.0
         zone = ansiblex.zone_for(dist)

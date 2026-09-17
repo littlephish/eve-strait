@@ -453,6 +453,7 @@ class MapView(QGraphicsView):
                 f"{origin.name}: zone {zone} ends at {bound:g} ly")
             self.scene_obj.addItem(ring)
             self._zone_ring_items.append(ring)
+        self._apply_visibility("zones")
 
     def set_kill_lookup(self, fn):
         """callable(system_id) -> dict of kill counts, shown on hover."""
