@@ -4,9 +4,9 @@
 
 **Goal:** Ship Eve-Strait as a Flatpak that installs from Flathub and updates itself through Flatpak, with no Windows assumptions reaching the user.
 
-**Architecture:** No compilation. The Windows build exists as a Nuitka program folder because it has to survive without a Python runtime and because the in-app updater needs a folder it can swap. Inside a Flatpak neither is true: the runtime provides Python, and Flatpak owns updates. So the Flatpak ships plain Python source plus a pip-installed PySide6, which is the idiomatic shape and removes ~880 lines of Windows-bound updater from the delivered product rather than porting it.
+**Architecture:** Compiled with Nuitka, the same as the Windows build — one build tool across platforms means one set of packaging behaviours to understand, and a faster start than interpreted source. What does *not* travel is the in-app updater: inside a Flatpak the sandbox is read-only and Flatpak owns updates, so ~880 lines of Windows-only swap logic are guarded off rather than ported.
 
-**Tech Stack:** `org.freedesktop.Platform` 25.08, `flatpak-builder`, PySide6 wheel, AppStream, `.desktop`.
+**Tech Stack:** `org.freedesktop.Platform` 25.08, `flatpak-builder`, Nuitka 4.2.1, PySide6 wheel, AppStream, `.desktop`.
 
 **Spec:** none — this plan is the design. The portability audit it rests on is in the conversation of 2026-09-17: 17,528 LOC total, ~880 Windows-bound, `config._data_home()` already falls back to `XDG_DATA_HOME`, `ai/bridge.py` already branches `AF_PIPE`/`AF_UNIX`, and no `subprocess` outside `update.py`.
 
@@ -27,6 +27,9 @@ PySide6 wheels and Flathub tooling have had time to settle against. Bump to
 - App ID is `io.github.littlephish.EveStrait` everywhere — manifest filename, `.desktop`, AppStream `<id>`, icon filenames. Flathub rejects mismatches.
 - The Windows build must keep working unchanged. Every guard added here is additive.
 - Do not port the updater. Disable it and let Flatpak update the app.
+- Build with Nuitka, pinned to the same version as the Windows build.
+- **The build must not reach the network.** Flathub builds offline, so never
+  add `--assume-yes-for-downloads`; it cannot succeed there.
 - Tests stay Qt-free and must pass on Linux unchanged.
 
 ---

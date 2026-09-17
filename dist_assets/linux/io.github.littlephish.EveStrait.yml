@@ -1,24 +1,21 @@
 # Flatpak manifest for Eve-Strait.
 #
+# Compiled with Nuitka, the same as the Windows build. One build tool across
+# platforms means one set of packaging bugs to understand, and the compiled
+# app starts faster than interpreted source.
+#
 # Runtime choice, recorded because it is not obvious:
 #
 #   org.kde.Platform provides Qt6, but expects PySide6 built against exactly
 #   that Qt. The PySide6 wheel on PyPI bundles its own Qt, which then fights
 #   the runtime's. Using org.freedesktop.Platform with the wheel sidesteps the
-#   version-matching problem entirely, at the cost of roughly 200 MB of
-#   bundled Qt. Take the simpler, larger option first; revisit only if size
-#   becomes a real objection.
+#   version-matching problem entirely, at the cost of the bundled Qt's size.
 #
 # Branch: 25.08 rather than 26.08. 26.08 released in August 2026 and is only a
 # couple of patch releases old; 25.08 is at .17, is supported until August
 # 2027, and is what the PySide6 wheels and Flathub tooling have had time to
 # settle against. 24.08 reached its two-year EOL in August 2026 -- do not use
 # it. Bump to 26.08 once it has some mileage.
-#
-# No compilation. The Windows build is a Nuitka program folder because it must
-# run without a Python runtime and because the in-app updater needs a folder
-# it can swap. Neither is true here: the runtime provides Python and Flatpak
-# owns updates.
 app-id: io.github.littlephish.EveStrait
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
@@ -42,14 +39,46 @@ finish-args:
 
 modules:
   # Generated, not hand-written. Flathub builds offline, so every dependency
-  # must arrive with a hash rather than being resolved during the build.
+  # must arrive with a hash rather than being resolved during the build. This
+  # includes Nuitka itself, which is a build-time dependency here.
   # Regenerate after any change to pyproject.toml -- see README.md.
   - python3-requirements.json
 
   - name: eve-strait
     buildsystem: simple
+    build-options:
+      # Nuitka shells out to the compiler; the SDK provides gcc, so nothing
+      # needs downloading. See the --disable-cache note below.
+      env:
+        NUITKA_CACHE_DIR: /run/build/eve-strait/nuitka-cache
     build-commands:
-      - pip3 install --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
+      # Mirrors the Windows invocation in .github/workflows/release.yml, minus
+      # the windows-* flags.
+      #
+      # Deliberately NOT --assume-yes-for-downloads: that flag lets Nuitka
+      # fetch ccache and, on some platforms, gcc. In an offline Flathub build
+      # that would fail confusingly late. Better to never ask, and to disable
+      # the one cache that would otherwise want fetching.
+      - python3 -m nuitka
+        --standalone
+        --enable-plugin=pyside6
+        --include-package=eve_strait
+        --include-package-data=eve_strait
+        --disable-cache=ccache
+        --company-name=Eve-Strait
+        --product-name=Eve-Strait
+        --file-description="EVE Online capital jump route planner"
+        --copyright=Eve-Strait
+        --linux-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
+        --output-dir=out
+        --output-filename=eve-strait
+        app.py
+      # The compiled program folder goes under /app/lib; only the launcher
+      # belongs on PATH. `command:` above resolves to /app/bin/eve-strait.
+      - mkdir -p ${FLATPAK_DEST}/lib/eve-strait
+      - cp -a out/app.dist/. ${FLATPAK_DEST}/lib/eve-strait/
+      - mkdir -p ${FLATPAK_DEST}/bin
+      - ln -sf ../lib/eve-strait/eve-strait ${FLATPAK_DEST}/bin/eve-strait
       - install -Dm644
         dist_assets/linux/io.github.littlephish.EveStrait.desktop
         ${FLATPAK_DEST}/share/applications/io.github.littlephish.EveStrait.desktop
@@ -61,6 +90,6 @@ modules:
         ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.littlephish.EveStrait.svg
     sources:
       # Local iteration builds from the working tree. The published manifest
-      # points at a tag instead -- see FLATHUB.md.
+      # points at a tag instead -- see README.md.
       - type: dir
         path: ../..
