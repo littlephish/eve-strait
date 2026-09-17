@@ -38,6 +38,46 @@ _ROLE_UID = Qt.ItemDataRole.UserRole + 1
 _STATUS_ICON = {True: "✓", False: "✗"}
 
 
+def _hole_age(info) -> str:
+    """How long ago this wormhole was last scanned, for the leg table.
+
+    An unknown timestamp reads "age ?" and never "0m". Presenting a hole
+    nobody has confirmed as freshly scouted is the one lie this column
+    exists to avoid.
+    """
+    from ...esi import evescout
+
+    minutes = evescout.edge_age_minutes(info or {})
+    if minutes is None:
+        return "age ?"
+    if minutes < 90:
+        return f"{minutes:.0f}m old"
+    return f"{minutes / 60:.1f}h old"
+
+
+def _bridge_cost(ship, dest, capital) -> str:
+    """Ansiblex capacitor cost for this activation, as zone and TJ.
+
+    Needs the owning alliance's capital to know the zone, and a hull this
+    app models per-class to know the base cost. Either missing yields "-"
+    or "? TJ" rather than a number: a wrong multiplier is worse than an
+    absent one, and 0 TJ is a real answer that only zone 1 earns.
+    """
+    from ...data.universe import Universe
+    from ...jump import ansiblex
+
+    if ship is None or dest is None or capital is None:
+        return "-"
+    distance = Universe.distance_ly(dest, capital)
+    zone = ansiblex.zone_for(distance)
+    tj = ansiblex.capacitor_cost(ship.hull_class, distance)
+    if tj is None:
+        return f"zone {zone}, ? TJ"
+    if tj == 0:
+        return f"zone {zone}, free"
+    return f"zone {zone}, {tj:g} TJ"
+
+
 class RoutePanel(QWidget):
     _HOLES_TIP = ("Route through the public Thera and Turnur wormholes scouted "
                   "by EVE-Scout.\n"
@@ -973,6 +1013,8 @@ class RoutePanel(QWidget):
         # Contiguous gate hops become one row: a capital route can gate twenty
         # times between two jumps, and listing each buries the jumps.
         rows = router.collapse_gate_legs(plan.legs)
+        ship = self.ctx.current_ship()
+        capital = getattr(self.ctx, "my_capital_system", None)
         self.table.setRowCount(len(rows))
         for i, (leg, count) in enumerate(rows):
             if leg.mode == "hole":
@@ -983,12 +1025,18 @@ class RoutePanel(QWidget):
                 via = (info or {}).get("via", "wormhole")
                 sig = (info or {}).get("sigs", {}).get(leg.src.id)
                 label = f"{via.lower()} {sig}" if sig else via.lower()
+                # Scan age goes in the Fuel column, which a hole never uses:
+                # a wormhole costs no isotopes, and how long ago somebody
+                # last looked at it matters far more to whether it is there.
                 vals = [label, leg.src.name, leg.dst.name,
-                        f"{leg.distance_ly:.2f}", "-", "-",
+                        f"{leg.distance_ly:.2f}", _hole_age(info), "-",
                         f"{leg.fatigue_after_min:.0f}m", "✓"]
             elif leg.mode == "bridge":
+                # Capacitor cost is the structure's, not the ship's, so it
+                # goes in the Fuel column where a bridge showed "-".
                 vals = ["ansiblex", leg.src.name, leg.dst.name,
-                        f"{leg.distance_ly:.2f}", "-",
+                        f"{leg.distance_ly:.2f}",
+                        _bridge_cost(ship, leg.dst, capital),
                         f"{leg.cooldown_min:.1f}m",
                         f"{leg.fatigue_after_min:.0f}m", "✓"]
             elif leg.mode == "gate":

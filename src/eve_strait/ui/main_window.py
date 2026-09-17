@@ -356,6 +356,19 @@ class MainWindow(QMainWindow):
         return [sid for sid in (self.sov_capitals or {}).values()
                 if sid in self.universe.systems]
 
+    @property
+    def my_capital_system(self):
+        """This character's alliance's capital, which sets Ansiblex zones.
+
+        None when not logged in, or when the alliance holds no sovereignty.
+        Callers must show the cost as unknown rather than assume zone 1,
+        which would price every activation at free.
+        """
+        if not (self.universe and self.my_alliance_id):
+            return None
+        sid = (self.sov_capitals or {}).get(self.my_alliance_id)
+        return self.universe.systems.get(sid) if sid else None
+
     def refresh_ansiblex_zones(self):
         if not self.map_view:
             return
