@@ -212,6 +212,32 @@ def edge_age_minutes(info) -> float | None:
     return max(ages) * 60.0
 
 
+def usable(info, *, max_age_min=None, allow_eol=True,
+           allow_reduced_mass=True) -> bool:
+    """Does this edge pass the pilot's own standards?
+
+    Size and mass *limits* are not here -- fits() already refuses a hole the
+    hull physically cannot enter. These are the judgement calls on top.
+
+    Absence is treated in opposite directions on purpose. An unknown **age**
+    fails a freshness limit, because asking for fresh data is asking to be
+    sure, and a hole nobody has timestamped is exactly the one to distrust.
+    An unknown **life or mass status** passes, because EVE-Scout reports
+    neither, and rejecting on silence would drop every public hole the
+    moment either box was unticked.
+    """
+    if max_age_min is not None:
+        age = edge_age_minutes(info)
+        if age is None or age > max_age_min:
+            return False
+    if not allow_eol and (info or {}).get("life") == "end of life":
+        return False
+    if not allow_reduced_mass and (info or {}).get("mass") in ("reduced",
+                                                              "critical"):
+        return False
+    return True
+
+
 def hulls_that_fit(max_t: int) -> list[str]:
     """Which hull classes can pass a hole of this per-jump mass limit."""
     return [name for name, mass in sorted(MASS_BY_HULL_T.items(),

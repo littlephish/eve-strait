@@ -250,6 +250,13 @@ class MainWindow(QMainWindow):
             if old is None or info["max_t"] > old["max_t"]:
                 edges[key] = info
 
+        # Drop the holes the pilot has said they will not fly: too stale, end
+        # of life, or mass-reduced. Filtered here rather than in the router so
+        # a rejected hole vanishes from the map too -- a ring you are told to
+        # ignore is worse than no ring.
+        prefs = self.route.hole_filters()
+        edges = {k: v for k, v in edges.items() if evescout.usable(v, **prefs)}
+
         n = self.universe.set_wormholes(edges)
         # Which hubs each system connects to, for the map tooltip.
         hub_of: dict[int, set] = {}
@@ -355,6 +362,13 @@ class MainWindow(QMainWindow):
             return []
         return [sid for sid in (self.sov_capitals or {}).values()
                 if sid in self.universe.systems]
+
+    def _on_hole_filters_changed(self):
+        """Rebuild the wormhole set, then re-plan over what survived."""
+        if not self.universe:
+            return
+        self._install_wormholes()
+        self._recalc()
 
     @property
     def my_capital_system(self):
@@ -2081,6 +2095,7 @@ class MainWindow(QMainWindow):
         self.route.changed.connect(self._on_route_changed)
         self.route.dotlan_imported.connect(self._on_dotlan_imported)
         self.route.autoroute_requested.connect(self._auto_route)
+        self.route.hole_filters_changed.connect(self._on_hole_filters_changed)
         self.route.gate_assist_requested.connect(self._gate_assist)
         self.character.login_requested.connect(self._login)
         # Straight to the page it means, rather than to a settings window the

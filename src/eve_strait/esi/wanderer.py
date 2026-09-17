@@ -148,8 +148,10 @@ def edges(data: dict, systems) -> dict:
                             "size": "unknown", "wh_types": kinds,
                             "max_t": limit, "sigs": {},
                             "hours": None,
+                            # Same key names evescout.usable() filters on, so
+                            # a hole is judged the same however it was found.
                             "mass": MASS_STATUS.get(conn.get("mass_status")),
-                            "eol": conn.get("time_status") == 1,
+                            "life": TIME_STATUS.get(conn.get("time_status")),
                         })
                     continue            # do not route *through* other k-space
                 seen.add(nxt)

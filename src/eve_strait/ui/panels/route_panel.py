@@ -88,6 +88,9 @@ class RoutePanel(QWidget):
     changed = Signal()
     autoroute_requested = Signal()
     gate_assist_requested = Signal()
+    # Distinct from `changed`: these alter which edges exist at all, so the
+    # wormhole set has to be rebuilt, not merely re-planned over.
+    hole_filters_changed = Signal()
     dotlan_imported = Signal(object)     # data.dotlan.DotlanRoute
 
     def __init__(self, ctx):
@@ -266,6 +269,45 @@ class RoutePanel(QWidget):
         compressible(self.chk_holes)
         self.chk_holes.toggled.connect(self._emit_changed)
         sec_jumps.add(self.chk_holes)
+
+        # What the pilot will accept from a scouted hole, on top of the mass
+        # limit the hull already enforces.
+        self.spin_hole_age = QSpinBox()
+        self.spin_hole_age.setRange(0, 1440)
+        self.spin_hole_age.setSingleStep(15)
+        self.spin_hole_age.setValue(0)
+        self.spin_hole_age.setPrefix("     Max scan age ")
+        self.spin_hole_age.setSuffix(" min")
+        self.spin_hole_age.setSpecialValueText("     Max scan age: any")
+        self.spin_hole_age.setToolTip(
+            "Ignore scouted holes nobody has looked at for this long.\n"
+            "0 accepts any age. A hole with no timestamp counts as unknown "
+            "and is dropped whenever a limit is set — asking for fresh data "
+            "means unknown does not qualify.")
+        compressible(self.spin_hole_age)
+        self.spin_hole_age.valueChanged.connect(self._emit_hole_filters)
+        sec_jumps.add(self.spin_hole_age)
+
+        self.chk_hole_eol = QCheckBox("     Allow end-of-life wormholes")
+        self.chk_hole_eol.setChecked(True)
+        self.chk_hole_eol.setToolTip(
+            "An end-of-life hole may collapse within hours.\n"
+            "EVE-Scout does not report lifetime, so this only affects holes "
+            "from a Wanderer map.")
+        compressible(self.chk_hole_eol)
+        self.chk_hole_eol.toggled.connect(self._emit_hole_filters)
+        sec_jumps.add(self.chk_hole_eol)
+
+        self.chk_hole_mass = QCheckBox("     Allow mass-reduced wormholes")
+        self.chk_hole_mass.setChecked(True)
+        self.chk_hole_mass.setToolTip(
+            "A reduced or critical hole may collapse on the next ship "
+            "through — possibly yours.\n"
+            "EVE-Scout does not report mass status, so this only affects "
+            "holes from a Wanderer map.")
+        compressible(self.chk_hole_mass)
+        self.chk_hole_mass.toggled.connect(self._emit_hole_filters)
+        sec_jumps.add(self.chk_hole_mass)
         # Filled in by set_hole_status() once the connections are fetched.
         self.lbl_holes = QLabel("")
         self.lbl_holes.setWordWrap(True)
@@ -459,6 +501,16 @@ class RoutePanel(QWidget):
 
     def use_ansiblex(self) -> bool:
         return self.chk_ansiblex.isChecked()
+
+    def _emit_hole_filters(self, *_):
+        self.hole_filters_changed.emit()
+
+    def hole_filters(self) -> dict:
+        """Wormhole standards, as keyword arguments for evescout.usable."""
+        age = self.spin_hole_age.value()
+        return {"max_age_min": age or None,
+                "allow_eol": self.chk_hole_eol.isChecked(),
+                "allow_reduced_mass": self.chk_hole_mass.isChecked()}
 
     def use_wormholes(self) -> bool:
         """Whether the planner may route over scouted wormholes.
