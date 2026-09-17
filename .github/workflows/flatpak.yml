@@ -1,0 +1,70 @@
+name: Flatpak
+
+# The Linux build. Separate from release.yml on purpose: that one is the
+# Windows installer users actually have today, and a Flatpak failure must
+# never block it.
+#
+# Runs on pull requests that touch the packaging or the app, and on tags so a
+# release carries a Linux artifact. Not on every push to main -- a Nuitka
+# standalone build with PySide6 takes minutes, and ci.yml is the fast gate.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'dist_assets/linux/**'
+      - '.github/workflows/flatpak.yml'
+      - 'pyproject.toml'
+      - 'src/**'
+      - 'app.py'
+  workflow_dispatch:
+
+jobs:
+  flatpak:
+    name: Build Flatpak (x86_64)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      # Flathub builds offline, so every Python dependency -- including Nuitka
+      # itself, which is a build-time dependency of this manifest -- has to be
+      # declared with a hash. The generated file is not committed yet; this
+      # step produces it and uploads it so it can be, at which point this step
+      # becomes a no-op guard against it drifting from pyproject.toml.
+      - name: Generate the offline dependency list
+        run: |
+          if [ -f dist_assets/linux/python3-requirements.json ]; then
+            echo "using the committed dependency list"
+          else
+            echo "::warning::python3-requirements.json is not committed; generating it"
+            pip install --break-system-packages flatpak-pip-generator || \
+              pip install flatpak-pip-generator
+            cd dist_assets/linux
+            flatpak-pip-generator \
+              --runtime=org.freedesktop.Sdk//25.08 \
+              --output python3-requirements \
+              PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
+          fi
+
+      - name: Upload the dependency list
+        uses: actions/upload-artifact@v4
+        with:
+          name: python3-requirements
+          path: dist_assets/linux/python3-requirements.json
+          if-no-files-found: warn
+
+      # flatpak/flatpak-github-actions is the live repo (v6.8, Aug 2026).
+      # flathub-infra/flatpak-github-actions is ARCHIVED -- but the container
+      # images still live under that name in ghcr, which is why the image and
+      # the action disagree. Verified both on 2026-09-17.
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: eve-strait.flatpak
+          manifest-path: dist_assets/linux/io.github.littlephish.EveStrait.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          # A bundle does not update itself; it is a convenience artifact.
+          # Flathub is the actual distribution channel -- see the plan.
+          upload-artifact: true

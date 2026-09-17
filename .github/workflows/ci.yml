@@ -6,10 +6,14 @@ name: CI
 # a security signal, not "does this still work".
 #
 # This is a fast sanity gate: it byte-compiles the package, confirms every
-# module imports, and runs the unit tests. The suite covers the ESI transport
-# layer only (rate-limit maths, cache expiry) -- logic where a silent
-# off-by-one is invisible when running the app. Everything else is still
-# verified by hand.
+# module imports, and runs the unit tests. The suite is pure logic -- routing
+# rules, wormhole handling, ESI transport, packaging asset consistency -- with
+# no Qt and no network, because that is the part where a silent off-by-one is
+# invisible when running the app. Everything UI is still verified by hand.
+#
+# Both Windows and Linux: the app is heading for a Flatpak, and the suite is
+# platform-independent, so a Linux regression should fail here rather than in
+# a Flatpak build that takes minutes.
 on:
   push:
     branches: [main]
@@ -17,7 +21,11 @@ on:
 jobs:
   sanity:
     name: Compile and import
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,17 +34,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install .
 
       - name: Byte-compile
+        shell: bash
         run: python -m compileall -q src
 
       - name: Import sanity
+        shell: bash
         run: python -c "import eve_strait; print(eve_strait.__version__)"
 
       - name: Unit tests
+        shell: bash
         run: |
           python -m pip install pytest
           python -m pytest -q
