@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
 
         self._refresh_character_list()
         self._load_cached_dockables()
+        self._load_cached_cyno_alts()
         if self.token:
             self._fetch_contacts()
             self._fetch_starbases()
@@ -3223,6 +3224,30 @@ class MainWindow(QMainWindow):
         self._refresh_character_list()
         self._render_character()
 
+    def _load_cached_cyno_alts(self):
+        """Restore the last roll-call so a restart does not lose it.
+
+        Shown with its age rather than as current. Location is near-live only
+        while the app is running; across a restart the alt may have moved,
+        docked or logged off, and a remembered position presented as a live
+        one is the kind of thing that gets a fleet bridged into nothing.
+        """
+        from ..data import cyno as _cyno
+
+        alts, notes, fetched = _cyno.load_alts()
+        if not alts:
+            return
+        self.cyno_alts = alts
+        self._cyno_fetched = fetched
+        age = _cyno.describe_age(fetched)
+        self.character.set_cyno_alts(
+            alts, list(notes) + [f"Remembered from a scan {age}; "
+                                 f"rescan to confirm they are still there."],
+            self._system_name)
+        self.character.set_cyno_remembered(age)
+        if self.map_view:
+            self.map_view.set_cyno_alts(alts)
+
     def _scan_cyno_alts(self, force: bool = False):
         """Roll-call of which linked characters can light a cyno, and where."""
         if not self.tokens:
@@ -3247,8 +3272,12 @@ class MainWindow(QMainWindow):
         self._run(w, "Scanning characters for cynos…")
 
     def _on_cyno_alts(self, result):
+        from ..data import cyno as _cyno
+
         alts, notes = result
         self.cyno_alts = alts
+        self._cyno_fetched = time.time()
+        _cyno.save_alts(alts, notes)
         self.character.set_cyno_scanning(False)
         from ..esi.transport import get_transport
         if self.token:
