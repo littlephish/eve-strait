@@ -1,8 +1,11 @@
 """What the app is doing in the background, and how to say it in one line.
 
-Deliberately Qt-free so the display rules can be tested without a widget or
-an event loop. MainWindow owns one of these and mirrors it into the status
-bar; the workers themselves know nothing about it.
+``TaskRegistry`` holds no Qt: the display rules are decided by plain data so
+they can be reasoned about without a widget or an event loop. ``BusyIndicator``
+below is the widget that renders them, and importing this module therefore
+does pull Qt in -- the separation is in the logic, not in the import graph.
+MainWindow owns one registry and mirrors it into the status bar; the workers
+themselves know nothing about it.
 """
 from __future__ import annotations
 

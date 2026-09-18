@@ -14,6 +14,13 @@ name: CI
 # Both Windows and Linux: the app is heading for a Flatpak, and the suite is
 # platform-independent, so a Linux regression should fail here rather than in
 # a Flatpak build that takes minutes.
+#
+# Most of the suite is pure logic, but not all of it: test_tasks.py and
+# test_heat_layer.py import PySide6, which on a bare runner cannot even load
+# without libEGL. They are installed below and the tests run headless, rather
+# than being skipped -- a Qt import that fails on Linux is exactly the class
+# of problem a Flatpak build would hit, and it should surface in the fast
+# gate.
 on:
   push:
     branches: [main]
@@ -33,6 +40,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # PySide6 links against these; without libEGL the import fails before
+      # any Qt platform plugin is even chosen, offscreen included.
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libdbus-1-3
+
       - name: Install
         shell: bash
         run: |
@@ -49,6 +64,10 @@ jobs:
 
       - name: Unit tests
         shell: bash
+        env:
+          # No display on either runner. The Qt-touching tests build widgets,
+          # so they need a platform plugin that does not want one.
+          QT_QPA_PLATFORM: offscreen
         run: |
           python -m pip install pytest
           python -m pytest -q
