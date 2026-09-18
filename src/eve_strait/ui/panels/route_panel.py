@@ -4,7 +4,7 @@ from __future__ import annotations
 from itertools import count
 
 from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -152,7 +152,8 @@ class RoutePanel(QWidget):
         self.search.setCompleter(self.completer)
 
         hint = QLabel("Type to search, or click the map, to add a waypoint. "
-                      "Drag to reorder; right-click to remove. First = origin.")
+                      "Drag to reorder. Ctrl- or shift-click to select "
+                      "several, then Delete. First = origin.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{TEXT_MUTED}")
         v.addWidget(hint)
@@ -161,6 +162,18 @@ class RoutePanel(QWidget):
         v.addWidget(QLabel("Waypoints"))
         self.wp_list = QListWidget()
         self.wp_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        # Ctrl- and shift-click to pick several. Pruning a route is usually
+        # "drop these four", not one at a time, and drag-to-reorder still
+        # works because ExtendedSelection is what QListWidget expects for it.
+        self.wp_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        # Delete removes the selection. Scoped to the widget so it cannot
+        # fire while the user is typing in the search box.
+        act_del = QAction("Remove selected waypoints", self.wp_list)
+        act_del.setShortcut(QKeySequence.StandardKey.Delete)
+        act_del.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        act_del.triggered.connect(self._remove_selected)
+        self.wp_list.addAction(act_del)
         self.wp_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.wp_list.customContextMenuRequested.connect(self._wp_menu)
         self.wp_list.itemSelectionChanged.connect(self._on_select)
@@ -170,9 +183,16 @@ class RoutePanel(QWidget):
         v.addWidget(self.wp_list, 3)
 
         row = QHBoxLayout()
-        for text, slot in (("↑", self._up), ("↓", self._down),
-                           ("Remove", self._remove_selected), ("Clear", self._clear)):
+        for text, slot, tip in (
+            ("↑", self._up, "Move the selected waypoint up"),
+            ("↓", self._down, "Move the selected waypoint down"),
+            ("Remove", self._remove_selected,
+             "Remove every selected waypoint. Ctrl- or shift-click to pick "
+             "several, or press Delete."),
+            ("Clear", self._clear, "Remove all waypoints"),
+        ):
             b = QPushButton(text)
+            b.setToolTip(tip)
             b.clicked.connect(slot)
             row.addWidget(compressible(b, 40))
         v.addLayout(row)
@@ -730,12 +750,30 @@ class RoutePanel(QWidget):
                 return
 
     def _remove_selected(self):
-        row = self.wp_list.currentRow()
-        if 0 <= row < len(self.waypoints):
-            del self.waypoints[row]
-            self.route_modes = ["jump"] * max(0, len(self.waypoints) - 1)
-            self._rebuild()
-            self._emit_changed()
+        """Drop every selected waypoint.
+
+        Keyed by uid rather than row: removing row 2 shifts row 3, so a list
+        of indices is wrong the moment the first one is applied. Falls back to
+        the current row so the button still works when nothing is explicitly
+        selected, which is what it did before multi-select existed.
+        """
+        uids = {item.data(_ROLE_UID) for item in self.wp_list.selectedItems()}
+        if not uids:
+            row = self.wp_list.currentRow()
+            if not (0 <= row < self.wp_list.count()):
+                return
+            uids = {self.wp_list.item(row).data(_ROLE_UID)}
+        # Identity, not equality: Waypoint is unhashable and two waypoints for
+        # the same system are equal without being the same entry. _remove_by_uid
+        # compares with `is` for the same reason.
+        doomed = {id(w) for w in (self._uid_map.get(u) for u in uids)
+                  if w is not None}
+        if not doomed:
+            return
+        self.waypoints = [w for w in self.waypoints if id(w) not in doomed]
+        self.route_modes = ["jump"] * max(0, len(self.waypoints) - 1)
+        self._rebuild()
+        self._emit_changed()
 
     def _up(self):
         r = self.wp_list.currentRow()
@@ -786,7 +824,10 @@ class RoutePanel(QWidget):
         if self._pinned(sid):
             act_unpin = menu.addAction("Clear saved default dock")
         menu.addSeparator()
-        act_remove = menu.addAction("Remove waypoint")
+        selected = len(self.wp_list.selectedItems())
+        act_remove = menu.addAction(
+            f"Remove {selected} waypoints" if selected > 1
+            else "Remove waypoint")
         act_clear = menu.addAction("Clear all waypoints")
         chosen = menu.exec(self.wp_list.mapToGlobal(pos))
         if chosen == act_pin:
@@ -794,7 +835,12 @@ class RoutePanel(QWidget):
         elif act_unpin is not None and chosen == act_unpin:
             self._pin_dock(uid, sid, clear=True)
         elif chosen == act_remove:
-            self._remove_by_uid(uid)
+            # Right-clicking inside a multi-selection removes all of it; the
+            # alternative silently drops the other three the user had picked.
+            if len(self.wp_list.selectedItems()) > 1:
+                self._remove_selected()
+            else:
+                self._remove_by_uid(uid)
         elif chosen == act_clear:
             self._clear()
         elif chosen == act_info:
@@ -1066,6 +1112,15 @@ class RoutePanel(QWidget):
         row = self.wp_list.currentRow()
         self.cmb_pick.blockSignals(True)
         self.cmb_pick.clear()
+        # A dock is a property of one waypoint. With several selected the
+        # picker would show one of them and quietly apply to that one only,
+        # which reads as though it applies to the selection.
+        chosen_count = len(self.wp_list.selectedItems())
+        if chosen_count > 1:
+            self.lbl_dock.setText(f"Dock: ({chosen_count} waypoints selected)")
+            self.cmb_pick.setEnabled(False)
+            self.cmb_pick.blockSignals(False)
+            return
         is_last = row == len(self.waypoints) - 1 and row >= 0
         if not self.pick_docks() and not is_last:
             self.lbl_dock.setText("Dock: (passing through)")
