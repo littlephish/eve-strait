@@ -268,6 +268,33 @@ def _oldest(*stamps):
     return best
 
 
+def refresh(timeout: float = 30.0) -> dict:
+    """Log in and fetch using the stored settings. {} when not configured.
+
+    The password comes from the OS credential store rather than the config,
+    so "configured" can be true while the password is missing -- the user
+    declined to have it remembered. That is a prompt, not an error, and the
+    caller distinguishes them by the exception message.
+    """
+    url = config.get_tripwire_url()
+    user = config.get_tripwire_user()
+    password = config.get_tripwire_password()
+    if not (url and user):
+        return {}
+    if not password:
+        raise RuntimeError("No saved Tripwire password - open Settings to "
+                           "enter it.")
+    opener = login(url, user, password, timeout=timeout)
+    data = fetch(url, opener, timeout=timeout)
+    save(data)
+    return data
+
+
+def configured() -> bool:
+    """Whether there is enough stored to attempt a fetch at all."""
+    return bool(config.get_tripwire_url() and config.get_tripwire_user())
+
+
 def describe(data: dict) -> str:
     """One line for the status bar."""
     sigs = len((data or {}).get("signatures") or {})

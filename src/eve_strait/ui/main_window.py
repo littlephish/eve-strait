@@ -50,6 +50,22 @@ def _scrollable(panel):
     return area
 
 
+def _credential_store_name() -> str:
+    """What to call the credential store in the UI, per platform.
+
+    "your operating system's credential store" is accurate and means nothing
+    to anybody; naming the actual thing is how a user knows where to go to
+    revoke it.
+    """
+    import sys
+
+    if sys.platform == "win32":
+        return "Windows Credential Manager"
+    if sys.platform == "darwin":
+        return "the macOS Keychain"
+    return "your desktop keyring"
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -126,6 +142,7 @@ class MainWindow(QMainWindow):
         self.starbase_systems: dict[int, int] = {}
         self.sov_owners: dict[int, tuple] = {}
         self._wanderer_data: dict = {}
+        self._tripwire_data: dict = {}
         self._hole_data: dict = {}
         self.sov_names: dict[int, str] = {}
         # {alliance_id: capital system_id}, which sets Ansiblex zones.
@@ -161,6 +178,7 @@ class MainWindow(QMainWindow):
         self._start_intel_timer()
         self._fetch_sovereignty()
         self._fetch_wormholes()
+        self._fetch_tripwire()
         self._resolve_docking_rights()
         from .. import update as _upd
         if _upd.auto_check_enabled() and _upd.is_frozen():
@@ -216,6 +234,35 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(wanderer.describe(self._wanderer_data),
                                          6000)
 
+    def _fetch_tripwire(self, force: bool = False):
+        """Pull the user's Tripwire chain, if they configured one."""
+        from ..esi import tripwire
+
+        if not tripwire.configured():
+            return
+        cached = {} if force else tripwire.load()
+        if cached.get("wormholes"):
+            self._on_tripwire(cached)
+            return
+        w = Worker(tripwire.refresh)
+        w.finished_ok.connect(self._on_tripwire)
+        # A missing saved password lands here. It is a prompt, not a fault:
+        # the user declined to have it remembered, or the store was locked.
+        w.failed.connect(lambda m: self.statusBar().showMessage(
+            f"Tripwire: {m}", 10000))
+        self._run(w)
+
+    def _on_tripwire(self, data):
+        from ..esi import tripwire
+
+        self._tripwire_data = data or {}
+        if self.universe is None:
+            return          # re-applied by _on_universe once the map exists
+        self._install_wormholes()
+        if self._tripwire_data:
+            self.statusBar().showMessage(
+                tripwire.describe(self._tripwire_data), 6000)
+
     def _edit_wanderer(self):
         from .dialogs import WandererDialog
         dlg = WandererDialog(self, config.get_wanderer_url(),
@@ -248,7 +295,7 @@ class MainWindow(QMainWindow):
         same pair the roomier edge wins, since that is the one that decides
         whether the hull fits.
         """
-        from ..esi import evescout, wanderer
+        from ..esi import evescout, tripwire, wanderer
 
         rows = (self._hole_data or {}).get("rows") or []
         conns = evescout.connections(rows, self.universe.systems)
@@ -260,6 +307,13 @@ class MainWindow(QMainWindow):
         # wholesale discarded the other's end-of-life and mass status, which
         # is exactly what the safety filters below read.
         for key, info in wanderer.edges(getattr(self, "_wanderer_data", {}) or {},
+                                        self.universe.systems).items():
+            edges[key] = evescout.merge_edge(edges.get(key), info)
+
+        # Tripwire last, and deliberately so: it carries signatures at both
+        # ends, which the other two do not, and merge_edge unions sigs rather
+        # than replacing them.
+        for key, info in tripwire.edges(getattr(self, "_tripwire_data", {}) or {},
                                         self.universe.systems).items():
             edges[key] = evescout.merge_edge(edges.get(key), info)
 
@@ -389,6 +443,7 @@ class MainWindow(QMainWindow):
         self._fetch_wormholes(force=True)
         if config.get_wanderer_map():
             self._fetch_wanderer(force=True)
+        self._fetch_tripwire(force=True)
 
     def _on_hole_filters_changed(self):
         """Rebuild the wormhole set, then re-plan over what survived."""
@@ -2746,6 +2801,7 @@ class MainWindow(QMainWindow):
             DockingRightsDialog,
             EsiSetupDialog,
             IntelSettingsDialog,
+            TripwireDialog,
             WandererDialog,
         )
         from .settings import AppearancePage, ScopesPage, SettingsDialog
@@ -2773,6 +2829,11 @@ class MainWindow(QMainWindow):
             lambda: self._search_ansiblex(bridge_page))
         bridge_page.search_field.returnPressed.connect(
             lambda: self._search_ansiblex(bridge_page))
+
+        tripwire_page = dlg.add_page("Tripwire", TripwireDialog(
+            dlg, config.get_tripwire_url(), config.get_tripwire_user(),
+            config.get_tripwire_password() or "",
+            store_name=_credential_store_name()))
 
         wanderer_page = dlg.add_page("Wanderer", WandererDialog(
             dlg, config.get_wanderer_url(), config.get_wanderer_map(),
@@ -2810,6 +2871,7 @@ class MainWindow(QMainWindow):
                            (self._apply_avoided, avoid_page),
                            (self._apply_bridges, bridge_page),
                            (self._apply_wanderer, wanderer_page),
+                           (self._apply_tripwire, tripwire_page),
                            (self._apply_docking_rights, rights_page),
                            (self._apply_intel, intel_page),
                            (self._apply_ai, ai_page),
@@ -2880,6 +2942,27 @@ class MainWindow(QMainWindow):
             self._wanderer_data = {}
             self._fetch_wanderer(force=True)
             notes.append("Wanderer settings saved; refreshing the map.")
+
+    def _apply_tripwire(self, page, notes):
+        url, user, password = page.values()
+        changed = (url != config.get_tripwire_url()
+                   or user != config.get_tripwire_user())
+        if changed:
+            config.set_tripwire(url, user)
+        # Written after set_tripwire: the username is the key the password is
+        # stored under, so saving it first would file the password under the
+        # old name.
+        if password != (config.get_tripwire_password() or ""):
+            config.set_tripwire_password(password)
+            if password and config.get_tripwire_password() is None:
+                notes.append(
+                    "Tripwire password could not be saved - no credential "
+                    "store is available, so it will be asked for again.")
+            changed = True
+        if changed:
+            self._tripwire_data = {}      # cached chain is for the old account
+            self._fetch_tripwire(force=True)
+            notes.append("Tripwire settings saved; refreshing the chain.")
 
     def _apply_docking_rights(self, page, notes):
         names = page.names()

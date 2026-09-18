@@ -114,6 +114,93 @@ class EsiSetupDialog(QDialog):
         return self.field.text().strip()
 
 
+class TripwireDialog(QDialog):
+    """Where the user's Tripwire lives and which account reads it.
+
+    Unlike Wanderer's per-map token, Tripwire authenticates with an ordinary
+    account password. That is full account access rather than a scoped key,
+    so it is never written to this app's config -- it goes to the operating
+    system's credential store, and the dialog says so rather than leaving the
+    user to wonder where it went.
+    """
+
+    def __init__(self, parent, url: str, username: str, password: str,
+                 store_name: str = "your operating system's credential store"):
+        super().__init__(parent)
+        self.setWindowTitle("Tripwire")
+        self.setMinimumWidth(560)
+        self._store_name = store_name
+        v = QVBoxLayout(self)
+
+        v.addWidget(_link_label(
+            "Route over your group's own scanned chain from "
+            '<a href="https://tripwiremap.app">Tripwire</a>, instead of only '
+            'the public Thera and Turnur holes.<br><br>'
+            'Tripwire carries the <b>signatures at both ends</b> of every '
+            'connection, which is what makes a wormhole leg flyable rather '
+            'than merely visible.'))
+
+        v.addWidget(QLabel("<b>Tripwire URL</b> - the site root"))
+        self.f_url = QLineEdit(url)
+        self.f_url.setPlaceholderText("https://tripwiremap.app")
+        v.addWidget(self.f_url)
+
+        v.addWidget(QLabel("<b>Username</b>"))
+        self.f_user = QLineEdit(username)
+        v.addWidget(self.f_user)
+
+        v.addWidget(QLabel("<b>Password</b>"))
+        self.f_pass = QLineEdit(password or "")
+        self.f_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        v.addWidget(self.f_pass)
+        v.addWidget(_muted(
+            f"Stored in {store_name}, never in this app's settings file - "
+            "a Tripwire password is full account access, not a scoped key "
+            "that can be revoked on its own. Leave it blank to forget a "
+            "saved one.\n"
+            "Chains are scanned by your group and collapse without warning, "
+            "so treat a route over them as a plan to verify, not a "
+            "guarantee."))
+
+        row = QHBoxLayout()
+        self.b_test = QPushButton("Test connection")
+        self.b_test.clicked.connect(self._test)
+        row.addWidget(self.b_test)
+        self.lbl_test = _muted("")
+        row.addWidget(self.lbl_test, 1)
+        v.addLayout(row)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
+                               QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        v.addWidget(box)
+
+    def values(self) -> tuple[str, str, str]:
+        return (self.f_url.text().strip(), self.f_user.text().strip(),
+                self.f_pass.text())
+
+    def _test(self):
+        """Log in and read the chain once, reporting what came back."""
+        from ..esi import tripwire
+
+        url, user, password = self.values()
+        if not (url and user and password):
+            self.lbl_test.setText("Fill in all three first.")
+            return
+        self.b_test.setEnabled(False)
+        self.lbl_test.setText("Connecting…")
+        QGuiApplication.processEvents()
+        try:
+            opener = tripwire.login(url, user, password)
+            data = tripwire.fetch(url, opener)
+            self.lbl_test.setText(tripwire.describe(data))
+        except Exception as exc:                          # noqa: BLE001
+            self.lbl_test.setText(f"Failed: {exc}")
+        finally:
+            self.b_test.setEnabled(True)
+
+
 class WandererDialog(QDialog):
     """Where the user's own Wanderer instance lives and how to read it.
 
