@@ -7,6 +7,11 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "PySide6>=6.7",
     "requests>=2.31",
+    # Tripwire authenticates with a password rather than a scoped token, so it
+    # goes to the OS credential store instead of config.json. Optional at
+    # runtime -- config._keyring() degrades to "cannot remember it" -- but
+    # declared so the shipped builds have it.
+    "keyring>=25",
 ]
 
 [project.scripts]

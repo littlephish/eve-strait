@@ -639,3 +639,86 @@ def set_scopes(scopes: list[str]) -> None:
     cfg = load_config()
     cfg["scopes"] = scopes
     save_config(cfg)
+
+
+# -- Tripwire ---------------------------------------------------------------
+# Tripwire authenticates with a username and password against its own
+# accounts, not with an ESI token. That difference decides where the password
+# lives: everything else this app stores is a scoped, revocable token, and a
+# password is neither. It goes to the operating system's credential store --
+# Windows Credential Manager, macOS Keychain, SecretService on Linux -- which
+# is what keyring selects per platform.
+KEYRING_SERVICE = "eve-strait-tripwire"
+
+
+def _keyring():
+    """The keyring module, or None if it is not installed or has no backend.
+
+    Optional on purpose. A missing credential store must cost the
+    remember-my-password convenience and nothing else; it must never fall
+    back to writing the password into config.json.
+    """
+    try:
+        import keyring
+        from keyring.backends import fail as _fail
+    except Exception:
+        return None
+    try:
+        backend = keyring.get_keyring()
+        if isinstance(backend, _fail.Keyring):
+            return None                 # importable, but nowhere to store
+    except Exception:
+        return None
+    return keyring
+
+
+def get_tripwire_url() -> str:
+    return (load_config().get("tripwire_url") or "").strip()
+
+
+def get_tripwire_user() -> str:
+    return (load_config().get("tripwire_user") or "").strip()
+
+
+def set_tripwire(url: str, username: str) -> None:
+    """Store the two things that are not secret."""
+    cfg = load_config()
+    cfg["tripwire_url"] = (url or "").strip().rstrip("/")
+    cfg["tripwire_user"] = (username or "").strip()
+    save_config(cfg)
+
+
+def get_tripwire_password() -> str | None:
+    """The stored password, or None if there is not one to be had.
+
+    None covers every way this can fail -- no keyring, no backend, a locked
+    store, nothing saved -- because the caller's response is the same in all
+    of them: ask the user.
+    """
+    kr = _keyring()
+    user = get_tripwire_user()
+    if kr is None or not user:
+        return None
+    try:
+        return kr.get_password(KEYRING_SERVICE, user) or None
+    except Exception:
+        return None
+
+
+def set_tripwire_password(password: str | None) -> None:
+    """Remember, or forget, the Tripwire password.
+
+    Silent on failure. A credential store that will not take the password is
+    a reason to ask for it again next time, not a reason to interrupt.
+    """
+    kr = _keyring()
+    user = get_tripwire_user()
+    if kr is None or not user:
+        return
+    try:
+        if password:
+            kr.set_password(KEYRING_SERVICE, user, password)
+        else:
+            kr.delete_password(KEYRING_SERVICE, user)
+    except Exception:
+        pass

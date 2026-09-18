@@ -58,7 +58,7 @@ jobs:
           # Nuitka is pinned: it is a compiler, and an unpinned one turns
           # every tag into a build against whatever shipped that week.
           # Bump deliberately, and re-run a release build when you do.
-          python -m pip install PySide6 requests nuitka==4.2.1 zstandard ordered-set
+          python -m pip install PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
           python -m pip install .
 
       # Keyed on uv.lock, not pyproject.toml: the "Stamp the version" step
@@ -89,6 +89,8 @@ jobs:
           --standalone
           --enable-plugin=pyside6
           --include-package=eve_strait
+          --include-package=keyring
+          --include-package=win32ctypes
           --windows-console-mode=disable
           --assume-yes-for-downloads
           --company-name=Eve-Strait

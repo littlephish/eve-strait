@@ -113,7 +113,7 @@ try {
     # or a newly added dependency without needing -Clean for every change.
     # Pinned to match .github/workflows/release.yml, so a local build and
     # a tagged release are compiled by the same Nuitka.
-    & $py -m pip install --quiet PySide6 requests nuitka==4.2.1 zstandard ordered-set
+    & $py -m pip install --quiet PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
     # Install the project itself so Nuitka can locate the package to include.
     & $py -m pip install --quiet .
     $env:VIRTUAL_ENV = Join-Path $build ".venv"
@@ -121,6 +121,8 @@ try {
         $mode `
         --enable-plugin=pyside6 `
         --include-package=eve_strait `
+        --include-package=keyring `
+        --include-package=win32ctypes `
         --windows-console-mode=disable `
         --assume-yes-for-downloads `
         --company-name="Eve-Strait" `
