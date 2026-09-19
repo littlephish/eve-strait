@@ -29,33 +29,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Flathub builds offline, so every Python dependency -- including Nuitka
-      # itself, which is a build-time dependency of this manifest -- has to be
-      # declared with a hash. The generated file is not committed yet; this
-      # step produces it and uploads it so it can be, at which point this step
-      # becomes a no-op guard against it drifting from pyproject.toml.
-      - name: Generate the offline dependency list
-        run: |
-          if [ -f dist_assets/linux/python3-requirements.json ]; then
-            echo "using the committed dependency list"
-          else
-            echo "::warning::python3-requirements.json is not committed; generating it"
-            pip install --break-system-packages flatpak-pip-generator || \
-              pip install flatpak-pip-generator
-            cd dist_assets/linux
-            flatpak-pip-generator \
-              --runtime=org.freedesktop.Sdk//25.08 \
-              --output python3-requirements \
-              PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
-          fi
-
-      - name: Upload the dependency list
-        uses: actions/upload-artifact@v4
-        with:
-          name: python3-requirements
-          path: dist_assets/linux/python3-requirements.json
-          if-no-files-found: warn
-
       # flatpak/flatpak-github-actions is the live repo (v6.8, Aug 2026).
       # flathub-infra/flatpak-github-actions is ARCHIVED -- but the container
       # images still live under that name in ghcr, which is why the image and
