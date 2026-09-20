@@ -46,11 +46,6 @@ modules:
 
   - name: eve-strait
     buildsystem: simple
-    build-options:
-      # Nuitka shells out to the compiler; the SDK provides gcc, so nothing
-      # needs downloading. See the --disable-cache note below.
-      env:
-        NUITKA_CACHE_DIR: /run/build/eve-strait/nuitka-cache
     build-commands:
       # Mirrors the Windows invocation in .github/workflows/release.yml, minus
       # the windows-* flags.
@@ -59,7 +54,10 @@ modules:
       # fetch ccache and, on some platforms, gcc. In an offline Flathub build
       # that would fail confusingly late. Better to never ask, and to disable
       # the one cache that would otherwise want fetching.
-      - python3 -m nuitka
+      # PYTHONPATH rather than `pip install .`: the package lives under src/,
+      # and installing it would drag in the hatchling build backend, which is
+      # not in the offline dependency list and cannot be fetched here.
+      - PYTHONPATH=src python3 -m nuitka
         --standalone
         --enable-plugin=pyside6
         --include-package=eve_strait
@@ -69,16 +67,26 @@ modules:
         --product-name=Eve-Strait
         --file-description="EVE Online capital jump route planner"
         --copyright=Eve-Strait
-        --linux-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
+        --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
         --output-dir=out
         --output-filename=eve-strait
         app.py
       # The compiled program folder goes under /app/lib; only the launcher
       # belongs on PATH. `command:` above resolves to /app/bin/eve-strait.
-      - mkdir -p ${FLATPAK_DEST}/lib/eve-strait
-      - cp -a out/app.dist/. ${FLATPAK_DEST}/lib/eve-strait/
-      - mkdir -p ${FLATPAK_DEST}/bin
-      - ln -sf ../lib/eve-strait/eve-strait ${FLATPAK_DEST}/bin/eve-strait
+      #
+      # Globbed rather than assuming out/app.dist: Nuitka names the folder
+      # after the main module, and release.yml on Windows already globs for
+      # the same reason. Fails loudly if there is no folder or more than one,
+      # instead of installing nothing and producing a Flatpak that launches
+      # into a missing binary.
+      - |
+        set -e
+        dist=$(ls -d out/*.dist)
+        test -d "$dist" || { echo "Nuitka produced no program folder"; exit 1; }
+        test -x "$dist/eve-strait" || { echo "no eve-strait binary in $dist"; exit 1; }
+        mkdir -p ${FLATPAK_DEST}/lib/eve-strait ${FLATPAK_DEST}/bin
+        cp -a "$dist/." ${FLATPAK_DEST}/lib/eve-strait/
+        ln -sf ../lib/eve-strait/eve-strait ${FLATPAK_DEST}/bin/eve-strait
       - install -Dm644
         dist_assets/linux/io.github.littlephish.EveStrait.desktop
         ${FLATPAK_DEST}/share/applications/io.github.littlephish.EveStrait.desktop
@@ -91,5 +99,20 @@ modules:
     sources:
       # Local iteration builds from the working tree. The published manifest
       # points at a tag instead -- see README.md.
+      #
+      # skip is not optional: a plain `type: dir` copies everything, and this
+      # tree carries a 687 MB .venv and a 225 MB dist/ that have no business
+      # in a build sandbox.
       - type: dir
         path: ../..
+        skip:
+          - .venv
+          - .git
+          - dist
+          - out
+          - build
+          - build-dir
+          - .flatpak-builder
+          - .pytest_cache
+          - __pycache__
+          - updater/target
