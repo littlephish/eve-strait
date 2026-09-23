@@ -165,9 +165,15 @@ class CharacterPanel(QWidget):
         self.btn_here.clicked.connect(self.goto_location_requested)
         v.addWidget(self.btn_here)
 
+        # -- docked/asset locations -----------------------------------------
+        # A section, like the cyno alts below: the list is long and is not
+        # what you are looking at while switching characters or setting an
+        # origin. The header summary carries the count while it is closed.
+        self.sec_structs = Section("Docked/asset locations")
+
         self.btn_structs = QPushButton("Load my dockable structures")
         self.btn_structs.clicked.connect(self.load_structures_requested)
-        v.addWidget(self.btn_structs)
+        self.sec_structs.add(self.btn_structs)
 
         # Bulk load is a context action, not the main click: it walks
         # every linked character, so it should be chosen rather than
@@ -182,14 +188,17 @@ class CharacterPanel(QWidget):
         self.progress.setRange(0, 0)   # indeterminate spinner
         self.progress.setTextVisible(True)
         self.progress.hide()
-        v.addWidget(self.progress)
+        self.sec_structs.add(self.progress)
 
-        v.addWidget(QLabel("Docked/asset locations (double-click to add):"))
         self.struct_list = QListWidget()
+        self.struct_list.setToolTip(
+            "Double-click to add that location's system as a waypoint.")
         self.struct_list.itemDoubleClicked.connect(self._on_double)
         # Stretches instead of a fixed 220px cap: this is the one thing in the
-        # panel worth reading, so it should take the space the panel has.
-        v.addWidget(self.struct_list, 1)
+        # panel worth reading, so it should take the space the panel has --
+        # which is why Section.add() grew a stretch argument.
+        self.sec_structs.add(self.struct_list, 1)
+        v.addWidget(self.sec_structs)
 
         # -- cyno alts ------------------------------------------------------
         # Sits with the characters because that is what it is: a roll-call of
@@ -226,6 +235,19 @@ class CharacterPanel(QWidget):
         self.lbl_cyno.setStyleSheet(f"color:{TEXT_MUTED}; font-size:11px;")
         self.sec_cyno.add(self.lbl_cyno)
         v.addWidget(self.sec_cyno)
+
+        # With the locations list now closed by default, nothing in the panel
+        # claims the leftover height, and the controls above would spread out
+        # to fill it. This spacer takes the slack while the section is shut and
+        # gives it all back the moment it opens.
+        v.addStretch(1)
+        tail = v.count() - 1
+
+        def _structs_toggled(on: bool):
+            v.setStretchFactor(self.sec_structs, 1 if on else 0)
+            v.setStretch(tail, 0 if on else 1)
+
+        self.sec_structs.toggled.connect(_structs_toggled)
 
         self._dockables: list = []
         self._filter = 0  # 0 none, 1 any dock, 2 safe only
@@ -354,6 +376,7 @@ class CharacterPanel(QWidget):
         self.struct_list.clear()
         if not self._dockables:
             self.struct_list.addItem("No stations/structures found in your assets.")
+            self.sec_structs.set_summary("none loaded")
             return
         shown = 0
         for d in self._dockables:
@@ -376,3 +399,12 @@ class CharacterPanel(QWidget):
             shown += 1
         if shown == 0:
             self.struct_list.addItem("(no locations match the docking filter)")
+        # Keep the closed header honest. The filtered case has to say so:
+        # a bare "0 locations" reads as "you own nothing" when what actually
+        # happened is that the docking filter hid all of it.
+        total = len(self._dockables)
+        if shown == total:
+            self.sec_structs.set_summary(
+                f"{total} location{'s' if total != 1 else ''}")
+        else:
+            self.sec_structs.set_summary(f"{shown} of {total} match the filter")

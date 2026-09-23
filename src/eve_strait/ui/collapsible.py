@@ -93,14 +93,23 @@ class Section(QWidget):
         self._body_layout = QVBoxLayout(self.body)
         self._body_layout.setSpacing(GAP)
         self._body_layout.setContentsMargins(INDENT, 0, 0, TIGHT)
-        v.addWidget(self.body)
+        # The body takes whatever height the section is given beyond its
+        # header. That is a no-op for a section the parent sizes naturally,
+        # and it is what lets a stretched body (see add()) actually grow.
+        v.addWidget(self.body, 1)
 
-    def add(self, item):
-        """Add a widget or a layout to the section body."""
+    def add(self, item, stretch: int = 0):
+        """Add a widget or a layout to the section body.
+
+        ``stretch`` is passed straight to the body layout, for a section whose
+        content should take the space the panel has rather than settle at its
+        natural height. It defaults to 0, which is how every section was built
+        before the option existed.
+        """
         if isinstance(item, QWidget):
-            self._body_layout.addWidget(item)
+            self._body_layout.addWidget(item, stretch)
         else:
-            self._body_layout.addLayout(item)
+            self._body_layout.addLayout(item, stretch)
 
     def set_summary(self, text: str):
         """The one-line state shown while collapsed."""
