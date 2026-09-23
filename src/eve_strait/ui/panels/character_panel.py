@@ -38,6 +38,7 @@ class CharacterPanel(QWidget):
     scopes_requested = Signal()
     scan_cyno_requested = Signal()
     force_cyno_requested = Signal()
+    manage_characters_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -151,15 +152,17 @@ class CharacterPanel(QWidget):
         self.chk_follow.toggled.connect(self.follow_me_toggled)
         v.addWidget(self.chk_follow)
 
-        btn_row = QHBoxLayout()
-        self.btn_add = QPushButton("Add another…")
-        self.btn_add.clicked.connect(self.login_requested)
-        btn_row.addWidget(self.btn_add)
-        self.btn_unlink = QPushButton("Unlink")
-        self.btn_unlink.setToolTip("Remove the selected character from this app.")
-        self.btn_unlink.clicked.connect(self._on_unlink)
-        btn_row.addWidget(self.btn_unlink)
-        v.addLayout(btn_row)
+        # Adding and unlinking moved to the character manager. The combo above
+        # is for switching while you work; deciding which characters exist at
+        # all is a different job, and one that needs to show far more than a
+        # drop-down can -- what data each has, how old it is, what it is
+        # missing.
+        self.btn_manage = QPushButton("Manage characters…")
+        self.btn_manage.setToolTip(
+            "Add, unlink and review every linked character: what assets are "
+            "cached, when they were last read, and which are missing a scope.")
+        self.btn_manage.clicked.connect(self.manage_characters_requested)
+        v.addWidget(self.btn_manage)
 
         self.btn_here = QPushButton("Use current location as origin")
         self.btn_here.clicked.connect(self.goto_location_requested)
@@ -318,7 +321,6 @@ class CharacterPanel(QWidget):
             self.lbl_login.setText("")     # clear any stale SSO status
         else:
             self.lbl_location.setText("")
-        self.btn_unlink.setEnabled(bool(name))
         self.btn_here.setEnabled(bool(name))
         self.chk_follow.setEnabled(bool(name))
 
@@ -345,11 +347,6 @@ class CharacterPanel(QWidget):
         cid = self.cmb_char.currentData()
         if cid is not None:
             self.character_changed.emit(int(cid))
-
-    def _on_unlink(self):
-        cid = self.cmb_char.currentData()
-        if cid is not None:
-            self.unlink_requested.emit(int(cid))
 
     def set_loading(self, loading: bool, text: str = ""):
         self.btn_structs.setEnabled(not loading)

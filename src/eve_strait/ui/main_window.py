@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.map_view: MapView | None = None
         self.dockables: list = []
         self.tokens: dict[int, auth.Token] = auth.load_all()
+        self._char_mgr = None          # the modeless character manager, if open
         self.cyno_alts: list = []
         self.token: auth.Token | None = auth.load_saved()
         self.esi: EsiClient | None = None
@@ -593,6 +594,39 @@ class MainWindow(QMainWindow):
         active = self.token.character_id if self.token else None
         self.character.set_characters(chars, active)
         self.character.set_login(self.token.character_name if self.token else None)
+        self._sync_character_manager()
+
+    def _sync_character_manager(self):
+        """Repaint the manager window, if it is open.
+
+        Called from every path that changes what it shows -- linking,
+        unlinking, switching, and finishing an asset load -- so an open
+        window never disagrees with the panel behind it.
+        """
+        if self._char_mgr is not None:
+            self._char_mgr.refresh(
+                self.tokens, self.token.character_id if self.token else None)
+
+    def _manage_characters(self):
+        """Open the character manager, or raise the one already open."""
+        if self._char_mgr is None:
+            from .characters import CharacterManager
+            mgr = CharacterManager(self)
+            mgr.login_requested.connect(self._login)
+            mgr.unlink_requested.connect(self._unlink_character)
+            mgr.activate_requested.connect(self._switch_character)
+            mgr.reload_requested.connect(self._load_all_structures)
+            # Built once and hidden on close rather than deleted. Deleting it
+            # would leave _sync_character_manager holding a wrapper whose C++
+            # object is gone -- reachable, because an asset load finishing
+            # after the window is closed calls straight into it. Keeping the
+            # instance also keeps the selection and scroll position between
+            # visits, which is worth having with two dozen rows.
+            self._char_mgr = mgr
+        self._sync_character_manager()
+        self._char_mgr.show()
+        self._char_mgr.raise_()
+        self._char_mgr.activateWindow()
 
     def _switch_character(self, character_id: int):
         """Make another linked character active and reload everything of theirs."""
@@ -2205,6 +2239,8 @@ class MainWindow(QMainWindow):
         self.character.add_system.connect(self.route.add_system)
         self.character.character_changed.connect(self._switch_character)
         self.character.unlink_requested.connect(self._unlink_character)
+        self.character.manage_characters_requested.connect(
+            self._manage_characters)
         self.character.goto_location_requested.connect(self._use_location_as_origin)
         self.character.follow_me_toggled.connect(self._on_follow_me_toggled)
         self.character.chk_follow.setChecked(config.get_follow_me())
@@ -3400,15 +3436,23 @@ class MainWindow(QMainWindow):
                                     QMessageBox.warning(self, "Structures", m)))
         self._run(w, "Loading dockable structures…")
 
-    def _load_all_structures(self):
-        """Fill every linked character's dockables cache in one pass."""
+    def _load_all_structures(self, only=None):
+        """Fill every linked character's dockables cache in one pass.
+
+        ``only`` narrows the sweep to a list of character ids, which is what
+        the character manager's Reload assets sends: refreshing the two alts
+        whose data went stale should not cost a pass over all twenty-four.
+        """
         if not self.tokens:
             QMessageBox.information(self, "Structures", "Log in first.")
             return
         from ..esi import client as _client
+        tokens = ({c: t for c, t in self.tokens.items() if c in set(only)}
+                  if only else dict(self.tokens))
+        if not tokens:
+            return
         self.character.set_loading(True, "Loading assets…")
         cid = config.get_client_id()
-        tokens = dict(self.tokens)
         w = Worker(lambda progress=None: _client.load_all_dockables(
             tokens, cid, progress))
         w.progress.connect(lambda msg: self.character.set_loading(True, msg))
@@ -3426,6 +3470,9 @@ class MainWindow(QMainWindow):
         self._render_character()
         self.route.refresh()
         total = sum(len(v) for v in results.values())
+        # The manager shows per-character asset counts and ages; this is the
+        # moment both changed.
+        self._sync_character_manager()
         self.statusBar().showMessage(
             f"Loaded {total} dockable locations across {len(results)} "
             f"character(s).", 8000)
@@ -3440,6 +3487,7 @@ class MainWindow(QMainWindow):
             from ..esi import client
             client.save_dockables(self.token.character_id, dockables)
         self._render_character()
+        self._sync_character_manager()
         self.route.refresh()
 
     # -- worker helper ------------------------------------------------------
