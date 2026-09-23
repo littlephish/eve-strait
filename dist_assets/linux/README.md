@@ -7,27 +7,65 @@ confirmation.
 The app is compiled with **Nuitka**, the same as the Windows build — one build
 tool across platforms, and a faster start than interpreted source.
 
-## One-time: generate the offline dependency list
+## Regenerating the offline dependency list
 
 Flathub builds with no network, so every Python dependency must be declared
 with a hash. **Nuitka is one of them**: it is a build-time dependency of this
 manifest, not just a developer tool. Regenerate after **any** change to
-`pyproject.toml`:
+`pyproject.toml`.
+
+The tool is **req2flatpak**, not `flatpak-pip-generator`. The latter downloads
+by running pip inside the Flatpak SDK, so it needs a machine with flatpak on
+it; req2flatpak is pure Python, resolves against PyPI, and runs anywhere
+including the Windows development box.
 
 ```bash
-pip install flatpak-pip-generator
-flatpak-pip-generator \
-    --runtime=org.freedesktop.Sdk//25.08 \
-    --output python3-requirements \
-    PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
+pip install req2flatpak
+req2flatpak -r requirements.in -t 313-x86_64 -o python3-requirements.json
 ```
 
-That writes `python3-requirements.json`, which the manifest includes as its
-first module. Commit it.
+### `-t 313-x86_64` is the part that breaks the build
 
-Keep the Nuitka pin in step with `.github/workflows/release.yml` and
-`scripts/build_exe.ps1`, so a Flatpak and a Windows release are compiled by
-the same compiler.
+**The target Python version must match the runtime's, exactly.** It is not a
+default and it is not checked for you.
+
+`org.freedesktop.Platform//25.08` ships **Python 3.13**, so the target is
+`313`. Confirm it rather than trusting this line, because it changes with the
+runtime branch:
+
+```bash
+flatpak run --command=python3 org.freedesktop.Sdk//25.08 --version
+```
+
+Get this wrong and the build fails deep into the pip step with a message that
+does not mention Python versions at all:
+
+```
+ERROR: Could not find a version that satisfies the requirement cffi
+       (from versions: none)
+```
+
+That is a `cp312`-tagged wheel being invisible to a 3.13 interpreter. Most of
+the list survives a mismatch — pure-Python wheels are tagged `py3-none-any`
+and PySide6, shiboken6 and cryptography ship `abi3` wheels good for any later
+3.x — so only the few packages that build a version-specific C extension fail.
+Today that is **cffi, charset-normalizer and zstandard**. A mismatch therefore
+looks like one broken package rather than a systematically wrong file.
+
+### Three more things that cost time
+
+- **`requirements.in` is fully pinned**, because req2flatpak rejects anything
+  that is not exactly one version. Update pins there, not in the generated
+  JSON.
+- **Nuitka is appended by hand.** It ships as an sdist with no wheel and
+  req2flatpak handles wheels only, so after regenerating you must re-add its
+  `sources` entry and append `nuitka` to the end of the `pip3 install` command
+  in `build-commands`. Keep the pin in step with
+  `.github/workflows/release.yml` and `scripts/build_exe.ps1`, so a Flatpak and
+  a Windows release are compiled by the same compiler.
+- PySide6 6.11 publishes no `manylinux2014` wheel, so the resolve reports
+  "unsatisfiable" unless the platform is `manylinux_2_34`. `-t 313-x86_64`
+  already picks that.
 
 ## Build and run
 
