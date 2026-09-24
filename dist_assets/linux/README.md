@@ -67,6 +67,31 @@ looks like one broken package rather than a systematically wrong file.
   "unsatisfiable" unless the platform is `manylinux_2_34`. `-t 313-x86_64`
   already picks that.
 
+## Build tools the SDK does not have
+
+`org.freedesktop.Sdk//25.08` ships a compiler and Python 3.13, but it is not a
+general-purpose distro and it has no package manager. Anything Nuitka shells
+out to has to arrive as its own module.
+
+So far that is **patchelf**, which Nuitka's standalone mode uses to rewrite the
+RPATH of every shared library it copies into the program folder. Missing, the
+compile stops with advice that cannot be taken inside a sandbox:
+
+```
+FATAL: Error, standalone mode on Linux requires 'patchelf' to be installed.
+       Use 'apt/dnf/yum install patchelf' first.
+```
+
+It is built from the release tarball as the first module in the manifest, and
+carries `cleanup: ['*']` because the finished app never runs it — the RPATHs
+are already written. Flatpak-builder defers cleanup to the end of the whole
+build, so the `eve-strait` module still finds it at `/app/bin/patchelf`.
+
+Note the shape of this failure, because the next one will look the same: the
+Nuitka step is where a missing *system* tool surfaces, and the error names the
+tool rather than the manifest. Add a module; do not reach for
+`--assume-yes-for-downloads`, which cannot work offline.
+
 ## Build and run
 
 ```bash
@@ -95,9 +120,10 @@ exercises:
 1. **The Nuitka build completes without reaching for the network.** The
    manifest deliberately omits `--assume-yes-for-downloads`, which would let
    Nuitka fetch ccache; `--disable-cache=ccache` stops it wanting to. If the
-   build fails asking to download something, that is the thing to fix — not by
-   adding the flag, which cannot work offline anyway, but by providing the
-   dependency through the SDK.
+   build fails asking to download something, or reports a tool missing, that
+   is the thing to fix — not by adding the flag, which cannot work offline
+   anyway, but by adding a module for it. See "Build tools the SDK does not
+   have" above.
 2. First launch downloads the solar-system dump into the sandboxed data dir.
 3. **EVE SSO login** — the browser opens through the portal, and the callback
    on `localhost:8635` is received inside the sandbox. This is the one most

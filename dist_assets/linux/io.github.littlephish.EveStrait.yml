@@ -38,6 +38,33 @@ finish-args:
   - --talk-name=org.freedesktop.secrets
 
 modules:
+  # Build-time only, and not optional. Nuitka's standalone mode rewrites the
+  # RPATH of every shared library it copies into the program folder, and shells
+  # out to patchelf to do it. Without it the compile dies with:
+  #
+  #   FATAL: Error, standalone mode on Linux requires 'patchelf' to be
+  #   installed. Use 'apt/dnf/yum install patchelf' first.
+  #
+  # org.freedesktop.Sdk//25.08 does not ship patchelf -- that failure is the
+  # confirmation -- and the message's advice cannot be followed: there is no
+  # package manager inside the build sandbox, and Flathub builds offline
+  # anyway. So it is built from its release tarball like any other module.
+  # 0.19.1 is a `make dist` product and carries a configure script, hence
+  # plain autotools with no bootstrap step.
+  #
+  # cleanup: ['*'] because nothing in the finished app ever runs patchelf --
+  # the RPATHs are written by the time the build ends. Flatpak-builder defers
+  # cleanup to the end of the whole build, so the eve-strait module below
+  # still finds it on PATH at /app/bin/patchelf.
+  - name: patchelf
+    buildsystem: autotools
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/NixOS/patchelf/releases/download/0.19.1/patchelf-0.19.1.tar.gz
+        sha256: 491108728f120ce05b539934b41a750235031a6df8abc6b47e57aff7de15094d
+
   # Generated, not hand-written. Flathub builds offline, so every dependency
   # must arrive with a hash rather than being resolved during the build. This
   # includes Nuitka itself, which is a build-time dependency here.
