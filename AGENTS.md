@@ -64,11 +64,20 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-- The workflow builds on `windows-latest` and opens a draft GitHub release.
+- The workflow builds on `windows-latest` and publishes the release (not a
+  draft — the in-app updater reads `/releases/latest`, which skips drafts).
+- The same tag also runs a `flatpak` job in `release.yml`: it stamps the
+  version, builds the Flatpak in the freedesktop 25.08 SDK, and attaches
+  `eve-strait.flatpak` to the release. It runs **after** the Windows job on
+  purpose, so a Flatpak failure cannot un-ship the Windows installer.
+  `flatpak.yml` builds for PRs and manual runs only — a tag must not build
+  the Flatpak twice.
 - It stamps the tag version into `__init__.py` and `pyproject.toml` via
   `scripts/version.py` **before** install and Nuitka. If you touch version handling, keep
   that stamp step working — skipping it is how a release once reported the old version and
-  the updater offered an update to the running build.
+  the updater offered an update to the running build. The Flatpak job stamps
+  the same way (with the Sdk's python3), and the manifest itself falls back
+  to stamping from `git describe` so Flathub's build of the same tag agrees.
 - The in-app updater (Help → Check for updates) does a folder swap of the release zip;
   `update-log.txt` next to the exe records each step.
 - The updater's "wait for the exe to unlock" step assumes only the GUI holds it open.
@@ -100,6 +109,7 @@ scripts/
   screenshot.py       docs screenshot helper
 updater/              Rust updater helper (Cargo project)
 dist_assets/win/      Inno Setup script
+dist_assets/linux/    Flatpak manifests (local + Flathub), metadata, FLATHUB.md
 ```
 
 ## Domain rules that must stay intact

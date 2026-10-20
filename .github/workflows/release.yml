@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag to build the Windows artifacts and publish a release:
+# Push a tag to build the Windows and Flatpak artifacts and publish a release:
 #
 #   git tag v0.1.0
 #   git push origin v0.1.0
@@ -173,3 +173,44 @@ jobs:
           files: |
             dist/Eve-Strait-*-win64.zip
             dist/Eve-Strait-*-setup.exe
+
+  # The Linux release: the same tag, a different machine. Runs after the
+  # Windows job on purpose, so the release exists first and the bundle is
+  # attached to it rather than creating a second one -- and a Flatpak
+  # failure cannot un-ship the Windows installer, which is already attached
+  # by the time this job starts.
+  flatpak:
+    name: Build Flatpak (x86_64)
+    needs: release
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same stamp as the Windows job: the tag is the version, and the build
+      # compiles whatever is in the source tree. Run it with the Sdk's
+      # python3, not the container's -- the container image is not
+      # guaranteed to carry a host python, and the Sdk is the interpreter
+      # that actually compiles the app.
+      - name: Stamp the version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          flatpak run --command=python3 org.freedesktop.Sdk//25.08 scripts/version.py "$v"
+          got=$(flatpak run --command=python3 org.freedesktop.Sdk//25.08 scripts/version.py)
+          test "$got" = "$v" || { echo "stamp failed: file says '$got', tag says '$v'"; exit 1; }
+          echo "stamped OK: $got"
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: eve-strait.flatpak
+          manifest-path: dist_assets/linux/io.github.littlephish.EveStrait.yml
+          cache-key: flatpak-release-${{ github.sha }}
+          upload-artifact: true
+
+      # generate_release_notes stays off: the Windows job already wrote them.
+      - name: Attach the bundle to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: eve-strait.flatpak
