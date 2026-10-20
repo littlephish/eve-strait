@@ -99,24 +99,28 @@ modules:
       # PYTHONPATH rather than `pip install .`: the package lives under src/,
       # and installing it would drag in the hatchling build backend, which is
       # not in the offline dependency list and cannot be fetched here.
+      # One shell line per option would make each option its own command, so
+      # the invocations below are continued with backslashes -- the folded
+      # `run: >` block in release.yml gets the same effect for free, which is
+      # why the Windows build never saw this.
       - |
         set -e
         VER=$(python3 scripts/version.py)
-        PYTHONPATH=src python3 -m nuitka
-          --standalone
-          --enable-plugin=pyside6
-          --include-package=eve_strait
-          --include-package-data=eve_strait
-          --disable-cache=ccache
-          --company-name=Eve-Strait
-          --product-name=Eve-Strait
-          --file-version=$VER
-          --product-version=$VER
-          --file-description="EVE Online capital jump route planner"
-          --copyright=Eve-Strait
-          --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
-          --output-dir=out
-          --output-filename=eve-strait
+        PYTHONPATH=src python3 -m nuitka \
+          --standalone \
+          --enable-plugin=pyside6 \
+          --include-package=eve_strait \
+          --include-package-data=eve_strait \
+          --disable-cache=ccache \
+          --company-name=Eve-Strait \
+          --product-name=Eve-Strait \
+          --file-version=$VER \
+          --product-version=$VER \
+          --file-description="EVE Online capital jump route planner" \
+          --copyright=Eve-Strait \
+          --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg \
+          --output-dir=out \
+          --output-filename=eve-strait \
           app.py
       # The compiled program folder goes under /app/lib; only the launcher
       # belongs on PATH. `command:` above resolves to /app/bin/eve-strait.
