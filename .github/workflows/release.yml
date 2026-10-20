@@ -197,8 +197,20 @@ jobs:
       - name: Stamp the version
         run: |
           v="${GITHUB_REF_NAME#v}"
-          flatpak run --command=python3 org.freedesktop.Sdk//25.08 scripts/version.py "$v"
-          got=$(flatpak run --command=python3 org.freedesktop.Sdk//25.08 scripts/version.py)
+          # flatpak run starts in the sandbox's home, not the checkout, so a
+          # relative script path resolves to nothing and python3 exits 2 with
+          # "can't open file" -- the first v0.6.2 build died exactly there.
+          # Address the script absolutely and expose the workspace
+          # read-write, because version.py rewrites two files in it.
+          stamp() {
+            flatpak run --command=python3 --filesystem="$GITHUB_WORKSPACE" \
+              org.freedesktop.Sdk//25.08 "$GITHUB_WORKSPACE/scripts/version.py" "$@"
+          }
+          if ! stamp "$v"; then
+            echo "--- installed flatpak refs:"; flatpak list || true
+            exit 1
+          fi
+          got=$(stamp)
           test "$got" = "$v" || { echo "stamp failed: file says '$got', tag says '$v'"; exit 1; }
           echo "stamped OK: $got"
 
