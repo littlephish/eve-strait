@@ -37,6 +37,7 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.6.2" date="2026-10-20"/>
     <release version="0.1.0" date="2026-09-17"/>
   </releases>
 </component>

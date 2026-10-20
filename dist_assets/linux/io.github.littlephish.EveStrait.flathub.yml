@@ -1,0 +1,150 @@
+# The manifest as published to Flathub.
+#
+# Lives in the flathub repo at
+# apps/io.github.littlephish.EveStrait/io.github.littlephish.EveStrait.yml,
+# and `python3-requirements.json` from this directory must sit beside it --
+# a bare-filename module entry is resolved relative to the manifest, not to
+# the source checkout.
+#
+# Everything else is a verbatim copy of io.github.littlephish.EveStrait.yml
+# from this directory. Keep the two in sync by hand; the only legitimate
+# difference is the source block at the bottom. If you find yourself editing
+# one, edit both.
+
+app-id: io.github.littlephish.EveStrait
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: eve-strait
+
+finish-args:
+  # Qt needs a display. Both are listed so Wayland is preferred and X11 works.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Needed for: ESI, the solar-system dump from Fuzzwork on first launch,
+  # EVE-Scout, and the OAuth callback this app serves on localhost:8635.
+  - --share=network
+  # Opening the EVE SSO page in the user's own browser, via the portal.
+  - --talk-name=org.freedesktop.portal.OpenURI
+  # Credential storage for mapper logins, so a Tripwire password is never
+  # written to disk in plaintext. keyring picks SecretService here.
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  # Build-time only, and not optional. Nuitka's standalone mode rewrites the
+  # RPATH of every shared library it copies into the program folder, and shells
+  # out to patchelf to do it. Without it the compile dies with:
+  #
+  #   FATAL: Error, standalone mode on Linux requires 'patchelf' to be
+  #   installed. Use 'apt/dnf/yum install patchelf' first.
+  #
+  # org.freedesktop.Sdk//25.08 does not ship patchelf -- that failure is the
+  # confirmation -- and the message's advice cannot be followed: there is no
+  # package manager inside the build sandbox, and Flathub builds offline
+  # anyway. So it is built from its release tarball like any other module.
+  # 0.19.1 is a `make dist` product and carries a configure script, hence
+  # plain autotools with no bootstrap step.
+  #
+  # cleanup: ['*'] because nothing in the finished app ever runs patchelf --
+  # the RPATHs are written by the time the build ends. Flatpak-builder defers
+  # cleanup to the end of the whole build, so the eve-strait module below
+  # still finds it on PATH at /app/bin/patchelf.
+  - name: patchelf
+    buildsystem: autotools
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://github.com/NixOS/patchelf/releases/download/0.19.1/patchelf-0.19.1.tar.gz
+        sha256: 491108728f120ce05b539934b41a750235031a6df8abc6b47e57aff7de15094d
+
+  # Generated, not hand-written. Flathub builds offline, so every dependency
+  # must arrive with a hash rather than being resolved during the build. This
+  # includes Nuitka itself, which is a build-time dependency here.
+  # Regenerate after any change to pyproject.toml -- see README.md.
+  - python3-requirements.json
+
+  - name: eve-strait
+    buildsystem: simple
+    build-commands:
+      # Stamp the release version from the git tag, when the checkout is
+      # exactly a tag. The app reports its version from
+      # src/eve_strait/__init__.py, and a build that disagrees with its tag
+      # is how the in-app updater once offered an "update" to the build that
+      # was already installed.
+      #
+      # On Flathub this command is the only stamp: the build runs from this
+      # manifest alone, and the git source checks out the tag.
+      - |
+        set -e
+        if tag=$(git describe --tags --exact-match 2>/dev/null); then
+          python3 scripts/version.py "${tag#v}"
+        fi
+      # Mirrors the Windows invocation in .github/workflows/release.yml, minus
+      # the windows-* flags.
+      #
+      # Deliberately NOT --assume-yes-for-downloads: that flag lets Nuitka
+      # fetch ccache and, on some platforms, gcc. In an offline Flathub build
+      # that would fail confusingly late. Better to never ask, and to disable
+      # the one cache that would otherwise want fetching.
+      # PYTHONPATH rather than `pip install .`: the package lives under src/,
+      # and installing it would drag in the hatchling build backend, which is
+      # not in the offline dependency list and cannot be fetched here.
+      - |
+        set -e
+        VER=$(python3 scripts/version.py)
+        PYTHONPATH=src python3 -m nuitka
+          --standalone
+          --enable-plugin=pyside6
+          --include-package=eve_strait
+          --include-package-data=eve_strait
+          --disable-cache=ccache
+          --company-name=Eve-Strait
+          --product-name=Eve-Strait
+          --file-version=$VER
+          --product-version=$VER
+          --file-description="EVE Online capital jump route planner"
+          --copyright=Eve-Strait
+          --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
+          --output-dir=out
+          --output-filename=eve-strait
+          app.py
+      # The compiled program folder goes under /app/lib; only the launcher
+      # belongs on PATH. `command:` above resolves to /app/bin/eve-strait.
+      #
+      # Globbed rather than assuming out/app.dist: Nuitka names the folder
+      # after the main module, and release.yml on Windows already globs for
+      # the same reason. Fails loudly if there is no folder or more than one,
+      # instead of installing nothing and producing a Flatpak that launches
+      # into a missing binary.
+      - |
+        set -e
+        dist=$(ls -d out/*.dist)
+        test -d "$dist" || { echo "Nuitka produced no program folder"; exit 1; }
+        test -x "$dist/eve-strait" || { echo "no eve-strait binary in $dist"; exit 1; }
+        mkdir -p ${FLATPAK_DEST}/lib/eve-strait ${FLATPAK_DEST}/bin
+        cp -a "$dist/." ${FLATPAK_DEST}/lib/eve-strait/
+        ln -sf ../lib/eve-strait/eve-strait ${FLATPAK_DEST}/bin/eve-strait
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.desktop
+        ${FLATPAK_DEST}/share/applications/io.github.littlephish.EveStrait.desktop
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.metainfo.xml
+        ${FLATPAK_DEST}/share/metainfo/io.github.littlephish.EveStrait.metainfo.xml
+      - install -Dm644
+        dist_assets/linux/io.github.littlephish.EveStrait.svg
+        ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.littlephish.EveStrait.svg
+    sources:
+      # The one legitimate difference from the local manifest: Flathub builds
+      # from a pinned tag of the upstream repo, not from a working tree.
+      # x-checker opens an automatic PR here when a new tag appears, so
+      # releasing stays "push a tag".
+      - type: git
+        url: https://github.com/littlephish/eve-strait.git
+        tag: v0.6.2
+        x-checker-data:
+          type: git
+          url: https://github.com/littlephish/eve-strait.git
+          tag-pattern: "^v([\\d.]+)$"
