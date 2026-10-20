@@ -7,6 +7,13 @@ confirmation.
 The app is compiled with **Nuitka**, the same as the Windows build — one build
 tool across platforms, and a faster start than interpreted source.
 
+Two manifests live here. `io.github.littlephish.EveStrait.yml` is what this
+directory builds locally and what CI builds from the working tree (`type: dir`
+source). `io.github.littlephish.EveStrait.flathub.yml` is the file that
+actually goes into the flathub repo — identical except the source block pins a
+git tag — and `FLATHUB.md` is the submission guide. Change one manifest,
+change the other.
+
 ## Regenerating the offline dependency list
 
 Flathub builds with no network, so every Python dependency must be declared
@@ -91,6 +98,21 @@ Note the shape of this failure, because the next one will look the same: the
 Nuitka step is where a missing *system* tool surfaces, and the error names the
 tool rather than the manifest. Add a module; do not reach for
 `--assume-yes-for-downloads`, which cannot work offline.
+
+## Version stamping
+
+The app reports its version from `src/eve_strait/__init__.py`, which in the
+repo is a `0.1.0` placeholder — the release tag is the version. The Flatpak
+build stamps it the same way the Windows build does:
+
+- `release.yml` stamps with the Sdk's python3 before flatpak-builder runs,
+  and the `type: dir` source then carries the stamped files into the sandbox.
+- The manifest's first build command stamps from
+  `git describe --tags --exact-match`, so Flathub's build of the same tag
+  agrees even though it never runs our workflows.
+
+A build that launches as `0.1.0` instead of its tag is either a build of the
+wrong commit, or a checkout where the tag is not visible inside the sandbox.
 
 ## Build and run
 

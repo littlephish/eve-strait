@@ -74,6 +74,21 @@ modules:
   - name: eve-strait
     buildsystem: simple
     build-commands:
+      # Stamp the release version from the git tag, when the checkout is
+      # exactly a tag. The app reports its version from
+      # src/eve_strait/__init__.py, and a build that disagrees with its tag
+      # is how the in-app updater once offered an "update" to the build that
+      # was already installed.
+      #
+      # Our CI stamps in the workflow before flatpak-builder runs (the
+      # `type: dir` source below skips .git, so this is a no-op there). On
+      # Flathub this command is the only stamp: the build runs from this
+      # manifest alone, and the git source checks out the tag.
+      - |
+        set -e
+        if tag=$(git describe --tags --exact-match 2>/dev/null); then
+          python3 scripts/version.py "${tag#v}"
+        fi
       # Mirrors the Windows invocation in .github/workflows/release.yml, minus
       # the windows-* flags.
       #
@@ -84,20 +99,25 @@ modules:
       # PYTHONPATH rather than `pip install .`: the package lives under src/,
       # and installing it would drag in the hatchling build backend, which is
       # not in the offline dependency list and cannot be fetched here.
-      - PYTHONPATH=src python3 -m nuitka
-        --standalone
-        --enable-plugin=pyside6
-        --include-package=eve_strait
-        --include-package-data=eve_strait
-        --disable-cache=ccache
-        --company-name=Eve-Strait
-        --product-name=Eve-Strait
-        --file-description="EVE Online capital jump route planner"
-        --copyright=Eve-Strait
-        --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
-        --output-dir=out
-        --output-filename=eve-strait
-        app.py
+      - |
+        set -e
+        VER=$(python3 scripts/version.py)
+        PYTHONPATH=src python3 -m nuitka
+          --standalone
+          --enable-plugin=pyside6
+          --include-package=eve_strait
+          --include-package-data=eve_strait
+          --disable-cache=ccache
+          --company-name=Eve-Strait
+          --product-name=Eve-Strait
+          --file-version=$VER
+          --product-version=$VER
+          --file-description="EVE Online capital jump route planner"
+          --copyright=Eve-Strait
+          --linux-app-icon=dist_assets/linux/io.github.littlephish.EveStrait.svg
+          --output-dir=out
+          --output-filename=eve-strait
+          app.py
       # The compiled program folder goes under /app/lib; only the launcher
       # belongs on PATH. `command:` above resolves to /app/bin/eve-strait.
       #
