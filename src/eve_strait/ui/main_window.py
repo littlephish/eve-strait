@@ -446,6 +446,37 @@ class MainWindow(QMainWindow):
             self._fetch_wanderer(force=True)
         self._fetch_tripwire(force=True)
 
+    def _update_all(self):
+        """Re-read every live data source in one go.
+
+        Wormholes skip their own 15-minute cache, as F5 does, because that
+        cache exists to spare EVE-Scout on replans, not to second-guess an
+        explicit request. Everything ESI-backed goes through the transport
+        as usual, so a route whose Expires has not passed costs nothing and
+        returns what EVE would have returned anyway -- this is a sweep, not
+        a forced re-download. Character data is skipped without a login
+        rather than prompting for one; the map sources still update.
+        """
+        self.statusBar().showMessage("Updating all data…", 6000)
+        self._refresh_wormholes_now()
+        self._fetch_sovereignty()
+        self._fetch_incursions()
+        self.refresh_intel(priority="interactive")
+        if not self.tokens:
+            return
+        if self.token:
+            self._fetch_contacts()
+            self._fetch_starbases()
+            self._fetch_location()
+            self._fetch_ship_type()
+        # Both of these already gate themselves in the panel; starting a
+        # second pass while one runs would just race the first to the cache.
+        if not self.character.is_loading():
+            self._load_all_structures()
+        if (self.character.btn_cyno.isEnabled()
+                and self.universe and self.universe.cyno_modules):
+            self._scan_cyno_alts()
+
     def _on_hole_filters_changed(self):
         """Rebuild the wormhole set, then re-plan over what survived."""
         if not self.universe:
@@ -1442,6 +1473,7 @@ class MainWindow(QMainWindow):
             ("Settings...", self._open_settings),
             ("Reload map data", self._reload_map),
             ("Refresh wormhole connections", self._refresh_wormholes_now),
+            ("Update all", self._update_all),
             ("Log out", self._logout),
             ("Quit", self.close),
         ):
@@ -1453,6 +1485,13 @@ class MainWindow(QMainWindow):
                     "Re-read EVE-Scout and your Wanderer map now, ignoring "
                     "the 15-minute cache. Connections expire in hours, so "
                     "check before committing a freighter.")
+            elif text == "Update all":
+                a.setShortcut("Ctrl+F5")
+                a.setToolTip(
+                    "Re-read everything at once: wormholes, heat map, "
+                    "sovereignty, incursions, and -- when logged in -- "
+                    "contacts, location, POS, every character's dockables "
+                    "and cyno alts. Respects EVE's own cache.")
             m.addAction(a)
 
         help_menu = self.menuBar().addMenu("&Help")
