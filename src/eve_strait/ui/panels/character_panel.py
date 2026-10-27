@@ -32,13 +32,13 @@ class CharacterPanel(QWidget):
     load_all_structures_requested = Signal()
     add_system = Signal(int)
     character_changed = Signal(int)          # character_id
-    unlink_requested = Signal(int)           # character_id
     goto_location_requested = Signal()
     follow_me_toggled = Signal(bool)
     scopes_requested = Signal()
     scan_cyno_requested = Signal()
     force_cyno_requested = Signal()
     manage_characters_requested = Signal()
+    assets_loading_changed = Signal(bool)    # a dockables load started/ended
 
     def __init__(self):
         super().__init__()
@@ -254,6 +254,10 @@ class CharacterPanel(QWidget):
 
         self._dockables: list = []
         self._filter = 0  # 0 none, 1 any dock, 2 safe only
+        self._loading = False
+        # What the closed header says when a load is not borrowing the line.
+        self._structs_summary = "none loaded"
+        self.sec_structs.set_summary(self._structs_summary)
         return page
 
     # -- cyno alts ----------------------------------------------------------
@@ -348,13 +352,35 @@ class CharacterPanel(QWidget):
         if cid is not None:
             self.character_changed.emit(int(cid))
 
+    def is_loading(self) -> bool:
+        return self._loading
+
     def set_loading(self, loading: bool, text: str = ""):
         self.btn_structs.setEnabled(not loading)
         if loading:
             self.progress.setFormat(text or "Loading…")
             self.progress.show()
+            # The bar sits inside a section that is closed by default, so on
+            # its own it reports a load to nobody. The header borrows the same
+            # text for as long as the load runs -- which also covers a reload
+            # started from the character manager, where this panel is not what
+            # was clicked.
+            self.sec_structs.set_summary(text or "Loading…")
         else:
             self.progress.hide()
+            # Back to the resting line. A load that failed never reaches
+            # render(), so this is what stops the header saying "Loading…"
+            # for ever.
+            self.sec_structs.set_summary(self._structs_summary)
+        if loading != self._loading:
+            self._loading = loading
+            self.assets_loading_changed.emit(loading)
+
+    def _set_structs_summary(self, text: str):
+        """Set the resting header line, without talking over a running load."""
+        self._structs_summary = text
+        if not self._loading:
+            self.sec_structs.set_summary(text)
 
     def set_dockables(self, dockables: list):
         self._dockables = dockables
@@ -373,7 +399,7 @@ class CharacterPanel(QWidget):
         self.struct_list.clear()
         if not self._dockables:
             self.struct_list.addItem("No stations/structures found in your assets.")
-            self.sec_structs.set_summary("none loaded")
+            self._set_structs_summary("none loaded")
             return
         shown = 0
         for d in self._dockables:
@@ -401,7 +427,7 @@ class CharacterPanel(QWidget):
         # happened is that the docking filter hid all of it.
         total = len(self._dockables)
         if shown == total:
-            self.sec_structs.set_summary(
+            self._set_structs_summary(
                 f"{total} location{'s' if total != 1 else ''}")
         else:
-            self.sec_structs.set_summary(f"{shown} of {total} match the filter")
+            self._set_structs_summary(f"{shown} of {total} match the filter")

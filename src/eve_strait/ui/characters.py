@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -137,6 +137,7 @@ class CharacterManager(QDialog):
         v.addLayout(row)
 
         self._rows: list[int] = []      # character_id per table row
+        self._loading = False           # an asset load is running somewhere
         self._on_selection()
 
     # -- population ---------------------------------------------------------
@@ -144,22 +145,24 @@ class CharacterManager(QDialog):
         """Rebuild from {character_id: Token} and whichever is active."""
         wanted = set(config.get_scopes())
         keep = self.selected_ids()
+        ordered = sorted(
+            tokens.items(),
+            key=lambda kv: (getattr(kv[1], "character_name", "") or "").lower())
 
-        self.table.setRowCount(0)
-        self._rows = []
+        # Resized and overwritten in place, not emptied and refilled. This runs
+        # every time an asset load finishes -- nearly always with the same
+        # characters in the same order -- and emptying the table first threw
+        # the scroll position away each time, which with two dozen rows meant
+        # losing your place after every reload.
+        self.table.setRowCount(len(ordered))
+        self._rows = [cid for cid, _tok in ordered]
         stale = 0
         gaps = 0
 
-        for cid, tok in sorted(
-                tokens.items(),
-                key=lambda kv: (getattr(kv[1], "character_name", "") or "").lower()):
+        for r, (cid, tok) in enumerate(ordered):
             count, mtime = _client.dockables_cache_info(cid)
             granted = set(getattr(tok, "scopes", None) or [])
             missing = wanted - granted
-
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            self._rows.append(cid)
 
             name = QTableWidgetItem(
                 getattr(tok, "character_name", None) or str(cid))
@@ -224,12 +227,22 @@ class CharacterManager(QDialog):
         self.lbl_note.setText(" · ".join(bits))
 
     def _restore(self, ids: list[int]):
-        if not ids:
-            return
+        """Reselect by character: a row number may now be somebody else.
+
+        Through the selection model, not selectRow(). Under ExtendedSelection
+        selectRow() is a plain click, which drops every row selected before
+        it, so three alts picked for a reload came back from it as one -- and
+        exactly one selected row is what switches Unlink on.
+        """
         self.table.clearSelection()
+        model = self.table.model()
+        selection = self.table.selectionModel()
+        flags = (QItemSelectionModel.SelectionFlag.Select
+                 | QItemSelectionModel.SelectionFlag.Rows)
+        wanted = set(ids)
         for r, cid in enumerate(self._rows):
-            if cid in ids:
-                self.table.selectRow(r)
+            if cid in wanted:
+                selection.select(model.index(r, 0), flags)
 
     # -- selection ----------------------------------------------------------
     def selected_ids(self) -> list[int]:
@@ -242,7 +255,20 @@ class CharacterManager(QDialog):
         # offering them for four would be lying about what is about to happen.
         self.btn_active.setEnabled(n == 1)
         self.btn_unlink.setEnabled(n == 1)
-        self.btn_reload.setEnabled(n >= 1)
+        self.btn_reload.setEnabled(n >= 1 and not self._loading)
+
+    def set_loading(self, loading: bool):
+        """Hold Reload assets while an asset load is already running.
+
+        The character panel's Load button has always been the gate on this --
+        it is disabled for the length of a load. Reload assets starts the same
+        job from a second window, so without the same gate a second click, or
+        a click while the panel's own load is running, sweeps the same
+        characters twice and spends the ESI budget twice for one answer.
+        """
+        self._loading = loading
+        self.btn_reload.setText("Reloading…" if loading else "Reload assets")
+        self._on_selection()
 
     # -- actions ------------------------------------------------------------
     def _activate_selected(self):

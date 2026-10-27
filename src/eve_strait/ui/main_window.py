@@ -616,6 +616,11 @@ class MainWindow(QMainWindow):
             mgr.unlink_requested.connect(self._unlink_character)
             mgr.activate_requested.connect(self._switch_character)
             mgr.reload_requested.connect(self._load_all_structures)
+            # Reload assets follows the panel's own gate on asset loads, and
+            # is told the current state too: the window can be opened for the
+            # first time while a load is already under way.
+            self.character.assets_loading_changed.connect(mgr.set_loading)
+            mgr.set_loading(self.character.is_loading())
             # Built once and hidden on close rather than deleted. Deleting it
             # would leave _sync_character_manager holding a wrapper whose C++
             # object is gone -- reachable, because an asset load finishing
@@ -2238,7 +2243,6 @@ class MainWindow(QMainWindow):
             lambda: self._scan_cyno_alts(force=True))
         self.character.add_system.connect(self.route.add_system)
         self.character.character_changed.connect(self._switch_character)
-        self.character.unlink_requested.connect(self._unlink_character)
         self.character.manage_characters_requested.connect(
             self._manage_characters)
         self.character.goto_location_requested.connect(self._use_location_as_origin)
@@ -3459,7 +3463,12 @@ class MainWindow(QMainWindow):
         w.finished_ok.connect(self._on_all_structures)
         w.failed.connect(lambda m: (self.character.set_loading(False),
                                     QMessageBox.warning(self, "Structures", m)))
-        self._run(w, "Loading dockables for all characters…")
+        # The status bar should not claim a sweep of everyone for a reload of
+        # two.
+        self._run(w, "Loading dockables for all characters…"
+                  if len(tokens) == len(self.tokens) else
+                  f"Loading dockables for {len(tokens)} of "
+                  f"{len(self.tokens)} characters…")
 
     def _on_all_structures(self, result):
         results, notes = result

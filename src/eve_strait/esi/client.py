@@ -321,9 +321,15 @@ def dockables_cache_info(character_id: int) -> tuple[int | None, float | None]:
     path = _cache_path(character_id)
     try:
         rows = json.loads(path.read_text(encoding="utf-8"))
-        return len(rows), path.stat().st_mtime
+        mtime = path.stat().st_mtime
     except (OSError, ValueError):
         return None, None
+    # Anything but a list is a file load_dockables() would read as empty, so
+    # it is not a cache -- and len() of it would be a wrong count for a dict
+    # and a TypeError for a number.
+    if not isinstance(rows, list):
+        return None, None
+    return len(rows), mtime
 
 
 def save_dockables(character_id: int, dockables: list[Dockable]) -> None:
