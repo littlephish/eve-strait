@@ -32,12 +32,13 @@ class CharacterPanel(QWidget):
     load_all_structures_requested = Signal()
     add_system = Signal(int)
     character_changed = Signal(int)          # character_id
-    unlink_requested = Signal(int)           # character_id
     goto_location_requested = Signal()
     follow_me_toggled = Signal(bool)
     scopes_requested = Signal()
     scan_cyno_requested = Signal()
     force_cyno_requested = Signal()
+    manage_characters_requested = Signal()
+    assets_loading_changed = Signal(bool)    # a dockables load started/ended
 
     def __init__(self):
         super().__init__()
@@ -151,23 +152,31 @@ class CharacterPanel(QWidget):
         self.chk_follow.toggled.connect(self.follow_me_toggled)
         v.addWidget(self.chk_follow)
 
-        btn_row = QHBoxLayout()
-        self.btn_add = QPushButton("Add another…")
-        self.btn_add.clicked.connect(self.login_requested)
-        btn_row.addWidget(self.btn_add)
-        self.btn_unlink = QPushButton("Unlink")
-        self.btn_unlink.setToolTip("Remove the selected character from this app.")
-        self.btn_unlink.clicked.connect(self._on_unlink)
-        btn_row.addWidget(self.btn_unlink)
-        v.addLayout(btn_row)
+        # Adding and unlinking moved to the character manager. The combo above
+        # is for switching while you work; deciding which characters exist at
+        # all is a different job, and one that needs to show far more than a
+        # drop-down can -- what data each has, how old it is, what it is
+        # missing.
+        self.btn_manage = QPushButton("Manage characters…")
+        self.btn_manage.setToolTip(
+            "Add, unlink and review every linked character: what assets are "
+            "cached, when they were last read, and which are missing a scope.")
+        self.btn_manage.clicked.connect(self.manage_characters_requested)
+        v.addWidget(self.btn_manage)
 
         self.btn_here = QPushButton("Use current location as origin")
         self.btn_here.clicked.connect(self.goto_location_requested)
         v.addWidget(self.btn_here)
 
+        # -- docked/asset locations -----------------------------------------
+        # A section, like the cyno alts below: the list is long and is not
+        # what you are looking at while switching characters or setting an
+        # origin. The header summary carries the count while it is closed.
+        self.sec_structs = Section("Docked/asset locations")
+
         self.btn_structs = QPushButton("Load my dockable structures")
         self.btn_structs.clicked.connect(self.load_structures_requested)
-        v.addWidget(self.btn_structs)
+        self.sec_structs.add(self.btn_structs)
 
         # Bulk load is a context action, not the main click: it walks
         # every linked character, so it should be chosen rather than
@@ -182,14 +191,17 @@ class CharacterPanel(QWidget):
         self.progress.setRange(0, 0)   # indeterminate spinner
         self.progress.setTextVisible(True)
         self.progress.hide()
-        v.addWidget(self.progress)
+        self.sec_structs.add(self.progress)
 
-        v.addWidget(QLabel("Docked/asset locations (double-click to add):"))
         self.struct_list = QListWidget()
+        self.struct_list.setToolTip(
+            "Double-click to add that location's system as a waypoint.")
         self.struct_list.itemDoubleClicked.connect(self._on_double)
         # Stretches instead of a fixed 220px cap: this is the one thing in the
-        # panel worth reading, so it should take the space the panel has.
-        v.addWidget(self.struct_list, 1)
+        # panel worth reading, so it should take the space the panel has --
+        # which is why Section.add() grew a stretch argument.
+        self.sec_structs.add(self.struct_list, 1)
+        v.addWidget(self.sec_structs)
 
         # -- cyno alts ------------------------------------------------------
         # Sits with the characters because that is what it is: a roll-call of
@@ -227,8 +239,25 @@ class CharacterPanel(QWidget):
         self.sec_cyno.add(self.lbl_cyno)
         v.addWidget(self.sec_cyno)
 
+        # With the locations list now closed by default, nothing in the panel
+        # claims the leftover height, and the controls above would spread out
+        # to fill it. This spacer takes the slack while the section is shut and
+        # gives it all back the moment it opens.
+        v.addStretch(1)
+        tail = v.count() - 1
+
+        def _structs_toggled(on: bool):
+            v.setStretchFactor(self.sec_structs, 1 if on else 0)
+            v.setStretch(tail, 0 if on else 1)
+
+        self.sec_structs.toggled.connect(_structs_toggled)
+
         self._dockables: list = []
         self._filter = 0  # 0 none, 1 any dock, 2 safe only
+        self._loading = False
+        # What the closed header says when a load is not borrowing the line.
+        self._structs_summary = "none loaded"
+        self.sec_structs.set_summary(self._structs_summary)
         return page
 
     # -- cyno alts ----------------------------------------------------------
@@ -296,7 +325,6 @@ class CharacterPanel(QWidget):
             self.lbl_login.setText("")     # clear any stale SSO status
         else:
             self.lbl_location.setText("")
-        self.btn_unlink.setEnabled(bool(name))
         self.btn_here.setEnabled(bool(name))
         self.chk_follow.setEnabled(bool(name))
 
@@ -324,18 +352,35 @@ class CharacterPanel(QWidget):
         if cid is not None:
             self.character_changed.emit(int(cid))
 
-    def _on_unlink(self):
-        cid = self.cmb_char.currentData()
-        if cid is not None:
-            self.unlink_requested.emit(int(cid))
+    def is_loading(self) -> bool:
+        return self._loading
 
     def set_loading(self, loading: bool, text: str = ""):
         self.btn_structs.setEnabled(not loading)
         if loading:
             self.progress.setFormat(text or "Loading…")
             self.progress.show()
+            # The bar sits inside a section that is closed by default, so on
+            # its own it reports a load to nobody. The header borrows the same
+            # text for as long as the load runs -- which also covers a reload
+            # started from the character manager, where this panel is not what
+            # was clicked.
+            self.sec_structs.set_summary(text or "Loading…")
         else:
             self.progress.hide()
+            # Back to the resting line. A load that failed never reaches
+            # render(), so this is what stops the header saying "Loading…"
+            # for ever.
+            self.sec_structs.set_summary(self._structs_summary)
+        if loading != self._loading:
+            self._loading = loading
+            self.assets_loading_changed.emit(loading)
+
+    def _set_structs_summary(self, text: str):
+        """Set the resting header line, without talking over a running load."""
+        self._structs_summary = text
+        if not self._loading:
+            self.sec_structs.set_summary(text)
 
     def set_dockables(self, dockables: list):
         self._dockables = dockables
@@ -354,6 +399,7 @@ class CharacterPanel(QWidget):
         self.struct_list.clear()
         if not self._dockables:
             self.struct_list.addItem("No stations/structures found in your assets.")
+            self._set_structs_summary("none loaded")
             return
         shown = 0
         for d in self._dockables:
@@ -376,3 +422,12 @@ class CharacterPanel(QWidget):
             shown += 1
         if shown == 0:
             self.struct_list.addItem("(no locations match the docking filter)")
+        # Keep the closed header honest. The filtered case has to say so:
+        # a bare "0 locations" reads as "you own nothing" when what actually
+        # happened is that the docking filter hid all of it.
+        total = len(self._dockables)
+        if shown == total:
+            self._set_structs_summary(
+                f"{total} location{'s' if total != 1 else ''}")
+        else:
+            self._set_structs_summary(f"{shown} of {total} match the filter")

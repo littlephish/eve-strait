@@ -308,6 +308,30 @@ def _cache_path(character_id: int):
     return config.CACHE_DIR / f"dockables_{character_id}.json"
 
 
+def dockables_cache_info(character_id: int) -> tuple[int | None, float | None]:
+    """How many locations are cached for this character, and when they were read.
+
+    Returns (count, mtime), or (None, None) when nothing is cached.
+
+    The mtime is the only honest "last updated" this app has per character.
+    An access token expires every twenty minutes and is refreshed silently, so
+    its expiry says nothing whatever about how current the character's data is;
+    when the assets were last actually read does.
+    """
+    path = _cache_path(character_id)
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        mtime = path.stat().st_mtime
+    except (OSError, ValueError):
+        return None, None
+    # Anything but a list is a file load_dockables() would read as empty, so
+    # it is not a cache -- and len() of it would be a wrong count for a dict
+    # and a TypeError for a number.
+    if not isinstance(rows, list):
+        return None, None
+    return len(rows), mtime
+
+
 def save_dockables(character_id: int, dockables: list[Dockable]) -> None:
     try:
         _cache_path(character_id).write_text(
