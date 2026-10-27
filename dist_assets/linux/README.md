@@ -7,27 +7,112 @@ confirmation.
 The app is compiled with **Nuitka**, the same as the Windows build — one build
 tool across platforms, and a faster start than interpreted source.
 
-## One-time: generate the offline dependency list
+Two manifests live here. `io.github.littlephish.EveStrait.yml` is what this
+directory builds locally and what CI builds from the working tree (`type: dir`
+source). `io.github.littlephish.EveStrait.flathub.yml` is the file that
+actually goes into the flathub repo — identical except the source block pins a
+git tag — and `FLATHUB.md` is the submission guide. Change one manifest,
+change the other.
+
+## Regenerating the offline dependency list
 
 Flathub builds with no network, so every Python dependency must be declared
 with a hash. **Nuitka is one of them**: it is a build-time dependency of this
 manifest, not just a developer tool. Regenerate after **any** change to
-`pyproject.toml`:
+`pyproject.toml`.
+
+The tool is **req2flatpak**, not `flatpak-pip-generator`. The latter downloads
+by running pip inside the Flatpak SDK, so it needs a machine with flatpak on
+it; req2flatpak is pure Python, resolves against PyPI, and runs anywhere
+including the Windows development box.
 
 ```bash
-pip install flatpak-pip-generator
-flatpak-pip-generator \
-    --runtime=org.freedesktop.Sdk//25.08 \
-    --output python3-requirements \
-    PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
+pip install req2flatpak
+req2flatpak -r requirements.in -t 313-x86_64 -o python3-requirements.json
 ```
 
-That writes `python3-requirements.json`, which the manifest includes as its
-first module. Commit it.
+### `-t 313-x86_64` is the part that breaks the build
 
-Keep the Nuitka pin in step with `.github/workflows/release.yml` and
-`scripts/build_exe.ps1`, so a Flatpak and a Windows release are compiled by
-the same compiler.
+**The target Python version must match the runtime's, exactly.** It is not a
+default and it is not checked for you.
+
+`org.freedesktop.Platform//25.08` ships **Python 3.13**, so the target is
+`313`. Confirm it rather than trusting this line, because it changes with the
+runtime branch:
+
+```bash
+flatpak run --command=python3 org.freedesktop.Sdk//25.08 --version
+```
+
+Get this wrong and the build fails deep into the pip step with a message that
+does not mention Python versions at all:
+
+```
+ERROR: Could not find a version that satisfies the requirement cffi
+       (from versions: none)
+```
+
+That is a `cp312`-tagged wheel being invisible to a 3.13 interpreter. Most of
+the list survives a mismatch — pure-Python wheels are tagged `py3-none-any`
+and PySide6, shiboken6 and cryptography ship `abi3` wheels good for any later
+3.x — so only the few packages that build a version-specific C extension fail.
+Today that is **cffi, charset-normalizer and zstandard**. A mismatch therefore
+looks like one broken package rather than a systematically wrong file.
+
+### Three more things that cost time
+
+- **`requirements.in` is fully pinned**, because req2flatpak rejects anything
+  that is not exactly one version. Update pins there, not in the generated
+  JSON.
+- **Nuitka is appended by hand.** It ships as an sdist with no wheel and
+  req2flatpak handles wheels only, so after regenerating you must re-add its
+  `sources` entry and append `nuitka` to the end of the `pip3 install` command
+  in `build-commands`. Keep the pin in step with
+  `.github/workflows/release.yml` and `scripts/build_exe.ps1`, so a Flatpak and
+  a Windows release are compiled by the same compiler.
+- PySide6 6.11 publishes no `manylinux2014` wheel, so the resolve reports
+  "unsatisfiable" unless the platform is `manylinux_2_34`. `-t 313-x86_64`
+  already picks that.
+
+## Build tools the SDK does not have
+
+`org.freedesktop.Sdk//25.08` ships a compiler and Python 3.13, but it is not a
+general-purpose distro and it has no package manager. Anything Nuitka shells
+out to has to arrive as its own module.
+
+So far that is **patchelf**, which Nuitka's standalone mode uses to rewrite the
+RPATH of every shared library it copies into the program folder. Missing, the
+compile stops with advice that cannot be taken inside a sandbox:
+
+```
+FATAL: Error, standalone mode on Linux requires 'patchelf' to be installed.
+       Use 'apt/dnf/yum install patchelf' first.
+```
+
+It is built from the release tarball as the first module in the manifest, and
+carries `cleanup: ['*']` because the finished app never runs it — the RPATHs
+are already written. Flatpak-builder defers cleanup to the end of the whole
+build, so the `eve-strait` module still finds it at `/app/bin/patchelf`.
+
+Note the shape of this failure, because the next one will look the same: the
+Nuitka step is where a missing *system* tool surfaces, and the error names the
+tool rather than the manifest. Add a module; do not reach for
+`--assume-yes-for-downloads`, which cannot work offline.
+
+## Version stamping
+
+The app reports its version from `src/eve_strait/__init__.py`, which in the
+repo is a `0.1.0` placeholder — the release tag is the version. The Flatpak
+build stamps it the same way the Windows build does:
+
+- `release.yml` stamps with the Sdk's python3 before flatpak-builder runs,
+  and the `type: dir` source then carries the stamped files into the sandbox.
+- The manifest's first build command stamps from
+  `git describe --tags --exact-match`, so Flathub's build of the same tag
+  agrees even though it never runs our workflows.
+
+A build that launches as `0.1.0` instead of its tag is either a build of the
+wrong commit, or a checkout where the tag is not visible inside the sandbox.
 
 ## Build and run
 
@@ -57,9 +142,10 @@ exercises:
 1. **The Nuitka build completes without reaching for the network.** The
    manifest deliberately omits `--assume-yes-for-downloads`, which would let
    Nuitka fetch ccache; `--disable-cache=ccache` stops it wanting to. If the
-   build fails asking to download something, that is the thing to fix — not by
-   adding the flag, which cannot work offline anyway, but by providing the
-   dependency through the SDK.
+   build fails asking to download something, or reports a tool missing, that
+   is the thing to fix — not by adding the flag, which cannot work offline
+   anyway, but by adding a module for it. See "Build tools the SDK does not
+   have" above.
 2. First launch downloads the solar-system dump into the sandboxed data dir.
 3. **EVE SSO login** — the browser opens through the portal, and the callback
    on `localhost:8635` is received inside the sandbox. This is the one most

@@ -24,6 +24,21 @@ uv run eve-strait
 The first launch downloads small solar‑system + station coordinate dumps (~a few MB) from
 Fuzzwork and caches them locally.
 
+## Linux (Flatpak)
+
+```bash
+flatpak install flathub io.github.littlephish.EveStrait
+```
+
+The Flatpak is compiled with Nuitka from the same tags as the Windows build,
+and is published on Flathub (see `dist_assets/linux/FLATHUB.md` for the
+submission).
+
+The in‑app updater is not available on Linux: the sandbox is read‑only and
+**Flatpak owns updates** — `flatpak update`, or silently through GNOME
+Software / KDE Discover. Data (ESI tokens, maps, options) lives under
+`~/.var/app/io.github.littlephish.EveStrait/` instead of `%LOCALAPPDATA%`.
+
 ## ESI login (optional)
 
 The map, ranges, fuel and routing all work **without** logging in. Logging in adds your

@@ -1,15 +1,16 @@
 name: Flatpak
 
-# The Linux build. Separate from release.yml on purpose: that one is the
-# Windows installer users actually have today, and a Flatpak failure must
-# never block it.
+# The Linux build for pull requests and manual runs. Tagged releases build
+# the Flatpak in release.yml instead, where the bundle is attached to the
+# release alongside the Windows installer -- a tag must not build the
+# Flatpak twice.
 #
-# Runs on pull requests that touch the packaging or the app, and on tags so a
-# release carries a Linux artifact. Not on every push to main -- a Nuitka
-# standalone build with PySide6 takes minutes, and ci.yml is the fast gate.
+# Separate from release.yml on purpose: that one is the Windows installer
+# users actually have today, and a Flatpak failure must never block it.
+#
+# Not on every push to main -- a Nuitka standalone build with PySide6 takes
+# minutes, and ci.yml is the fast gate.
 on:
-  push:
-    tags: ['v*']
   pull_request:
     paths:
       - 'dist_assets/linux/**'
@@ -39,5 +40,5 @@ jobs:
           manifest-path: dist_assets/linux/io.github.littlephish.EveStrait.yml
           cache-key: flatpak-builder-${{ github.sha }}
           # A bundle does not update itself; it is a convenience artifact.
-          # Flathub is the actual distribution channel -- see the plan.
+          # Flathub is the actual distribution channel -- see FLATHUB.md.
           upload-artifact: true
