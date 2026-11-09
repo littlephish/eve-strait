@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag to build the Windows and Flatpak artifacts and publish a release:
+# Push a tag to build the Windows, macOS (dmg) and Flatpak artifacts and publish a release:
 #
 #   git tag v0.1.0
 #   git push origin v0.1.0
@@ -173,6 +173,126 @@ jobs:
           files: |
             dist/Eve-Strait-*-win64.zip
             dist/Eve-Strait-*-setup.exe
+
+  # The macOS release: Nuitka .app bundle wrapped in a .dmg. Apple Silicon
+  # only (macos-latest is arm64; the Intel runners are being retired).
+  # Runs after the Windows job so the release already exists and a mac
+  # failure cannot un-ship the Windows installer.
+  #
+  # Deliberately NOT Apple-signed or notarized (project decision). The app is
+  # only ad-hoc signed, so Gatekeeper warns on first launch (right-click >
+  # Open). Don't add Developer ID / notarization steps.
+  #
+  # The in-app updater is check-only on macOS (update.py), and the asset name
+  # deliberately has no "win" in it so the Windows updater never picks it up.
+  macos:
+    name: Build macOS dmg (arm64)
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Read version from the tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp the version
+        run: |
+          python scripts/version.py "${{ steps.ver.outputs.version }}"
+          got=$(python scripts/version.py)
+          test "$got" = "${{ steps.ver.outputs.version }}" || {
+            echo "stamp failed: file says '$got', tag says '${{ steps.ver.outputs.version }}'"; exit 1; }
+          echo "stamped OK: $got"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6 requests keyring nuitka==4.2.1 zstandard ordered-set
+          python -m pip install .
+
+      # Build an .icns from the Windows .ico with the tools macOS ships. If
+      # it fails the app still builds, just with the default icon.
+      - name: Make the app icon
+        run: |
+          set -x
+          mkdir -p build/icon.iconset
+          if sips -s format png dist_assets/win/eve-strait.ico --out build/icon.png; then
+            for s in 16 32 64 128 256 512; do
+              sips -z $s $s build/icon.png --out build/icon.iconset/icon_${s}x${s}.png
+              sips -z $((s*2)) $((s*2)) build/icon.png --out build/icon.iconset/icon_${s}x${s}@2x.png
+            done
+            iconutil -c icns build/icon.iconset -o build/eve-strait.icns || true
+          fi
+          ls -l build || true
+
+      - name: Cache Nuitka compilation cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Nuitka
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock') }}
+          restore-keys: nuitka-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build (Nuitka .app bundle)
+        run: |
+          icon_arg=""
+          if [ -f build/eve-strait.icns ]; then
+            icon_arg="--macos-app-icon=build/eve-strait.icns"
+          fi
+          python -m nuitka \
+            --standalone \
+            --macos-create-app-bundle \
+            --macos-app-name=Eve-Strait \
+            --macos-app-version=${{ steps.ver.outputs.version }} \
+            $icon_arg \
+            --enable-plugin=pyside6 \
+            --include-package=eve_strait \
+            --include-package=keyring \
+            --include-package-data=eve_strait \
+            --assume-yes-for-downloads \
+            --output-dir=out \
+            --output-filename=eve-strait \
+            app.py
+          ls out
+
+      - name: Verify the built package reports the tag version
+        run: |
+          v=$(python -c "import eve_strait; print(eve_strait.__version__)")
+          test "$v" = "${{ steps.ver.outputs.version }}" || { echo "version mismatch: '$v'"; exit 1; }
+
+      # Apple Silicon refuses to run unsigned code, so ad-hoc sign at minimum.
+      - name: Ad-hoc sign and check the bundle
+        run: |
+          app=$(ls -d out/*.app | head -n1)
+          test -d "$app" || { echo "Nuitka produced no .app"; exit 1; }
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Create the dmg
+        run: |
+          mkdir -p dist dmgroot
+          cp -R "$APP" dmgroot/Eve-Strait.app
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "Eve-Strait ${{ steps.ver.outputs.version }}" \
+            -srcfolder dmgroot -ov -format UDZO \
+            "dist/Eve-Strait-${{ steps.ver.outputs.version }}-macos-arm64.dmg"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Eve-Strait-macos-arm64-dmg
+          path: dist/*.dmg
+
+      # generate_release_notes stays off: the Windows job already wrote them.
+      - name: Attach the dmg to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Eve-Strait-*-macos-arm64.dmg
 
   # The Linux release: the same tag, a different machine. Runs after the
   # Windows job on purpose, so the release exists first and the bundle is

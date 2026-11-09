@@ -78,6 +78,12 @@ git push origin v0.2.0
   the updater offered an update to the running build. The Flatpak job stamps
   the same way (with the Sdk's python3), and the manifest itself falls back
   to stamping from `git describe` so Flathub's build of the same tag agrees.
+- A `macos` job in `release.yml` (also after the Windows job) builds an arm64
+  `.app` with Nuitka, ad-hoc signs it, and attaches
+  `Eve-Strait-<ver>-macos-arm64.dmg`. Not Apple-signed or notarized, on purpose
+  (project decision) -- first launch needs right-click → Open. Keep "win" out of that asset name or
+  the Windows updater could pick it. It has never been run on a real tag yet --
+  expect to iterate on the first release (Nuitka flags, icon step).
 - The in-app updater (Help → Check for updates) does a folder swap of the release zip;
   `update-log.txt` next to the exe records each step.
 - The updater's "wait for the exe to unlock" step assumes only the GUI holds it open.
