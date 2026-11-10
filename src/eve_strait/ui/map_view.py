@@ -1593,8 +1593,20 @@ class MapView(QGraphicsView):
 
     # -- interaction --------------------------------------------------------
     def wheelEvent(self, event):
-        factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
-        old = self.mapToScene(event.position().toPoint())
+        dy = event.angleDelta().y()
+        if dy == 0:
+            # Horizontal scroll (tilt wheel / MX Master thumb wheel) arrives
+            # with a zero vertical delta. It used to fall through to the
+            # zoom-out branch below whatever its direction. Pan instead.
+            dx = event.angleDelta().x()
+            if dx:
+                # Qt: positive x = scrolled left, so content moves right.
+                step = dx / 120.0 * 60.0 / self.transform().m11()
+                self.translate(step, 0)
+            event.accept()
+            return
+        factor = 1.2 if dy > 0 else 1 / 1.2
+        old =self.mapToScene(event.position().toPoint())
         self.scale(factor, factor)
         new = self.mapToScene(event.position().toPoint())
         delta = new - old
